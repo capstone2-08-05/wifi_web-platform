@@ -1,0 +1,20 @@
+{
+  "service": "project-rf",
+  "baseUrlEnv": "RF_SERVER_URL",
+  "endpoints": [
+    {
+      "method": "POST",
+      "path": "/sionna/smoke",
+      "request": {
+        "scenePath": "optional string"
+      },
+      "response": {
+        "status": "ok",
+        "conversionSuccess": true,
+        "simulationSuccess": true,
+        "outputPath": "string",
+        "runtimeSeconds": 0
+      }
+    }
+  ]
+}

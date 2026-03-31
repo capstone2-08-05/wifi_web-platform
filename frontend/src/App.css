@@ -1,0 +1,58 @@
+#root {
+  width: 100vw;
+  height: 100vh;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  width: 100%;
+  height: 100%;
+}
+
+.panel {
+  padding: 16px;
+  background: #101522;
+  color: #e6ebff;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.panel h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.panel p {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #b7c1e6;
+}
+
+.panel button,
+.panel input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.panel button {
+  border: 1px solid #2f3f6b;
+  background: #1c2a4d;
+  color: #fff;
+  padding: 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.status {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #cdd7ff;
+}
+
+.viewer {
+  width: 100%;
+  height: 100%;
+}

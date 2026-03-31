@@ -1,0 +1,15 @@
+{
+  "units": "m",
+  "sourceType": "floorplan_image",
+  "walls": [
+    { "id": "w1", "x1": 0, "y1": 0, "x2": 5, "y2": 0, "thickness": 0.18, "height": 2.4, "role": "outer" },
+    { "id": "w2", "x1": 5, "y1": 0, "x2": 5, "y2": 4, "thickness": 0.18, "height": 2.4, "role": "outer" },
+    { "id": "w3", "x1": 5, "y1": 4, "x2": 0, "y2": 4, "thickness": 0.18, "height": 2.4, "role": "outer" },
+    { "id": "w4", "x1": 0, "y1": 4, "x2": 0, "y2": 0, "thickness": 0.18, "height": 2.4, "role": "outer" }
+  ],
+  "openings": [],
+  "rooms": [
+    { "id": "r1", "name": "living_room", "polygon": [[0, 0], [5, 0], [5, 4], [0, 4]] }
+  ],
+  "objects": []
+}

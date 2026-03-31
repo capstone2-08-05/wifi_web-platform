@@ -1,0 +1,45 @@
+{
+  "service": "project-ai",
+  "baseUrlEnv": "AI_SERVICE_URL",
+  "endpoints": [
+    {
+      "method": "POST",
+      "path": "/wall/unet",
+      "request": {
+        "contentType": "multipart/form-data",
+        "fields": {
+          "file_id": "string",
+          "file": "binary image/pdf"
+        }
+      },
+      "response": {
+        "status": "ok",
+        "maskPath": "string",
+        "metrics": {
+          "wallConnectivity": "number"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/objects/yolo",
+      "request": {
+        "contentType": "multipart/form-data",
+        "fields": {
+          "file_id": "string",
+          "file": "binary image/pdf"
+        }
+      },
+      "response": {
+        "status": "ok",
+        "detections": [
+          { "class": "door|window|furniture", "confidence": "number", "bbox": [0, 0, 0, 0] }
+        ],
+        "metrics": {
+          "mAP50": "number",
+          "mAP50_95": "number"
+        }
+      }
+    }
+  ]
+}
