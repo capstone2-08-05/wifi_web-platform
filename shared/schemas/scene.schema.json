@@ -1,16 +1,17 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "SceneSchema",
   "type": "object",
-  "required": ["units", "sourceType", "walls", "openings", "rooms", "objects"],
+  "required": ["scene_version", "units", "sourceType", "walls", "openings", "rooms", "objects"],
   "properties": {
+    "scene_version": { "type": "string" },
+
     "units": { "type": "string", "enum": ["m"] },
     "sourceType": { "type": "string" },
+
     "walls": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "x1", "y1", "x2", "y2", "thickness", "height", "role"],
+        "required": ["id", "x1", "y1", "x2", "y2", "thickness", "height", "role", "material"],
         "properties": {
           "id": { "type": "string" },
           "x1": { "type": "number" },
@@ -19,10 +20,16 @@
           "y2": { "type": "number" },
           "thickness": { "type": "number" },
           "height": { "type": "number" },
-          "role": { "type": "string", "enum": ["outer", "inner"] }
+          "role": { "type": "string", "enum": ["outer", "inner"] },
+
+          "material": {
+            "type": "string",
+            "enum": ["concrete", "glass", "wood", "metal", "unknown"]
+          }
         }
       }
     },
+
     "openings": { "type": "array" },
     "rooms": { "type": "array" },
     "objects": { "type": "array" }
