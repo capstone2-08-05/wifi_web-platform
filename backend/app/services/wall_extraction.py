@@ -9,11 +9,10 @@ class WallExtractor:
     def __init__(self):
         MASK_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 🔥 중심선 추출 (Distance Transform + Local Maxima)
+    # 중심선 추출
     def extract_centerline(self, dist: np.ndarray) -> np.ndarray:
         kernel = np.ones((3, 3), np.uint8)
 
-        # 주변보다 값이 큰 지점 = ridge (중심선)
         dilated = cv2.dilate(dist, kernel)
 
         centerline = (dist == dilated) & (dist > 0)
@@ -44,10 +43,9 @@ class WallExtractor:
         # 3. Distance Transform
         dist = cv2.distanceTransform(merged, cv2.DIST_L2, 5)
 
-        # 4. 중심선 추출 (🔥 핵심)
+        # 4. 중심선 추출 
         skeleton = self.extract_centerline(dist)
 
-        # 저장
         output_path = MASK_DIR / f"{image_path.stem}_skeleton_mask.png"
         cv2.imwrite(str(output_path), skeleton)
 
@@ -79,7 +77,7 @@ class WallExtractor:
         debug_output_path = MASK_DIR / "debug_vectorization_result.png"
         cv2.imwrite(str(debug_output_path), debug_img)
 
-        print(f"🖼️  추출 결과 시각화 완료: {debug_output_path}")
+        print(f"추출 결과 시각화 완료: {debug_output_path}")
 
         return wall_coordinates
 
