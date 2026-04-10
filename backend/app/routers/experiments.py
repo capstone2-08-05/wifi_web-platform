@@ -18,7 +18,11 @@ def wall_rule_based(file_id: str) -> dict:
 
     try:
         mask_path = run_rule_based_wall_extraction(image_path)
-        return {"status": "ok", "fileId": file_id, "maskPath": str(mask_path)}
+        return {
+            "status": "ok",
+            "fileId": file_id,
+            "walls": mask_path  
+        }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -37,7 +41,7 @@ def wall_unet(file_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Uploaded file not found")
 
     return _send_file_to_ai(
-        f"{service.rstrip('/')}/wall/unet",
+        f"{service.rstrip('/')}/inference/unet",
         file_id=file_id,
         image_path=image_path,
         timeout=120,
@@ -58,7 +62,7 @@ def objects_yolo(file_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Uploaded file not found")
 
     return _send_file_to_ai(
-        f"{service.rstrip('/')}/objects/yolo",
+        f"{service.rstrip('/')}/inference/yolo",
         file_id=file_id,
         image_path=image_path,
         timeout=120,

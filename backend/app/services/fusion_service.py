@@ -1,98 +1,124 @@
-from pathlib import Path
-from typing import List, Tuple
+import logging
+from typing import Dict, Any, List
 
-# 혜승님이 만든 부품들 가져오기
-from app.schemas.floorplan import SceneSchema, Wall, Opening
-from app.schemas.ai_output import MlOutputDTO  # 성경님 규격 추가
-from app.services.geometry_service import GeometryService
+from app.services.geometry_service import GeometryService  
+from app.services.wall_extraction import wall_extractor
+from app.services.topology_service import TopologyService
+from app.schemas.floorplan import Wall
+from app.services.ai_client import ai_client
+from app.schemas.ai_output import (
+    MlOutputDTO, 
+    MetaDTO, 
+    WallSegmentationDTO, 
+    DetectionDTO
+)
+from app.schemas.floorplan import SceneSchema
+
+logger = logging.getLogger(__name__)
 
 class FusionService:
     def __init__(self):
-        pass
+        self.ai_client = ai_client
 
-    def run_wi_twin_pipeline(self, ml_output: MlOutputDTO) -> SceneSchema:
+    def extract_walls_from_mask(self, mask_path: str) -> List[Wall]:
        
-        # 1. 메타데이터 추출 
-        pixel_width = ml_output.meta.original_width
-        pixel_height = ml_output.meta.original_height
-        real_width_m = 10.0  # 이건 나중에 사용자가 입력하거나 기준이 필요
-        
-        # 2. GeometryService 초기화
+        import cv2
+        from pathlib import Path
+
+        img = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            print(f"DEBUG: 이미지를 찾을 수 없음 -> {mask_path}")
+            return []
+
+       
+        raw_coords = wall_extractor.execute_from_mask(img)
+
+        walls = []
+        for i, coord in enumerate(raw_coords):
+            x1, y1, x2, y2 = coord
+            walls.append(Wall(
+                id=str(i),
+                x1=float(x1),
+                y1=float(y1),
+                x2=float(x2),
+                y2=float(y2),
+                thickness=5.0 
+            ))
+            
+        return walls
+
+    def process_image_to_scene(self, image_bytes: bytes, filename: str, real_width_m: float) -> SceneSchema:
+        try:
+            ai_results = self.ai_client.fetch_ai_inference(image_bytes, filename)
+            
+            unet_res = ai_results.get("unet", {})
+            yolo_res = ai_results.get("yolo", {})
+            
+            unet_output = unet_res.get("output", {})
+            yolo_output = yolo_res.get("output", {})
+            
+            unet_metrics = unet_res.get("metrics", {})
+            original_width = unet_metrics.get("width", 1000)
+            original_height = unet_metrics.get("height", 1000)
+
+            raw_detections = yolo_output.get("detections", [])
+            formatted_detections = []
+            
+            for det in raw_detections:
+                formatted_detections.append({
+                    "id": str(det.get("class_id")),          
+                    "class_name": det.get("class_name"),
+                    "score": det.get("confidence"),    
+                    "bbox_xyxy": det.get("bbox")        
+                })
+
+            ml_output = MlOutputDTO(
+                meta=MetaDTO(
+                    sample_id=unet_res.get("fileId", "temp_id"),
+                    image_name=filename,
+                    original_width=original_width, 
+                    original_height=original_height
+                ),
+                wall_segmentation=WallSegmentationDTO(
+                    mask_path=unet_output.get("wallProbOverlayPath", ""),
+                    prob_map_path=unet_output.get("wallProbNpyPath", "") 
+                ),
+                detections=formatted_detections  
+            )
+
+            return self.run_wi_twin_pipeline(ml_output, real_width_m)
+
+        except Exception as exc:
+            logger.error(f"도면 분석 중 오류 발생: {exc}")
+            raise exc
+
+    def run_wi_twin_pipeline(self, ml_output: MlOutputDTO, real_width_m: float) -> SceneSchema:
         geo_service = GeometryService(
-            pixel_width=pixel_width, 
-            pixel_height=pixel_height, 
+            pixel_width=ml_output.meta.original_width,
+            pixel_height=ml_output.meta.original_height,
             real_width_m=real_width_m
         )
+        topo_service = TopologyService()
 
-        # 3. 벽 데이터 변환 
-        # 일단은 mock 데이터 사용
-        pixel_walls = [
-            [812, 1240, 1500, 1240],
-            [1500, 1240, 1500, 2000]
-        ]
+        mask_path = ml_output.wall_segmentation.mask_path
+        raw_walls = self.extract_walls_from_mask(mask_path)
 
+        calibrated_walls = geo_service.calibrate_walls(raw_walls, ml_output.detections)
 
-        # 실제로 데이터 받으면 밑에 코드 쓰면 됨
-        # pixel_walls = self.extractor.extract_from_mask(ml_output.wall_segmentation.mask_path)
-        
-        converted_walls = geo_service.process_ai_walls(pixel_walls)
+        extracted_rooms = geo_service.extract_rooms(calibrated_walls)
 
-        # 4. 벽과 문 병합 로직 
-        final_walls, openings = self._refine_walls_with_doors(
-            converted_walls, 
-            ml_output.detections,
-            geo_service
-        )
+        topology_result = topo_service.analyze(extracted_rooms, ml_output.detections)
 
-        # 5. 최종 SceneSchema 조립
-        result_scene = SceneSchema(
-            units="m",
-            sourceType="ai_vision_fusion",
+        return SceneSchema(
+            walls=calibrated_walls,
+            rooms=extracted_rooms,
+            detections=ml_output.detections,
+            openings=[], 
             scale_ratio=geo_service.scale_ratio,
-            walls=final_walls,
-            openings=openings, 
-            rooms=[],
-            objects=[] 
+            topology=topology_result, 
+            metadata={
+                "image_name": ml_output.meta.image_name,
+                "real_width": real_width_m
+            }
         )
-
-        print(f"--- 파이프라인 완료: 벽 {len(final_walls)}개, 문 {len(openings)}개 생성 ---")
-        return result_scene
-
-    def _refine_walls_with_doors(self, walls: List[Wall], detections, geo_service) -> Tuple[List[Wall], List[Opening]]:
-       
-        refined_walls = []
-        found_openings = []
-        
-        # YOLO 결과 중 문만 추출
-        doors = [d for d in detections if d.class_name == "door"]
-
-        for wall in walls:
-            is_door_area = False
-            for door in doors:
-                
-                if self._is_wall_in_door_bbox(wall, door.bbox_xyxy, geo_service):
-                    found_openings.append(Opening(
-                        id=f"opening_{door.id}",
-                        type="door",
-                        x1=wall.x1, y1=wall.y1, x2=wall.x2, y2=wall.y2,
-                        wall_ref=wall.id
-                    ))
-                    is_door_area = True
-                    break
-            
-            if not is_door_area:
-                refined_walls.append(wall)
-        
-        return refined_walls, found_openings
-
-    def _is_wall_in_door_bbox(self, wall, bbox, geo_service) -> bool:
-        # 미터 좌표를 다시 픽셀로 돌려서 비교 
-        px1 = wall.x1 / geo_service.scale_ratio
-        py1 = wall.y1 / geo_service.scale_ratio
-        
-        bx1, by1, bx2, by2 = bbox
-        # 벽의 시작점이 문 박스 안에 있으면 겹친다고 판단
-        return bx1 <= px1 <= bx2 and by1 <= py1 <= by2
-
-# 인스턴스 생성
 fusion_service = FusionService()
