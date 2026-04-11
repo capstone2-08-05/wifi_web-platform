@@ -20,32 +20,34 @@ class FusionService:
     def __init__(self):
         self.ai_client = ai_client
 
-    def extract_walls_from_mask(self, mask_path: str) -> List[Wall]:
-       
+    def extract_walls_from_mask(self, mask_path: str, detections: List[Any] = None) -> List[Wall]:
         import cv2
         from pathlib import Path
 
-        img = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            print(f"DEBUG: 이미지를 찾을 수 없음 -> {mask_path}")
-            return []
+        img = cv2.imread(mask_path)
+        if img is None: return []
 
-       
-        raw_coords = wall_extractor.execute_from_mask(img)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        raw_coords = wall_extractor.execute_from_mask(gray, detections=detections)
+
+        if detections:
+            for det in detections:
+                bbox = getattr(det, 'bbox_xyxy', None) or det.get('bbox_xyxy')
+                label = getattr(det, 'class_name', None) or det.get('class_name')
+                
+                bx1, by1, bx2, by2 = map(int, bbox) 
+                cv2.rectangle(img, (bx1, by1), (bx2, by2), (0, 255, 0), 2)
+                cv2.putText(img, label, (bx1, by1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        
+        cv2.imwrite("opening 검출.png", img)
 
         walls = []
         for i, coord in enumerate(raw_coords):
             x1, y1, x2, y2 = coord
-            walls.append(Wall(
-                id=str(i),
-                x1=float(x1),
-                y1=float(y1),
-                x2=float(x2),
-                y2=float(y2),
-                thickness=5.0 
-            ))
-            
+            walls.append(Wall(id=str(i), x1=float(x1), y1=float(y1), x2=float(x2), y2=float(y2), thickness=5.0))
         return walls
+    
 
     def process_image_to_scene(self, image_bytes: bytes, filename: str, real_width_m: float) -> SceneSchema:
         try:
@@ -64,13 +66,13 @@ class FusionService:
             raw_detections = yolo_output.get("detections", [])
             formatted_detections = []
             
-            for det in raw_detections:
-                formatted_detections.append({
-                    "id": str(det.get("class_id")),          
-                    "class_name": det.get("class_name"),
-                    "score": det.get("confidence"),    
-                    "bbox_xyxy": det.get("bbox")        
-                })
+            for i, det in enumerate(raw_detections):
+                formatted_detections.append(DetectionDTO(
+                    id=f"det_{i}",
+                    class_name=det.get("class_name"),
+                    score=float(det.get("confidence", 0.0)),   
+                    bbox_xyxy=det.get("bbox")               
+                ))
 
             ml_output = MlOutputDTO(
                 meta=MetaDTO(
@@ -100,20 +102,40 @@ class FusionService:
         )
         topo_service = TopologyService()
 
-        mask_path = ml_output.wall_segmentation.mask_path
-        raw_walls = self.extract_walls_from_mask(mask_path)
+        # [수정 포인트 2] 여기서도 detections를 넘겨줌
+        raw_walls = self.extract_walls_from_mask(
+            ml_output.wall_segmentation.mask_path, 
+            ml_output.detections
+        )
 
         calibrated_walls = geo_service.calibrate_walls(raw_walls, ml_output.detections)
-
         extracted_rooms = geo_service.extract_rooms(calibrated_walls)
-
         topology_result = topo_service.analyze(extracted_rooms, ml_output.detections)
+
+        openings = []
+        furniture_objects = []
+        f_idx = 0
+
+        for i, det in enumerate(ml_output.detections):
+            if det.class_name in ["door", "window"]:
+                bx1, by1, bx2, by2 = det.bbox_xyxy
+                openings.append({
+                    "id": f"opening_{i}",
+                    "type": det.class_name,
+                    "x1": float(bx1), "y1": float(by1),
+                    "x2": float(bx2), "y2": float(by2),
+                    "wall_id": None
+                })
+            else:
+                det.id = f"furniture_{f_idx}" 
+                furniture_objects.append(det)
+                f_idx += 1
 
         return SceneSchema(
             walls=calibrated_walls,
             rooms=extracted_rooms,
-            detections=ml_output.detections,
-            openings=[], 
+            objects=furniture_objects, 
+            openings=openings,
             scale_ratio=geo_service.scale_ratio,
             topology=topology_result, 
             metadata={
@@ -121,4 +143,5 @@ class FusionService:
                 "real_width": real_width_m
             }
         )
+
 fusion_service = FusionService()

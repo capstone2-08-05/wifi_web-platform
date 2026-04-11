@@ -16,35 +16,26 @@ class GeometryService:
         return [c * self.scale_ratio for c in px_coords]
 
     def extract_rooms(self, walls: List[Wall]) -> List[Room]:
-       
         if not walls:
             return []
 
-        lines = []
-       
-        snap_size = 5.0 
+        lines = [LineString([(w.x1, w.y1), (w.x2, w.y2)]) for w in walls]
         
-        for w in walls:
-            nx1, ny1 = round(w.x1 / snap_size) * snap_size, round(w.y1 / snap_size) * snap_size
-            nx2, ny2 = round(w.x2 / snap_size) * snap_size, round(w.y2 / snap_size) * snap_size
-            
-            if nx1 == nx2 and ny1 == ny2:
-                continue
-            lines.append(LineString([(nx1, ny1), (nx2, ny2)]))
+      
+        from shapely.ops import unary_union
         
-    
-        mls = MultiLineString(lines)
+        merged = unary_union(lines)
         
-        polygons = list(polygonize(mls))
+        polygons = list(polygonize(merged))
         
         rooms = []
         valid_room_count = 0
         
         for poly in polygons:
+           
             real_area = poly.area * (self.scale_ratio ** 2)
             
-          
-            if real_area < 5.0:
+            if real_area < 2.0:
                 continue
             
             coords = [list(pt) for pt in poly.exterior.coords]
@@ -57,9 +48,9 @@ class GeometryService:
             ))
             valid_room_count += 1
             
-        logger.info(f"최종 추출된 유효 방 개수: {len(rooms)}")
+        logger.info(f"방 추출 시도: 폴리곤 {len(polygons)}개 중 {len(rooms)}개 유효")
         return rooms
-
+    
     def calibrate_walls(self, walls: List[Wall], detections: List[Any]) -> List[Wall]:
       
         if not walls:
