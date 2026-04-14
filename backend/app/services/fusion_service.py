@@ -2,7 +2,7 @@ import logging
 from typing import Dict, Any, List
 from pathlib import Path
 import numpy as np
-
+from app.schemas.floorplan import Opening
 from app.services.geometry_service import GeometryService  
 from app.services.wall_extraction import wall_extractor
 from app.services.topology_service import TopologyService
@@ -151,6 +151,9 @@ class FusionService:
 
         raw_walls = self.extract_walls_from_mask(target_path, detections)
 
+        # raw_walls 마지막 id 다음부터 이어서 부여
+        next_id = len(raw_walls)
+
         virtual_walls = []
         for det in detections:
             if det.class_name not in ["door", "window"]:
@@ -160,18 +163,20 @@ class FusionService:
             if is_horizontal:
                 mid_y = (by1 + by2) / 2
                 virtual_walls.append(Wall(
-                    id=f"v_wall_{det.id}", x1=float(bx1), y1=float(mid_y),
+                    id=str(next_id), x1=float(bx1), y1=float(mid_y),
                     x2=float(bx2), y2=float(mid_y), thickness=5.0
                 ))
             else:
                 mid_x = (bx1 + bx2) / 2
                 virtual_walls.append(Wall(
-                    id=f"v_wall_{det.id}", x1=float(mid_x), y1=float(by1),
+                    id=str(next_id), x1=float(mid_x), y1=float(by1),
                     x2=float(mid_x), y2=float(by2), thickness=5.0
                 ))
+            next_id += 1
 
-        walls_for_room  = raw_walls + virtual_walls
+        walls_for_room   = raw_walls + virtual_walls
         calibrated_walls = geo_service.calibrate_walls(walls_for_room, detections)
+        
         extracted_rooms  = geo_service.extract_rooms(calibrated_walls)
 
         import cv2, random
@@ -215,12 +220,13 @@ class FusionService:
         for i, det in enumerate(detections):
             if det.class_name in ["door", "window"]:
                 bx1, by1, bx2, by2 = det.bbox_xyxy
-                openings.append({
-                    "id": f"opening_{i}", "type": det.class_name,
-                    "x1": float(bx1), "y1": float(by1),
-                    "x2": float(bx2), "y2": float(by2),
-                    "wall_id": None
-                })
+                openings.append(Opening(
+    id=f"opening_{i}", 
+    type=det.class_name,
+    x1=float(bx1), y1=float(by1),
+    x2=float(bx2), y2=float(by2),
+    wall_ref=None 
+))
             else:
                 det.id = f"furniture_{len(furniture_objects)}"
                 furniture_objects.append(det)

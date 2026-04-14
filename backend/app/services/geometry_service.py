@@ -21,62 +21,67 @@ class GeometryService:
         if not walls:
             return []
 
+        # 1. 수직/수평 벽 필터링 (기존 로직 유지)
         def is_hv(w):
             dx, dy = abs(w.x2 - w.x1), abs(w.y2 - w.y1)
             angle = abs(np.degrees(np.arctan2(dy, dx))) % 180
             return angle < 7 or angle > 173 or abs(angle - 90) < 7
 
-        walls = [w for w in walls if is_hv(w)]
-        if not walls:
+        filtered_walls = [w for w in walls if is_hv(w)]
+        if not filtered_walls:
             return []
 
-        lines = [LineString([(w.x1, w.y1), (w.x2, w.y2)]) for w in walls]
+        # 2. 선 병합 및 스냅 (구멍 메우기)
+        lines = [LineString([(w.x1, w.y1), (w.x2, w.y2)]) for w in filtered_walls]
         merged = unary_union(lines)
-
-        all_x = [w.x1 for w in walls] + [w.x2 for w in walls]
-        all_y = [w.y1 for w in walls] + [w.y2 for w in walls]
+        
+        all_x = [w.x1 for w in filtered_walls] + [w.x2 for w in filtered_walls]
+        all_y = [w.y1 for w in filtered_walls] + [w.y2 for w in filtered_walls]
         coord_range = max(max(all_x) - min(all_x), max(all_y) - min(all_y))
-
+        
         snap_tolerance = coord_range * 0.03
-
         snapped_lines = [snap(line, merged, tolerance=snap_tolerance) for line in lines]
         merged_snapped = unary_union(snapped_lines)
 
-      
-        result_geom, dangles, cut_edges, invalid = polygonize_full(merged_snapped)
-
+        # 3. 다각형 생성
+        result_geom, dangles, cut_edges, _ = polygonize_full(merged_snapped)
         polygons = list(result_geom.geoms) if hasattr(result_geom, 'geoms') else []
-        dangle_count   = len(list(dangles.geoms))   if hasattr(dangles,   'geoms') else 0
-        cut_edge_count = len(list(cut_edges.geoms)) if hasattr(cut_edges, 'geoms') else 0
 
-        print(f" polygonize_full → 폴리곤:{len(polygons)}, dangles(끊긴선):{dangle_count}, cut_edges(미연결):{cut_edge_count}")
-
-        if dangle_count > 3 and len(polygons) < 3:
-            snap_tolerance2 = coord_range * 0.05
-            snapped_lines2  = [snap(line, merged, tolerance=snap_tolerance2) for line in lines]
-            merged_snapped2 = unary_union(snapped_lines2)
-            result_geom2, dangles2, cut_edges2, _ = polygonize_full(merged_snapped2)
-            polygons2 = list(result_geom2.geoms) if hasattr(result_geom2, 'geoms') else []
-            print(f"재시도(tol=5%) → 폴리곤:{len(polygons2)}, dangles:{len(list(dangles2.geoms) if hasattr(dangles2, 'geoms') else [])}")
-            if len(polygons2) > len(polygons):
-                polygons = polygons2
-
+        # 4. 직사각형 변환 및 벽 침범 방지 로직
         rooms = []
         valid_room_count = 0
+        
+        # 벽 두께의 절반 정도를 안쪽으로 밀어넣기 위한 오프셋 (약 10~15cm)
+        # 이미지의 scale_ratio를 사용하여 픽셀 단위로 변환
+        shrink_dist = 0.15 / self.scale_ratio 
+
         for poly in polygons:
-            real_area = poly.area * (self.scale_ratio ** 2)
-            if real_area < 2.0: 
+            # (1) 안쪽으로 수축: 삐져나온 선이나 벽 두께 침범 제거
+            inner_poly = poly.buffer(-shrink_dist)
+            if inner_poly.is_empty:
                 continue
-            coords = [list(pt) for pt in poly.exterior.coords]
+            
+            # (2) 직사각형화: 수축된 모양을 기준으로 반듯한 박스 생성
+            rect_poly = inner_poly.envelope
+            
+            # (3) 면적 계산 (실제 m² 단위)
+            real_area = rect_poly.area * (self.scale_ratio ** 2)
+            
+            # 너무 작거나(노이즈), 너무 큰(집 전체 외곽) 다각형 필터링
+            if real_area < 2.0 or real_area > 300.0:
+                continue
+
+            # (4) 결과 저장
+            coords = [list(pt) for pt in rect_poly.exterior.coords]
             rooms.append(Room(
                 id=f"room_{valid_room_count}",
                 points=coords,
-                center=[round(poly.centroid.x, 3), round(poly.centroid.y, 3)],
+                center=[round(rect_poly.centroid.x, 3), round(rect_poly.centroid.y, 3)],
                 area=round(real_area, 2)
             ))
             valid_room_count += 1
 
-        logger.info(f"방 추출: 폴리곤 {len(polygons)}개 중 {len(rooms)}개 유효")
+        logger.info(f"방 추출 완료: {len(rooms)}개의 직사각형 방 생성")
         return rooms
 
     def calibrate_walls(self, walls: List[Wall], detections: List[Any]) -> List[Wall]:
