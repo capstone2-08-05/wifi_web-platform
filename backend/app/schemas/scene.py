@@ -1,7 +1,6 @@
 from __future__ import annotations
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
-
+from typing import List, Any, Optional
 
 class Wall(BaseModel):
     id: str
@@ -27,30 +26,28 @@ class Topology(BaseModel):
     adjacencies: List[List[str]] 
     connectivity: List[List[str]]  
 
-class SimConfigDTO(BaseModel):
-    frequency_ghz: float = 28.0
+
+class ConfigDTO(BaseModel):
+    frequency_ghz: float = 2.4
     tx_power_dbm: float = 30.0
     reflection_order: int = 2
 
 class AntennaDTO(BaseModel):
     tx_id: str = "router_1"
-    position_m: List[float] = Field(..., description="[x, y, z] 실제 미터 좌표")
+    position_m: List[float] = [1.0, 1.0, 1.0]
 
 
+# 일단 config랑 antenna는 기본값으로 넣어놨어!
 class SceneSchema(BaseModel):
+    config: ConfigDTO = Field(default_factory=ConfigDTO)
+    antenna: AntennaDTO = Field(default_factory=AntennaDTO)
+    
     scene_version: str = "1.0.0"
     units: str = "m"
     sourceType: str = "ai_vision"
-    scale_ratio: float       
-    walls: List[Wall]
-    openings: List[Opening]  
-    rooms: List[Room] = []          
-    topology: Optional[Topology] = None 
-    objects: List[Any] = []
-
-
-class SionnaInputDTO(BaseModel):
-   
-    config: SimConfigDTO
-    antenna: AntennaDTO
-    scene: SceneSchema
+    scale_ratio: float
+    walls: List[dict]
+    openings: List[dict]
+    rooms: List[dict]
+    topology: dict = {"adjacencies": [], "connectivity": []}
+    objects: List[dict] = []
