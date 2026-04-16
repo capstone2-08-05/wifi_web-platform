@@ -1,7 +1,8 @@
-from fastapi import APIRouter
-from sqlalchemy import create_engine, text
+from fastapi import APIRouter, Depends
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
-from app.core.settings import database_url
+from app.db.session import get_db
 
 router = APIRouter(tags=["health"])
 
@@ -12,13 +13,9 @@ def health() -> dict:
 
 
 @router.get("/health/db")
-def health_db() -> dict:
-    engine = create_engine(database_url(), pool_pre_ping=True)
+def health_db(db: Session = Depends(get_db)) -> dict:
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        db.execute(text("SELECT 1"))
         return {"status": "ok", "db": "connected"}
     except Exception as exc:
         return {"status": "error", "db": "disconnected", "detail": str(exc)}
-    finally:
-        engine.dispose()

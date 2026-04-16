@@ -1,6 +1,36 @@
 .env
 backend/.venv/
+.venv/
+venv/
 backend/data/
 frontend/node_modules/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# tests / coverage
+.pytest_cache/
+backend/.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+
+# build
+*.egg-info/
+dist/
+build/
+*.egg
+
+# logs / local
+*.log
+.DS_Store
+Thumbs.db

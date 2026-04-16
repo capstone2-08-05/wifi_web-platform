@@ -80,7 +80,7 @@ def upgrade() -> None:
         sa.Column("room_type", sa.String(length=40), nullable=True),
         sa.Column("confidence", sa.Numeric(5, 4), nullable=True),
         sa.Column("source_method", sa.String(length=30), nullable=True),
-        sa.Column("polygon_geom", Geometry("POLYGON", srid=0), nullable=True),
+        sa.Column("polygon_geom", Geometry("POLYGON", srid=0, spatial_index=False), nullable=True),
         sa.Column("centroid_geom", Geometry("POINT", srid=0), nullable=True),
         sa.Column("metadata_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
@@ -96,8 +96,8 @@ def upgrade() -> None:
         sa.Column("material_label", sa.String(length=50), nullable=True),
         sa.Column("confidence", sa.Numeric(5, 4), nullable=True),
         sa.Column("source_method", sa.String(length=30), nullable=True),
-        sa.Column("centerline_geom", Geometry("LINESTRING", srid=0), nullable=True),
-        sa.Column("polygon_geom", Geometry("POLYGON", srid=0), nullable=True),
+        sa.Column("centerline_geom", Geometry("LINESTRING", srid=0, spatial_index=False), nullable=True),
+        sa.Column("polygon_geom", Geometry("POLYGON", srid=0, spatial_index=False), nullable=True),
         sa.Column("metadata_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
@@ -165,7 +165,6 @@ def upgrade() -> None:
         sa.Column("metadata_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
-    op.create_index("idx_rooms_polygon_geom", "rooms", ["polygon_geom"], postgresql_using="gist")
 
     op.create_table(
         "walls",
@@ -182,7 +181,6 @@ def upgrade() -> None:
         sa.Column("metadata_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
-    op.create_index("idx_walls_centerline_geom", "walls", ["centerline_geom"], postgresql_using="gist")
 
     op.create_table(
         "openings",
@@ -200,7 +198,6 @@ def upgrade() -> None:
         sa.Column("metadata_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
-    op.create_index("idx_openings_polygon_geom", "openings", ["polygon_geom"], postgresql_using="gist")
 
     op.create_table(
         "objects",
@@ -245,7 +242,7 @@ def upgrade() -> None:
         "measurement_points",
         sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("session_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("measurement_sessions.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("point_geom", Geometry("POINT", srid=0), nullable=False),
+        sa.Column("point_geom", Geometry("POINT", srid=0, spatial_index=False), nullable=False),
         sa.Column("z_m", sa.Numeric(6, 3), nullable=True, server_default="1.2"),
         sa.Column("rssi_dbm", sa.Numeric(6, 2), nullable=True),
         sa.Column("sinr_db", sa.Numeric(6, 2), nullable=True),
@@ -256,7 +253,6 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
     op.create_index("idx_measurement_points_session", "measurement_points", ["session_id"])
-    op.create_index("idx_measurement_points_geom", "measurement_points", ["point_geom"], postgresql_using="gist")
 
     op.create_table(
         "rf_runs",
@@ -277,13 +273,12 @@ def upgrade() -> None:
         sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("scene_version_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("scene_versions.id", ondelete="CASCADE"), nullable=False),
         sa.Column("label", sa.String(length=80), nullable=True),
-        sa.Column("point_geom", Geometry("POINT", srid=0), nullable=False),
+        sa.Column("point_geom", Geometry("POINT", srid=0, spatial_index=False), nullable=False),
         sa.Column("z_m", sa.Numeric(6, 3), nullable=True, server_default="2.2"),
         sa.Column("score", sa.Numeric(6, 4), nullable=True),
         sa.Column("metadata_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
-    op.create_index("idx_ap_candidates_geom", "ap_candidates", ["point_geom"], postgresql_using="gist")
 
     op.create_table(
         "ap_layouts",

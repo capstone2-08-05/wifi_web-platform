@@ -12,7 +12,10 @@ MASK_DIR = DATA_DIR / "masks"
 
 
 def database_url() -> str:
-    return os.getenv("DATABASE_URL", "postgresql://appuser:apppass@localhost:5432/appdb")
+    return DATABASE_URL
+
+
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://appuser:apppass@localhost:5432/appdb")
 
 
 def ai_service_url() -> str:

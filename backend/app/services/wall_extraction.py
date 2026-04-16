@@ -346,7 +346,7 @@ class WallExtractor:
                 color = (0, 255, 0) if det.class_name == "door" else (0, 200, 255)
                 cv2.rectangle(debug, (bx1, by1), (bx2, by2), color, 2)
 
-        cv2.imwrite(str(MASK_DIR / "벽 추출.png"), debug)
+        cv2.imwrite(str(MASK_DIR / "eee.png"), debug)
 
     # ── 10. 메인 실행 ─────────────────────────────────────────────────────
     def execute_from_mask(self, mask: np.ndarray, detections: List[Any] = None) -> List[List[float]]:
