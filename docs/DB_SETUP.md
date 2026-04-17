@@ -26,23 +26,39 @@
 
 ## 3) 최초 실행
 
-```powershell
-cd docker
-docker compose up -d
-```
+Docker Desktop이 실행 중인지 확인한 뒤, `web-platform` **루트**에서:
 
 ```powershell
-cd ..\backend
+docker compose up -d
+docker compose ps
+```
+
+스키마 적용 (`web-platform/backend`):
+
+```powershell
+cd backend
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 alembic upgrade head
+alembic current
 ```
+
+Windows에서 Python이 여러 개면 Alembic이 다른 인터프리터를 쓸 수 있으므로:
+
+```powershell
+py -3.12 -m pip install -r requirements.txt
+py -3.12 -m alembic upgrade head
+py -3.12 -m alembic current
+```
+
+환경 변수는 루트 `.env`의 `DATABASE_URL`을 사용합니다 (`backend/migrations/env.py`에서 로드).
 
 ## 4) 재생성(완전 초기화) 필요 시
 
+`web-platform` 루트에서:
+
 ```powershell
-cd ..\docker
 docker compose down -v
 docker compose up -d
 ```
@@ -50,7 +66,7 @@ docker compose up -d
 그 다음 다시:
 
 ```powershell
-cd ..\backend
+cd backend
 alembic upgrade head
 ```
 

@@ -18,32 +18,84 @@
 
 ---
 
-## 2) 환경 변수 (backend)
+## 2) 환경 변수
 
-루트 `.env`:
+`web-platform` 루트의 `.env` (예시는 `.env.example`). Alembic은 `backend/migrations/env.py`에서 이 파일을 읽습니다.
 
 ```env
+POSTGRES_DB=appdb
+POSTGRES_USER=appuser
+POSTGRES_PASSWORD=apppass
+POSTGRES_PORT=5432
+
 DATABASE_URL=postgresql://appuser:apppass@localhost:5432/appdb
 BACKEND_PORT=8000
 FRONTEND_PORT=5173
 AI_SERVICE_URL=http://localhost:9000
-RF_SERVER_URL=
+RF_SERVER_URL=http://localhost:9100
 OPENAI_API_KEY=
 ```
 
 ---
 
-## 3) 서비스별 실행
+## 3) DB 세팅 (PostgreSQL + PostGIS)
 
-### A. DB (PostgreSQL + PostGIS)
+**전제:** [Docker Desktop](https://www.docker.com/products/docker-desktop/)이 설치되어 있고 **실행 중**이어야 합니다.  
+`docker_engine` 파이프 오류는 데몬이 꺼져 있을 때 납니다.
+
+### 3.1 컨테이너 기동
+
+`web-platform` 루트에서:
 
 ```powershell
-cd docker
 docker compose up -d
 docker compose ps
 ```
 
-### B. Backend
+구성 파일: 루트 `docker-compose.yml` (동일 내용: `docker/docker-compose.yml`).
+
+### 3.2 스키마 적용 (Alembic)
+
+`web-platform/backend`에서:
+
+```powershell
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+alembic upgrade head
+alembic current
+```
+
+Windows에서 Python 버전이 여러 개면 `alembic`이 다른 인터프리터를 쓸 수 있으니, 아래처럼 **같은 버전으로 고정**하는 것을 권장합니다.
+
+```powershell
+py -3.12 -m pip install -r requirements.txt
+py -3.12 -m alembic upgrade head
+py -3.12 -m alembic current
+```
+
+성공 시 `alembic current`에 `20260330_0001 (head)`가 보입니다.
+
+### 3.3 DB 완전 초기화 후 다시 올리기
+
+```powershell
+cd ..
+docker compose down -v
+docker compose up -d
+cd backend
+alembic upgrade head
+```
+
+### 3.4 GUI (DataGrip 등)
+
+호스트 `localhost`, 포트 `POSTGRES_PORT`(기본 5432), DB `appdb`, 사용자/비밀번호는 `.env`의 `POSTGRES_*`와 동일하게 맞춥니다. 스키마는 주로 `public`.
+
+---
+
+## 4) 서비스별 실행
+
+### A. Backend
 
 ```powershell
 cd backend
@@ -61,7 +113,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 - `POST /experiments/objects/yolo/{fileId}` (AI로 파일 직접 전송)
 - `POST /experiments/rf/sionna/smoke`
 
-### C. Frontend
+### B. Frontend
 
 ```powershell
 cd frontend
@@ -69,7 +121,7 @@ npm install
 npm run dev -- --host 0.0.0.0 --port 5173
 ```
 
-### D. AI 서비스 (별도 레포/서비스)
+### C. AI 서비스 (별도 레포/서비스)
 
 ```powershell
 cd ..\rf-service\service\ai-inference
@@ -91,7 +143,7 @@ YOLO_DEVICE=cuda:0
 
 ---
 
-## 4) AI API 계약 (multipart)
+## 5) AI API 계약 (multipart)
 
 AI 서버는 파일 경로가 아니라 **파일 자체**를 받습니다.
 
@@ -104,7 +156,7 @@ AI 서버는 파일 경로가 아니라 **파일 자체**를 받습니다.
 
 ---
 
-## 5) 스모크 테스트
+## 6) 스모크 테스트
 
 1. Backend health
 
@@ -126,7 +178,7 @@ powershell -ExecutionPolicy Bypass -File ..\rf-service\service\ai-inference\scri
 
 ---
 
-## 6) 참고 문서
+## 7) 참고 문서
 
 - `docs/EXPERIMENT_SETUP.md`
 - `docs/DB_SETUP.md`

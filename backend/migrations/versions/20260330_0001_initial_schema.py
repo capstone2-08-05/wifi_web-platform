@@ -165,7 +165,6 @@ def upgrade() -> None:
         sa.Column("metadata_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
-    op.create_index("idx_rooms_polygon_geom", "rooms", ["polygon_geom"], postgresql_using="gist")
 
     op.create_table(
         "walls",
@@ -182,7 +181,6 @@ def upgrade() -> None:
         sa.Column("metadata_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
-    op.create_index("idx_walls_centerline_geom", "walls", ["centerline_geom"], postgresql_using="gist")
 
     op.create_table(
         "openings",
@@ -200,7 +198,6 @@ def upgrade() -> None:
         sa.Column("metadata_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
-    op.create_index("idx_openings_polygon_geom", "openings", ["polygon_geom"], postgresql_using="gist")
 
     op.create_table(
         "objects",
@@ -256,7 +253,6 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
     op.create_index("idx_measurement_points_session", "measurement_points", ["session_id"])
-    op.create_index("idx_measurement_points_geom", "measurement_points", ["point_geom"], postgresql_using="gist")
 
     op.create_table(
         "rf_runs",
@@ -283,7 +279,6 @@ def upgrade() -> None:
         sa.Column("metadata_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
-    op.create_index("idx_ap_candidates_geom", "ap_candidates", ["point_geom"], postgresql_using="gist")
 
     op.create_table(
         "ap_layouts",
