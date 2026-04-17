@@ -87,11 +87,7 @@ cd backend
 alembic upgrade head
 ```
 
-### 3.4 데이터가 비어 있는 이유
-
-마이그레이션은 **테이블·인덱스·제약만** 만듭니다. `projects` 등 **행(row)은 앱이 저장하거나 시드를 넣기 전까지 0건**이 정상입니다.
-
-### 3.5 GUI (DataGrip 등)
+### 3.4 GUI (DataGrip 등)
 
 호스트 `localhost`, 포트 `POSTGRES_PORT`(기본 5432), DB `appdb`, 사용자/비밀번호는 `.env`의 `POSTGRES_*`와 동일하게 맞춥니다. 스키마는 주로 `public`.
 
