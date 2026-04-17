@@ -1,48 +1,61 @@
-import json
 import httpx
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
+
+from fastapi import APIRouter
+
+from app.core.errors import AppError, ErrorCode
+from app.core.settings import ai_service_url
 from app.schemas.scene import SceneSchema
 
 router = APIRouter(prefix="/rf", tags=["rf"])
 
-AI_SERVER_URL = "http://localhost:9000/internal/sionna/run"
-
-
-
 @router.post("/run")
 async def run_rf_simulation(body: SceneSchema):
+    service = ai_service_url()
+    if not service:
+        raise AppError(
+            ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
+            "AI_SERVICE_URL not set. Connect external AI repo server.",
+            503,
+        )
+
     async with httpx.AsyncClient() as client:
         all_data = body.model_dump()
-        config = all_data.pop('config')
-        antenna = all_data.pop('antenna')
-        
+        config = all_data.pop("config")
+        antenna = all_data.pop("antenna")
+
         payload = {
             "engine": "sionna_rt",
             "run_type": "run",
             "floor_id": None,
             "input": {
-                "kind": "sionna_dto",  
-                "data": {            
+                "kind": "sionna_dto",
+                "data": {
                     "config": config,
                     "antenna": antenna,
-                    "scene": all_data 
-                }
-            }
+                    "scene": all_data,
+                },
+            },
         }
-        
-        target_url = "http://localhost:9000/internal/sionna/run"
+
+        target_url = f"{service.rstrip('/')}/internal/sionna/run"
 
         try:
             response = await client.post(
                 target_url,
                 json=payload,
-                timeout=120.0
+                timeout=120.0,
             )
-            
-            if response.status_code == 422:
-                print("❌ AI 서버 검증 실패 상세:", response.json())
-                
+            response.raise_for_status()
             return response.json()
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"AI 서버 통신 에러: {str(e)}")
+        except httpx.HTTPStatusError as exc:
+            raise AppError(
+                ErrorCode.RF_SIMULATION_FAILED,
+                f"RF simulation failed with status {exc.response.status_code}: {exc.response.text}",
+                502,
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise AppError(
+                ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
+                f"AI server request failed: {exc}",
+                502,
+            ) from exc

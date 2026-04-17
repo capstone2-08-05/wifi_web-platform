@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+from enum import StrEnum
+
+from fastapi import HTTPException
+
+
+class ErrorCode(StrEnum):
+    INTERNAL_SERVER_ERROR = "INTERNAL_SERVER_ERROR"
+    INVALID_REQUEST_BODY = "INVALID_REQUEST_BODY"
+    INVALID_FILE_EXTENSION = "INVALID_FILE_EXTENSION"
+    INVALID_PROJECT_FLOOR_INPUT = "INVALID_PROJECT_FLOOR_INPUT"
+    INVALID_UUID_FORMAT = "INVALID_UUID_FORMAT"
+    FILE_SAVE_FAILED = "FILE_SAVE_FAILED"
+    UPLOADED_FILE_NOT_FOUND = "UPLOADED_FILE_NOT_FOUND"
+    INVALID_PROJECT_ID = "INVALID_PROJECT_ID"
+    INVALID_FLOOR_ID = "INVALID_FLOOR_ID"
+    INVALID_PROJECT_FLOOR_PAIR = "INVALID_PROJECT_FLOOR_PAIR"
+    ANALYSIS_FAILED = "ANALYSIS_FAILED"
+    WALL_EXTRACTION_FAILED = "WALL_EXTRACTION_FAILED"
+    EXTERNAL_SERVICE_REQUEST_FAILED = "EXTERNAL_SERVICE_REQUEST_FAILED"
+    INVALID_EXTERNAL_RESPONSE = "INVALID_EXTERNAL_RESPONSE"
+    RF_SIMULATION_FAILED = "RF_SIMULATION_FAILED"
+    DB_CONNECTION_FAILED = "DB_CONNECTION_FAILED"
+    SCENE_DRAFT_SAVE_FAILED = "SCENE_DRAFT_SAVE_FAILED"
+
+
+class AppError(Exception):
+    def __init__(self, code: ErrorCode, message: str, status_code: int):
+        self.code = code
+        self.message = message
+        self.status_code = status_code
+        super().__init__(message)
+
+
+def to_http_exception(exc: AppError) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={"code": exc.code, "message": exc.message},
+    )
