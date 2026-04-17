@@ -4,6 +4,7 @@ from uuid import UUID
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, ErrorCode
@@ -199,10 +200,13 @@ def save_scene_draft(db: Session, request_dto: SaveSceneDraftRequestDTO) -> Save
 
         db.commit()
         return SaveSceneDraftResultDTO(scene_draft_id=scene_draft.id)
-    except Exception:
+    except AppError:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
         db.rollback()
         raise AppError(
             ErrorCode.SCENE_DRAFT_SAVE_FAILED,
-            "Failed to persist scene draft and draft entities",
+            f"Failed to persist scene draft and draft entities: {exc}",
             500,
-        )
+        ) from exc

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from fastapi import HTTPException
-
 
 class ErrorCode(StrEnum):
     INTERNAL_SERVER_ERROR = "INTERNAL_SERVER_ERROR"
@@ -31,10 +29,3 @@ class AppError(Exception):
         self.message = message
         self.status_code = status_code
         super().__init__(message)
-
-
-def to_http_exception(exc: AppError) -> HTTPException:
-    return HTTPException(
-        status_code=exc.status_code,
-        detail={"code": exc.code, "message": exc.message},
-    )

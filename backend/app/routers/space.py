@@ -46,7 +46,7 @@ async def analyze_floorplan(
             500,
         ) from exc
 
-    result_scene = fusion_service.process_image_to_scene(
+    result_scene = await fusion_service.process_image_to_scene_async(
         image_bytes=content,
         filename=file.filename,
         real_width_m=real_width,

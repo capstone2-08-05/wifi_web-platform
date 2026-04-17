@@ -1,7 +1,9 @@
 import logging
-import requests
+import asyncio
 import uuid
 from typing import Any
+
+import httpx
 
 from app.core.errors import AppError, ErrorCode
 from app.core.settings import ai_service_url
@@ -12,7 +14,7 @@ class AIApiClient:
     def __init__(self):
         self.base_url = ai_service_url()
 
-    def fetch_ai_inference(self, image_bytes: bytes, filename: str) -> dict[str, Any]:
+    async def fetch_ai_inference_async(self, image_bytes: bytes, filename: str) -> dict[str, Any]:
         if not self.base_url:
             raise AppError(
                 ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
@@ -22,24 +24,28 @@ class AIApiClient:
 
         file_id = str(uuid.uuid4())
 
-        files = {"file": (filename, image_bytes)}
-        data = {"file_id": file_id}
+        async def _post_inference(client: httpx.AsyncClient, route: str) -> dict[str, Any]:
+            response = await client.post(
+                f"{self.base_url}/{route}",
+                data={"file_id": file_id},
+                files={"file": (filename, image_bytes)},
+            )
+            response.raise_for_status()
+            return response.json()
 
         try:
-            unet_url = f"{self.base_url}/inference/unet"
-            unet_res = requests.post(unet_url, files=files, data=data, timeout=300.0)
-            unet_res.raise_for_status()
-
-            yolo_url = f"{self.base_url}/inference/yolo"
-            yolo_res = requests.post(yolo_url, files=files, data=data, timeout=300.0)
-            yolo_res.raise_for_status()
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                unet_res, yolo_res = await asyncio.gather(
+                    _post_inference(client, "inference/unet"),
+                    _post_inference(client, "inference/yolo"),
+                )
 
             return {
-                "unet": unet_res.json(),
-                "yolo": yolo_res.json(),
+                "unet": unet_res,
+                "yolo": yolo_res,
             }
-        except requests.RequestException as exc:
-            logger.exception("AI inference request failed")
+        except httpx.HTTPError as exc:
+            logger.exception("Async AI inference request failed")
             raise AppError(
                 ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
                 f"AI inference request failed: {exc}",
