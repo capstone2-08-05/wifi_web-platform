@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import cv2
 import random
+from starlette.concurrency import run_in_threadpool
 
 from app.schemas.ai_response import MlOutputDTO, MetaDTO, WallSegmentationDTO, DetectionDTO
 from app.schemas.scene import SceneSchema, Wall, Opening, Room, Topology
@@ -47,14 +48,16 @@ class FusionService:
             ))
         return walls
 
-    def process_image_to_scene(self, image_bytes: bytes, filename: str, real_width_m: float) -> SceneSchema:
+    async def process_image_to_scene_async(
+        self, image_bytes: bytes, filename: str, real_width_m: float
+    ) -> SceneSchema:
         try:
-            ai_results = self.ai_client.fetch_ai_inference(image_bytes, filename)
+            ai_results = await self.ai_client.fetch_ai_inference_async(image_bytes, filename)
 
-            unet_res     = ai_results.get("unet", {})
-            yolo_res     = ai_results.get("yolo", {})
-            unet_output  = unet_res.get("output", {})
-            yolo_output  = yolo_res.get("output", {})
+            unet_res = ai_results.get("unet", {})
+            yolo_res = ai_results.get("yolo", {})
+            unet_output = unet_res.get("output", {})
+            yolo_output = yolo_res.get("output", {})
             unet_metrics = unet_res.get("metrics", {})
 
             ml_output = MlOutputDTO(
@@ -62,25 +65,24 @@ class FusionService:
                     sample_id=unet_res.get("fileId", "temp_id"),
                     image_name=filename,
                     original_width=unet_metrics.get("width", 1000),
-                    original_height=unet_metrics.get("height", 1000)
+                    original_height=unet_metrics.get("height", 1000),
                 ),
                 wall_segmentation=WallSegmentationDTO(
                     mask_path=unet_output.get("wallProbOverlayPath", ""),
-                    prob_map_path=unet_output.get("wallProbNpyPath", "")
+                    prob_map_path=unet_output.get("wallProbNpyPath", ""),
                 ),
                 detections=[
                     DetectionDTO(
                         id=f"det_{i}",
                         class_name=det.get("class_name"),
                         score=float(det.get("confidence", 0.0)),
-                        bbox_xyxy=det.get("bbox")
+                        bbox_xyxy=det.get("bbox"),
                     )
                     for i, det in enumerate(yolo_output.get("detections", []) or [])
-                ]
+                ],
             )
 
-            return self.run_wi_twin_pipeline(ml_output, real_width_m)
-
+            return await run_in_threadpool(self.run_wi_twin_pipeline, ml_output, real_width_m)
         except Exception as exc:
             logger.error(f"도면 분석 중 오류 발생: {exc}")
             raise

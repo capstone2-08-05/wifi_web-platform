@@ -2,8 +2,9 @@ from pathlib import Path
 import mimetypes
 
 import requests
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
+from app.core.errors import AppError, ErrorCode
 from app.core.settings import UPLOAD_DIR, ai_service_url, rf_server_url
 from app.services.wall_extraction import run_rule_based_wall_extraction
 
@@ -14,31 +15,36 @@ router = APIRouter(prefix="/experiments", tags=["experiments"])
 def wall_rule_based(file_id: str) -> dict:
     image_path = _find_uploaded_file(file_id)
     if image_path is None:
-        raise HTTPException(status_code=404, detail="Uploaded file not found")
+        raise AppError(ErrorCode.UPLOADED_FILE_NOT_FOUND, "Uploaded file not found.", 404)
 
     try:
         mask_path = run_rule_based_wall_extraction(image_path)
         return {
             "status": "ok",
             "fileId": file_id,
-            "walls": mask_path  
+            "walls": mask_path,
         }
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise AppError(
+            ErrorCode.WALL_EXTRACTION_FAILED,
+            f"Wall extraction failed: {exc}",
+            500,
+        ) from exc
 
 
 @router.post("/wall/unet/{file_id}")
 def wall_unet(file_id: str) -> dict:
     service = ai_service_url()
     if not service:
-        return {
-            "status": "pending",
-            "message": "AI_SERVICE_URL not set. Connect external AI repo server.",
-        }
+        raise AppError(
+            ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
+            "AI_SERVICE_URL not set. Connect external AI repo server.",
+            503,
+        )
 
     image_path = _find_uploaded_file(file_id)
     if image_path is None:
-        raise HTTPException(status_code=404, detail="Uploaded file not found")
+        raise AppError(ErrorCode.UPLOADED_FILE_NOT_FOUND, "Uploaded file not found.", 404)
 
     return _send_file_to_ai(
         f"{service.rstrip('/')}/inference/unet",
@@ -52,14 +58,15 @@ def wall_unet(file_id: str) -> dict:
 def objects_yolo(file_id: str) -> dict:
     service = ai_service_url()
     if not service:
-        return {
-            "status": "pending",
-            "message": "AI_SERVICE_URL not set. Connect external AI repo server.",
-        }
+        raise AppError(
+            ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
+            "AI_SERVICE_URL not set. Connect external AI repo server.",
+            503,
+        )
 
     image_path = _find_uploaded_file(file_id)
     if image_path is None:
-        raise HTTPException(status_code=404, detail="Uploaded file not found")
+        raise AppError(ErrorCode.UPLOADED_FILE_NOT_FOUND, "Uploaded file not found.", 404)
 
     return _send_file_to_ai(
         f"{service.rstrip('/')}/inference/yolo",
@@ -73,13 +80,22 @@ def objects_yolo(file_id: str) -> dict:
 def rf_sionna_smoke() -> dict:
     service = rf_server_url()
     if not service:
-        return {
-            "status": "pending",
-            "message": "RF_SERVER_URL not set. Connect external RF repo server.",
-        }
+        raise AppError(
+            ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
+            "RF_SERVER_URL not set. Connect external RF repo server.",
+            503,
+        )
 
-    response = requests.post(f"{service.rstrip('/')}/sionna/smoke", timeout=60)
-    return response.json()
+    try:
+        response = requests.post(f"{service.rstrip('/')}/sionna/smoke", timeout=60)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as exc:
+        raise AppError(
+            ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
+            f"RF service request failed: {exc}",
+            502,
+        ) from exc
 
 
 def _find_uploaded_file(file_id: str) -> Path | None:
@@ -102,4 +118,8 @@ def _send_file_to_ai(endpoint: str, file_id: str, image_path: Path, timeout: int
         response.raise_for_status()
         return response.json()
     except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"AI service request failed: {exc}") from exc
+        raise AppError(
+            ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
+            f"AI service request failed: {exc}",
+            502,
+        ) from exc

@@ -16,6 +16,11 @@ def database_url() -> str:
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://appuser:apppass@localhost:5432/appdb")
+DEFAULT_DRAFT_PROJECT_NAME = os.getenv("DEFAULT_DRAFT_PROJECT_NAME", "local-upload-project").strip()
+DEFAULT_DRAFT_FLOOR_NAME = os.getenv("DEFAULT_DRAFT_FLOOR_NAME", "default-floor").strip()
+DEFAULT_DRAFT_SOURCE = os.getenv("DEFAULT_DRAFT_SOURCE", "local_upload").strip()
+DEFAULT_DRAFT_SOURCE_MODE = os.getenv("DEFAULT_DRAFT_SOURCE_MODE", "floorplan_image").strip()
+DEFAULT_DRAFT_ANALYSIS_METHOD = os.getenv("DEFAULT_DRAFT_ANALYSIS_METHOD", "fusion_service").strip()
 
 
 def ai_service_url() -> str:

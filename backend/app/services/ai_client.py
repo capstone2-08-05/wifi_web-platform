@@ -1,40 +1,55 @@
-import requests
-import uuid 
-from typing import Dict, Any
-from app.schemas.ai_response import MlOutputDTO
+import logging
+import asyncio
+import uuid
+from typing import Any
+
+import httpx
+
+from app.core.errors import AppError, ErrorCode
+from app.core.settings import ai_service_url
+
+logger = logging.getLogger(__name__)
 
 class AIApiClient:
     def __init__(self):
-        self.base_url = "http://localhost:9000"
+        self.base_url = ai_service_url()
 
-    def fetch_ai_inference(self, image_bytes: bytes, filename: str) -> Dict[str, Any]:
-      
+    async def fetch_ai_inference_async(self, image_bytes: bytes, filename: str) -> dict[str, Any]:
+        if not self.base_url:
+            raise AppError(
+                ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
+                "AI_SERVICE_URL not set. Connect external AI repo server.",
+                503,
+            )
+
         file_id = str(uuid.uuid4())
-        
-        files = {"file": (filename, image_bytes)}
-        data = {"file_id": file_id}
-        
-        try:
-            unet_url = f"{self.base_url}/inference/unet"
-            unet_res = requests.post(unet_url, files=files, data=data, timeout=300.0)
-            unet_res.raise_for_status()
-            
-            yolo_url = f"{self.base_url}/inference/yolo"
-            
-           
-            yolo_res = requests.post(yolo_url, files=files, data=data, timeout=300.0)
-            yolo_res.raise_for_status()
-            
-            return {
-                "unet": unet_res.json(),
-                "yolo": yolo_res.json()
-            }
 
-        except requests.exceptions.RequestException as e:
-            print(f"❌ AI 서버 통신 오류 상세: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                print(f"상태 코드: {e.response.status_code}")
-                print(f"응답 내용: {e.response.text}")
-            raise
+        async def _post_inference(client: httpx.AsyncClient, route: str) -> dict[str, Any]:
+            response = await client.post(
+                f"{self.base_url}/{route}",
+                data={"file_id": file_id},
+                files={"file": (filename, image_bytes)},
+            )
+            response.raise_for_status()
+            return response.json()
+
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                unet_res, yolo_res = await asyncio.gather(
+                    _post_inference(client, "inference/unet"),
+                    _post_inference(client, "inference/yolo"),
+                )
+
+            return {
+                "unet": unet_res,
+                "yolo": yolo_res,
+            }
+        except httpx.HTTPError as exc:
+            logger.exception("Async AI inference request failed")
+            raise AppError(
+                ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
+                f"AI inference request failed: {exc}",
+                502,
+            ) from exc
 
 ai_client = AIApiClient()

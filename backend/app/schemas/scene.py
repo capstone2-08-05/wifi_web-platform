@@ -51,3 +51,4 @@ class SceneSchema(BaseModel):
     rooms: List[dict]
     topology: dict = {"adjacencies": [], "connectivity": []}
     objects: List[dict] = []
+    scene_draft_id: Optional[str] = None
