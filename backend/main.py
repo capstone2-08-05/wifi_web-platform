@@ -46,5 +46,4 @@ async def unhandled_exception_handler(_request: Request, _exc: Exception) -> JSO
 app.include_router(health_router)
 app.include_router(upload_router)
 app.include_router(experiments_router)
-app.include_router(space_router)
 app.include_router(rf_run_router)
