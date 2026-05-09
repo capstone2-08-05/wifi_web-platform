@@ -10,7 +10,10 @@ from app.db.base import Base
 
 class Asset(Base):
     __tablename__ = "assets"
-    __table_args__ = (Index("idx_assets_project_floor", "project_id", "floor_id"),)
+    __table_args__ = (
+        Index("idx_assets_project_floor", "project_id", "floor_id"),
+        Index("idx_assets_uploaded_by", "uploaded_by"),
+    )
 
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
@@ -27,6 +30,11 @@ class Asset(Base):
         ForeignKey("floors.id", ondelete="SET NULL"),
         nullable=True,
     )
+    uploaded_by: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     asset_type: Mapped[str] = mapped_column(String(40), nullable=False)
     storage_url: Mapped[str] = mapped_column(Text(), nullable=False)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
@@ -40,4 +48,5 @@ class Asset(Base):
 
     project = relationship("Project", back_populates="assets")
     floor = relationship("Floor", back_populates="assets")
+    uploader = relationship("User", back_populates="uploaded_assets")
     source_scene_drafts = relationship("SceneDraft", back_populates="source_asset")

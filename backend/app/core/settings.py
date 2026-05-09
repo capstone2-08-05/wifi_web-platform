@@ -36,3 +36,19 @@ MEASUREMENT_WEB_FALLBACK_BASE_URL = os.getenv(
     "MEASUREMENT_WEB_FALLBACK_BASE_URL",
     "http://localhost:5173/mobile/measure",
 ).strip()
+# ============================================
+# Auth / JWT
+# ============================================
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-secret-change-me-in-production")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+
+
+# ============================================
+# CORS
+# ============================================
+CORS_ALLOW_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:3000").split(",")
+    if origin.strip()
+]

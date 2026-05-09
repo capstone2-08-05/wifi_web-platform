@@ -1,18 +1,26 @@
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile
+from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, ErrorCode
 from app.core.settings import UPLOAD_DIR
+from app.db.session import get_db
+from app.schemas.scene_draft import (
+    SaveSceneDraftRequestDTO,
+    UploadStorageMetadataDTO,
+)
+from app.services.fusion_service import fusion_service
+from app.services.scene_draft_service import save_scene_draft
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
 ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf"}
 
 
-@router.post("/floorplan")
-async def upload_floorplan(file: UploadFile = File(...)) -> dict:
+def _validate_and_save_file(file: UploadFile, content: bytes) -> tuple[str, Path]:
+    """확장자 검증 후 파일을 디스크에 저장하고 (file_id, save_path) 반환."""
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         raise AppError(
@@ -26,15 +34,21 @@ async def upload_floorplan(file: UploadFile = File(...)) -> dict:
     save_path = UPLOAD_DIR / f"{file_id}{suffix}"
 
     try:
-        with save_path.open("wb") as f:
-            content = await file.read()
-            f.write(content)
+        save_path.write_bytes(content)
     except OSError as exc:
         raise AppError(
             ErrorCode.FILE_SAVE_FAILED,
             f"Failed to save uploaded file: {exc}",
             500,
         ) from exc
+
+    return file_id, save_path
+
+
+@router.post("/floorplan")
+async def upload_floorplan(file: UploadFile = File(...)) -> dict:
+    content = await file.read()
+    file_id, save_path = _validate_and_save_file(file, content)
 
     return {
         "status": "ok",
@@ -43,4 +57,54 @@ async def upload_floorplan(file: UploadFile = File(...)) -> dict:
         "contentType": file.content_type,
         "size": len(content),
         "savedPath": str(save_path),
+    }
+
+
+@router.post("/floorplan/analyze")
+async def upload_and_analyze_floorplan(
+    file: UploadFile = File(...),
+    real_width_m: float = Form(10.0),
+    project_id: str | None = Form(None),
+    floor_id: str | None = Form(None),
+    created_by: str | None = Form(None),
+    db: Session = Depends(get_db),
+) -> dict:
+    content = await file.read()
+    file_id, save_path = _validate_and_save_file(file, content)
+
+    try:
+        scene = await fusion_service.process_image_to_scene_async(
+            image_bytes=content,
+            filename=file.filename or f"{file_id}",
+            real_width_m=real_width_m,
+        )
+    except Exception as exc:
+        raise AppError(
+            ErrorCode.INTERNAL_SERVER_ERROR,
+            f"Floorplan analysis failed: {exc}",
+            500,
+        ) from exc
+
+    request_dto = SaveSceneDraftRequestDTO(
+        scene=scene,
+        upload=UploadStorageMetadataDTO(
+            provider="local",
+            original_filename=file.filename,
+            content_type=file.content_type,
+            size_bytes=len(content),
+            local_saved_path=str(save_path),
+        ),
+        project_id=project_id,
+        floor_id=floor_id,
+        created_by=created_by,
+    )
+
+    result = save_scene_draft(db, request_dto)
+
+    return {
+        "status": "ok",
+        "scene_draft_id": result.scene_draft_id,
+        "fileId": file_id,
+        "savedPath": str(save_path),
+        "scene": scene.model_dump(),
     }
