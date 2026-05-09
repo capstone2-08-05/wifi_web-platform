@@ -4,6 +4,7 @@ from app.routers.health import router as health_router
 from app.routers.upload import router as upload_router
 from app.routers.rf_run import router as rf_run_router
 from app.routers.auth import router as auth_router
+from app.routers.projects import router as projects_router
 from app.core.errors import AppError, ErrorCode
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -58,3 +59,4 @@ app.include_router(upload_router)
 app.include_router(experiments_router)
 app.include_router(rf_run_router)
 app.include_router(auth_router)
+app.include_router(projects_router)
