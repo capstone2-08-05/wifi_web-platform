@@ -3,9 +3,10 @@ from __future__ import annotations
 from uuid import UUID
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
+from app.schemas.pagination import PaginatedResponse
 
 from app.core.errors import AppError, ErrorCode
 from app.core.settings import (
@@ -29,6 +30,7 @@ from app.schemas.scene_draft import (
     SaveSceneDraftRequestDTO,
     SaveSceneDraftResultDTO,
     SceneDraftDetailResponse,
+    SceneDraftSummaryResponse
 )
 
 
@@ -278,4 +280,43 @@ def get_scene_draft(
         objects=scene_draft.draft_objects,
         created_at=scene_draft.created_at,
         updated_at=scene_draft.updated_at,
+    )
+
+def list_scene_drafts(
+    db: Session,
+    current_user: User,
+    page: int,
+    page_size: int,
+    project_id: str | None = None,
+    floor_id: str | None = None,
+    status: str | None = None,
+) -> PaginatedResponse[SceneDraftSummaryResponse]:
+    
+    base_query = (
+        db.query(SceneDraft)
+        .join(Project, SceneDraft.project_id == Project.id)
+        .filter(Project.owner_user_id == current_user.id)
+    )
+
+    if project_id is not None:
+        base_query = base_query.filter(SceneDraft.project_id == project_id)
+    if floor_id is not None:
+        base_query = base_query.filter(SceneDraft.floor_id == floor_id)
+    if status is not None:
+        base_query = base_query.filter(SceneDraft.status == status)
+
+    total = base_query.with_entities(func.count(SceneDraft.id)).scalar() or 0
+
+    items = (
+        base_query.order_by(SceneDraft.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    return PaginatedResponse[SceneDraftSummaryResponse](
+        items=[SceneDraftSummaryResponse.model_validate(d) for d in items],
+        page=page,
+        page_size=page_size,
+        total=total,
     )
