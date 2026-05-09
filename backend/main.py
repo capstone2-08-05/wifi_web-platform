@@ -6,6 +6,7 @@ from app.routers.rf_run import router as rf_run_router
 from app.routers.auth import router as auth_router
 from app.routers.projects import router as projects_router
 from app.routers.floors import router as floors_router
+from app.routers.scene_drafts import router as scene_drafts_router
 from app.core.errors import AppError, ErrorCode
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -62,3 +63,4 @@ app.include_router(rf_run_router)
 app.include_router(auth_router)
 app.include_router(projects_router)
 app.include_router(floors_router)
+app.include_router(scene_drafts_router)

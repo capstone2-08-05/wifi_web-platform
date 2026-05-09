@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.errors import AppError, ErrorCode
 from app.core.settings import (
@@ -23,8 +23,13 @@ from app.models import (
     Floor,
     Project,
     SceneDraft,
+    User,
 )
-from app.schemas.scene_draft import SaveSceneDraftRequestDTO, SaveSceneDraftResultDTO
+from app.schemas.scene_draft import (
+    SaveSceneDraftRequestDTO,
+    SaveSceneDraftResultDTO,
+    SceneDraftDetailResponse,
+)
 
 
 def _to_float(value: Any, default: float | None = None) -> float | None:
@@ -43,7 +48,10 @@ def _positive(value: float | None, fallback: float) -> float:
 
 
 def _resolve_project_floor(
-    db: Session, project_id: str | None, floor_id: str | None
+    db: Session,
+    project_id: str | None,
+    floor_id: str | None,
+    current_user: User,
 ) -> tuple[str, str]:
     if bool(project_id) ^ bool(floor_id):
         raise AppError(
@@ -74,19 +82,32 @@ def _resolve_project_floor(
                 "Invalid project_id/floor_id pair",
                 400,
             )
-        if db.get(Project, project_id) is None:
+        project = db.get(Project, project_id)
+        if project is None:
             raise AppError(
                 ErrorCode.INVALID_PROJECT_ID, "Invalid project_id: project not found", 400
             )
+        # 본인 소유 권한 체크
+        if project.owner_user_id != current_user.id:
+            raise AppError(
+                ErrorCode.PROJECT_NOT_FOUND,
+                "Project not found.",
+                404,
+            )
         return project_id, floor_id
 
+    # default 프로젝트: 유저별로 분리해서 찾거나 생성
     project = db.scalar(
-        select(Project).where(Project.name == DEFAULT_DRAFT_PROJECT_NAME)
+        select(Project).where(
+            Project.name == DEFAULT_DRAFT_PROJECT_NAME,
+            Project.owner_user_id == current_user.id,
+        )
     )
     if project is None:
         project = Project(
             name=DEFAULT_DRAFT_PROJECT_NAME,
             description="Auto-created project for local upload analysis flow",
+            owner_user_id=current_user.id,
         )
         db.add(project)
         db.flush()
@@ -109,9 +130,13 @@ def _resolve_project_floor(
     return project.id, floor.id
 
 
-def save_scene_draft(db: Session, request_dto: SaveSceneDraftRequestDTO) -> SaveSceneDraftResultDTO:
+def save_scene_draft(
+    db: Session,
+    request_dto: SaveSceneDraftRequestDTO,
+    current_user: User,
+) -> SaveSceneDraftResultDTO:
     resolved_project_id, resolved_floor_id = _resolve_project_floor(
-        db, request_dto.project_id, request_dto.floor_id
+        db, request_dto.project_id, request_dto.floor_id, current_user,
     )
 
     summary_json = {
@@ -129,7 +154,7 @@ def save_scene_draft(db: Session, request_dto: SaveSceneDraftRequestDTO) -> Save
         source_method=DEFAULT_DRAFT_ANALYSIS_METHOD,
         summary_json=summary_json,
         status="draft",
-        created_by=request_dto.created_by,
+        created_by=request_dto.created_by or current_user.email,
     )
 
     try:
@@ -210,3 +235,47 @@ def save_scene_draft(db: Session, request_dto: SaveSceneDraftRequestDTO) -> Save
             f"Failed to persist scene draft and draft entities: {exc}",
             500,
         ) from exc
+
+
+def get_scene_draft(
+    db: Session, scene_draft_id: str, current_user: User
+) -> SceneDraftDetailResponse:
+    scene_draft = (
+        db.query(SceneDraft)
+        .join(Project, SceneDraft.project_id == Project.id)
+        .filter(
+            SceneDraft.id == scene_draft_id,
+            Project.owner_user_id == current_user.id,
+        )
+        .options(
+            selectinload(SceneDraft.draft_rooms),
+            selectinload(SceneDraft.draft_walls),
+            selectinload(SceneDraft.draft_openings),
+            selectinload(SceneDraft.draft_objects),
+        )
+        .first()
+    )
+
+    if scene_draft is None:
+        raise AppError(
+            ErrorCode.SCENE_DRAFT_NOT_FOUND,
+            "Scene draft not found.",
+            status_code=404,
+        )
+
+    return SceneDraftDetailResponse(
+        id=scene_draft.id,
+        project_id=scene_draft.project_id,
+        floor_id=scene_draft.floor_id,
+        source_mode=scene_draft.source_mode,
+        source_asset_id=scene_draft.source_asset_id,
+        source_method=scene_draft.source_method,
+        summary_json=scene_draft.summary_json,
+        status=scene_draft.status,
+        rooms=scene_draft.draft_rooms,
+        walls=scene_draft.draft_walls,
+        openings=scene_draft.draft_openings,
+        objects=scene_draft.draft_objects,
+        created_at=scene_draft.created_at,
+        updated_at=scene_draft.updated_at,
+    )
