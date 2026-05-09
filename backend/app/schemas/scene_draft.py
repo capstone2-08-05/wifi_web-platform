@@ -111,3 +111,18 @@ class SceneDraftDetailResponse(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class SceneDraftSummaryResponse(BaseModel):
+    
+    id: str
+    project_id: str
+    floor_id: str
+    source_mode: str
+    source_asset_id: str | None
+    source_method: str | None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
