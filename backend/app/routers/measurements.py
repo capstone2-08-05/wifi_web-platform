@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.measurement_link import (
+from app.schemas.measurement import (
     MeasurementLinkContextResponseDTO,
     MeasurementLinkCreateResponseDTO,
     MeasurementPointBatchRequestDTO,
@@ -12,7 +12,7 @@ from app.schemas.measurement_link import (
     MeasurementSessionCreateRequestDTO,
     MeasurementSessionResponseDTO,
 )
-from app.services import measurement_link_service
+from app.services import measurement_service
 
 router = APIRouter(tags=["measurement"])
 
@@ -25,7 +25,7 @@ def create_measurement_link(
     floor_id: str,
     db: Session = Depends(get_db),
 ) -> MeasurementLinkCreateResponseDTO:
-    return measurement_link_service.create_measurement_link(db, floor_id)
+    return measurement_service.create_measurement_link(db, floor_id)
 
 
 @router.get(
@@ -36,7 +36,7 @@ def get_measurement_link_context(
     token: str,
     db: Session = Depends(get_db),
 ) -> MeasurementLinkContextResponseDTO:
-    return measurement_link_service.get_measurement_link_context(db, token)
+    return measurement_service.get_measurement_link_context(db, token)
 
 
 @router.post(
@@ -47,7 +47,7 @@ def create_measurement_session(
     body: MeasurementSessionCreateRequestDTO,
     db: Session = Depends(get_db),
 ) -> MeasurementSessionResponseDTO:
-    return measurement_link_service.create_measurement_session(db, body)
+    return measurement_service.create_measurement_session(db, body)
 
 
 @router.post(
@@ -59,7 +59,7 @@ def upload_measurement_points(
     body: MeasurementPointBatchRequestDTO,
     db: Session = Depends(get_db),
 ) -> MeasurementPointBatchResponseDTO:
-    return measurement_link_service.upload_measurement_points(db, session_id, body)
+    return measurement_service.upload_measurement_points(db, session_id, body)
 
 
 @router.post(
@@ -71,4 +71,4 @@ def complete_measurement_session(
     body: MeasurementSessionCompleteRequestDTO,
     db: Session = Depends(get_db),
 ) -> MeasurementSessionCompleteResponseDTO:
-    return measurement_link_service.complete_measurement_session(db, session_id, body)
+    return measurement_service.complete_measurement_session(db, session_id, body)

@@ -49,11 +49,16 @@ class MeasurementLinkContextResponseDTO(BaseModel):
     floor_id: str
     scene_version_id: str | None = None
     asset_id: str | None = None
+    expires_at: datetime
     floorplan: FloorplanInfoDTO = Field(default_factory=FloorplanInfoDTO)
     coordinate_system: CoordinateSystemDTO = Field(default_factory=CoordinateSystemDTO)
     bounds: FloorBoundsDTO = Field(default_factory=FloorBoundsDTO)
     anchor_points: list[dict[str, Any]] = Field(default_factory=list)
     existing_ap_layouts: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_serializer("expires_at")
+    def _serialize_expires_at(self, value: datetime) -> str:
+        return _utc_iso_z(value)
 
 
 class FloorPositionDTO(BaseModel):

@@ -20,7 +20,8 @@ from app.models.floor import Floor
 from app.models.measurement_link import MeasurementLink
 from app.models.measurement_point import MeasurementPoint
 from app.models.measurement_session import MeasurementSession
-from app.schemas.measurement_link import (
+from app.models.scene_version import SceneVersion
+from app.schemas.measurement import (
     CoordinateSystemDTO,
     FloorBoundsDTO,
     FloorplanInfoDTO,
@@ -34,6 +35,8 @@ from app.schemas.measurement_link import (
     MeasurementSessionResponseDTO,
     RssiRangeDTO,
 )
+
+FLOORPLAN_ASSET_TYPE = "floorplan_image"
 
 
 def _generate_token() -> str:
@@ -58,6 +61,12 @@ def _validate_uuid(value: str, field: str) -> None:
 
 
 def _ensure_link_active(link: MeasurementLink) -> None:
+    if link.revoked_at is not None or link.status != "active":
+        raise AppError(
+            ErrorCode.MEASUREMENT_LINK_EXPIRED,
+            f"Measurement link is not active (status={link.status}).",
+            410,
+        )
     expires_at = link.expires_at
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
@@ -101,14 +110,47 @@ def _load_session(db: Session, session_id: str) -> MeasurementSession:
 def _latest_floorplan_asset(db: Session, floor_id: str) -> Asset | None:
     stmt = (
         select(Asset)
-        .where(Asset.floor_id == floor_id)
+        .where(
+            Asset.floor_id == floor_id,
+            Asset.asset_type == FLOORPLAN_ASSET_TYPE,
+        )
         .order_by(Asset.created_at.desc())
         .limit(1)
     )
     return db.execute(stmt).scalar_one_or_none()
 
 
-def _floorplan_info_from_asset(asset: Asset | None) -> FloorplanInfoDTO:
+def _resolve_scene_and_asset(
+    db: Session, floor_id: str
+) -> tuple[str | None, str | None]:
+    """Pick the scene_version + asset that this measurement link should anchor to.
+
+    Preference: latest scene_version for the floor (and its source_asset_id);
+    fall back to the latest floorplan_image asset on the floor when no scene
+    version exists yet.
+    """
+    scene = db.execute(
+        select(SceneVersion)
+        .where(SceneVersion.floor_id == floor_id)
+        .order_by(SceneVersion.version_no.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+    if scene is not None:
+        asset_id = scene.source_asset_id
+        if asset_id is None:
+            fallback = _latest_floorplan_asset(db, floor_id)
+            asset_id = fallback.id if fallback else None
+        return scene.id, asset_id
+
+    fallback = _latest_floorplan_asset(db, floor_id)
+    return None, fallback.id if fallback else None
+
+
+def _floorplan_info_from_asset(db: Session, asset_id: str | None) -> FloorplanInfoDTO:
+    if asset_id is None:
+        return FloorplanInfoDTO()
+    asset = db.get(Asset, asset_id)
     if asset is None:
         return FloorplanInfoDTO()
     metadata = asset.metadata_json or {}
@@ -148,6 +190,8 @@ def create_measurement_link(
             404,
         )
 
+    scene_version_id, asset_id = _resolve_scene_and_asset(db, floor.id)
+
     token = _generate_token()
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(seconds=MEASUREMENT_LINK_TTL_SECONDS)
@@ -156,6 +200,10 @@ def create_measurement_link(
         token=token,
         project_id=floor.project_id,
         floor_id=floor.id,
+        scene_version_id=scene_version_id,
+        asset_id=asset_id,
+        purpose="rssi_measurement",
+        status="active",
         expires_at=expires_at,
     )
     db.add(link)
@@ -180,16 +228,21 @@ def get_measurement_link_context(
     link = _load_link(db, token)
     _ensure_link_active(link)
 
-    asset = _latest_floorplan_asset(db, link.floor_id)
-    floorplan = _floorplan_info_from_asset(asset)
+    if link.used_at is None:
+        link.used_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(link)
+
+    floorplan = _floorplan_info_from_asset(db, link.asset_id)
     bounds = _bounds_from_floorplan(floorplan)
 
     return MeasurementLinkContextResponseDTO(
         token=link.token,
         project_id=link.project_id,
         floor_id=link.floor_id,
-        scene_version_id=None,
-        asset_id=asset.id if asset else None,
+        scene_version_id=link.scene_version_id,
+        asset_id=link.asset_id,
+        expires_at=link.expires_at,
         floorplan=floorplan,
         coordinate_system=CoordinateSystemDTO(),
         bounds=bounds,
@@ -216,14 +269,12 @@ def create_measurement_session(
     db.commit()
     db.refresh(session_row)
 
-    asset = _latest_floorplan_asset(db, link.floor_id)
-
     return MeasurementSessionResponseDTO(
         id=session_row.id,
         project_id=session_row.project_id,
         floor_id=session_row.floor_id,
-        scene_version_id=None,
-        asset_id=asset.id if asset else None,
+        scene_version_id=link.scene_version_id,
+        asset_id=link.asset_id,
         measurement_type=session_row.measurement_type,
         status=session_row.status,
         created_at=session_row.created_at,

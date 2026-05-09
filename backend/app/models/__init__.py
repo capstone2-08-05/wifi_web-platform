@@ -9,6 +9,7 @@ from app.models.measurement_point import MeasurementPoint
 from app.models.measurement_session import MeasurementSession
 from app.models.project import Project
 from app.models.scene_draft import SceneDraft
+from app.models.scene_version import SceneVersion
 from app.models.user import User
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "Floor",
     "Asset",
     "SceneDraft",
+    "SceneVersion",
     "DraftRoom",
     "DraftWall",
     "DraftOpening",

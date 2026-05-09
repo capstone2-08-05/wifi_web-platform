@@ -1,8 +1,8 @@
 """measurement api: links + extend sessions/points
 
-Revision ID: 20260509_0002
-Revises: 20260330_0001
-Create Date: 2026-05-09 00:00:00
+Revision ID: 20260509_0003
+Revises: 20260509_0002
+Create Date: 2026-05-09 16:00:00
 """
 
 from typing import Sequence, Union
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision: str = "20260509_0002"
-down_revision: Union[str, Sequence[str], None] = "20260330_0001"
+revision: str = "20260509_0003"
+down_revision: Union[str, Sequence[str], None] = "20260509_0002"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -40,7 +40,33 @@ def upgrade() -> None:
             sa.ForeignKey("floors.id", ondelete="CASCADE"),
             nullable=False,
         ),
+        sa.Column(
+            "scene_version_id",
+            postgresql.UUID(as_uuid=False),
+            sa.ForeignKey("scene_versions.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        sa.Column(
+            "asset_id",
+            postgresql.UUID(as_uuid=False),
+            sa.ForeignKey("assets.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        sa.Column(
+            "purpose",
+            sa.String(length=40),
+            nullable=False,
+            server_default="rssi_measurement",
+        ),
+        sa.Column(
+            "status",
+            sa.String(length=20),
+            nullable=False,
+            server_default="active",
+        ),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -74,6 +100,11 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text("'{}'::jsonb"),
         ),
+    )
+    op.alter_column(
+        "measurement_sessions",
+        "measurement_type",
+        server_default="rssi",
     )
 
     op.add_column(
@@ -138,6 +169,11 @@ def downgrade() -> None:
     ]:
         op.drop_column("measurement_points", col)
 
+    op.alter_column(
+        "measurement_sessions",
+        "measurement_type",
+        server_default="smartphone_app",
+    )
     for col in ["calibration_json", "completed_at", "status"]:
         op.drop_column("measurement_sessions", col)
 
