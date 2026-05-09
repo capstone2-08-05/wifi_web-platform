@@ -75,9 +75,22 @@ py -3.12 -m alembic upgrade head
 py -3.12 -m alembic current
 ```
 
-성공 시 `alembic current`에 `20260330_0001 (head)`가 보입니다.
+성공 시 `alembic current`에 최신 리비전이 `(head)`로 표시됩니다 (현재 head: `20260509_0002`).
 
-### 3.3 DB 완전 초기화 후 다시 올리기
+### 3.3 마이그레이션이 추가된 브랜치를 받았을 때
+
+`migrations/versions/`에 새 파일이 생긴 PR을 pull 받았으면 컨테이너를 다시 만들 필요 없이 마이그레이션만 다시 올리면 됩니다.
+
+```powershell
+cd backend
+.venv\Scripts\activate
+alembic upgrade head
+alembic current
+```
+
+올리지 않으면 새 컬럼/테이블을 쓰는 API에서 `column ... does not exist` 같은 런타임 에러가 납니다. 적용했는지 확신이 없으면 `alembic current`로 head 일치 여부를 확인하세요.
+
+### 3.4 DB 완전 초기화 후 다시 올리기
 
 ```powershell
 cd ..
@@ -87,7 +100,7 @@ cd backend
 alembic upgrade head
 ```
 
-### 3.4 GUI (DataGrip 등)
+### 3.5 GUI (DataGrip 등)
 
 호스트 `localhost`, 포트 `POSTGRES_PORT`(기본 5432), DB `appdb`, 사용자/비밀번호는 `.env`의 `POSTGRES_*`와 동일하게 맞춥니다. 스키마는 주로 `public`.
 
@@ -112,6 +125,11 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 - `POST /experiments/wall/unet/{fileId}` (AI로 파일 직접 전송)
 - `POST /experiments/objects/yolo/{fileId}` (AI로 파일 직접 전송)
 - `POST /experiments/rf/sionna/smoke`
+- `POST /floors/{floor_id}/measurement-links` (모바일 측정용 QR 토큰 발급)
+- `GET  /measurement-links/{token}/context`
+- `POST /measurement-sessions`
+- `POST /measurement-sessions/{session_id}/points`
+- `POST /measurement-sessions/{session_id}/complete`
 
 ### B. Frontend
 
