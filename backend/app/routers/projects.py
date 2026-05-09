@@ -1,5 +1,5 @@
 """
-Project 라우터: /projects CRUD
+Project 라우터
 """
 from __future__ import annotations
 
