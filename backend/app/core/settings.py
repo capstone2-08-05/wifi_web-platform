@@ -27,8 +27,15 @@ def ai_service_url() -> str:
     return os.getenv("AI_SERVICE_URL", "http://localhost:9000").strip()
 
 def rf_server_url() -> str:
-    return os.getenv("RF_SERVER_URL", "http://localhost:9100").strip()
+    return os.getenv("RF_SERVER_URL", "http://localhost:9000").strip()
 
+
+MEASUREMENT_LINK_TTL_SECONDS = int(os.getenv("MEASUREMENT_LINK_TTL_SECONDS", "600"))
+MEASUREMENT_DEEP_LINK_SCHEME = os.getenv("MEASUREMENT_DEEP_LINK_SCHEME", "wifispace://measure").strip()
+MEASUREMENT_WEB_FALLBACK_BASE_URL = os.getenv(
+    "MEASUREMENT_WEB_FALLBACK_BASE_URL",
+    "http://localhost:5173/mobile/measure",
+).strip()
 # ============================================
 # Auth / JWT
 # ============================================
