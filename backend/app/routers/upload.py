@@ -1,4 +1,6 @@
 import uuid
+from app.api.deps import get_current_user
+from app.models.user import User
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
@@ -20,7 +22,6 @@ ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf"}
 
 
 def _validate_and_save_file(file: UploadFile, content: bytes) -> tuple[str, Path]:
-    """확장자 검증 후 파일을 디스크에 저장하고 (file_id, save_path) 반환."""
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         raise AppError(
@@ -68,6 +69,7 @@ async def upload_and_analyze_floorplan(
     floor_id: str | None = Form(None),
     created_by: str | None = Form(None),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     content = await file.read()
     file_id, save_path = _validate_and_save_file(file, content)
@@ -99,7 +101,7 @@ async def upload_and_analyze_floorplan(
         created_by=created_by,
     )
 
-    result = save_scene_draft(db, request_dto)
+    result = save_scene_draft(db, request_dto, current_user)
 
     return {
         "status": "ok",
