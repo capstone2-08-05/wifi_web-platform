@@ -6,8 +6,10 @@ from app.models.draft_wall import DraftWall
 from app.models.floor import Floor
 from app.models.project import Project
 from app.models.scene_draft import SceneDraft
+from app.models.user import User
 
 __all__ = [
+    "User",
     "Project",
     "Floor",
     "Asset",
