@@ -28,6 +28,11 @@ from app.routers.walls import router as walls_router
 from app.routers.openings import router as openings_router
 from app.routers.objects import router as objects_router
 from app.routers.patch_logs import router as patch_logs_router
+from app.routers.materials import router as materials_router
+from app.routers.material_hypotheses import (
+    wall_hypotheses_router,
+    hypotheses_router,
+)
 
 
 app = FastAPI(title="capstone2-backend", version="0.1.0")
@@ -100,3 +105,6 @@ app.include_router(walls_router)
 app.include_router(openings_router)
 app.include_router(objects_router)
 app.include_router(patch_logs_router)
+app.include_router(materials_router)
+app.include_router(wall_hypotheses_router)
+app.include_router(hypotheses_router)
