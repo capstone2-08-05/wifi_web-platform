@@ -13,6 +13,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.settings import CORS_ALLOW_ORIGINS
+from app.routers.assets import floor_assets_router, assets_router
+
 
 app = FastAPI(title="capstone2-backend", version="0.1.0")
 
@@ -66,3 +68,5 @@ app.include_router(auth_router)
 app.include_router(projects_router)
 app.include_router(floors_router)
 app.include_router(scene_drafts_router)
+app.include_router(floor_assets_router)
+app.include_router(assets_router)
