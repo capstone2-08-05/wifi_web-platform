@@ -23,6 +23,11 @@ from app.routers.scene_versions import (
     scene_versions_router,
     floor_scene_versions_router,
 )
+from app.routers.rooms import router as rooms_router
+from app.routers.walls import router as walls_router
+from app.routers.openings import router as openings_router
+from app.routers.objects import router as objects_router
+from app.routers.patch_logs import router as patch_logs_router
 
 
 app = FastAPI(title="capstone2-backend", version="0.1.0")
@@ -90,3 +95,8 @@ app.include_router(draft_objects_router)
 app.include_router(promote_router)
 app.include_router(scene_versions_router)
 app.include_router(floor_scene_versions_router)
+app.include_router(rooms_router)
+app.include_router(walls_router)
+app.include_router(openings_router)
+app.include_router(objects_router)
+app.include_router(patch_logs_router)

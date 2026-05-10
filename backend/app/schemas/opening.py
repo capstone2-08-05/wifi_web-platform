@@ -6,7 +6,22 @@ from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class OpeningUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    wall_id: Optional[UUID] = None
+    opening_type: Optional[str] = None
+    width_m: Optional[Decimal] = None
+    height_m: Optional[Decimal] = None
+    sill_height_m: Optional[Decimal] = None
+    confidence: Optional[Decimal] = None
+    source_method: Optional[str] = None
+    line_geom: Optional[dict[str, Any]] = None
+    polygon_geom: Optional[dict[str, Any]] = None
+    metadata_json: Optional[dict[str, Any]] = None
 
 
 class OpeningResponse(BaseModel):

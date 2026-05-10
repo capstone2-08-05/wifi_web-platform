@@ -6,7 +6,21 @@ from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class WallUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    wall_role: Optional[str] = None
+    thickness_m: Optional[Decimal] = None
+    height_m: Optional[Decimal] = None
+    material_label: Optional[str] = None
+    confidence: Optional[Decimal] = None
+    source_method: Optional[str] = None
+    centerline_geom: Optional[dict[str, Any]] = None
+    polygon_geom: Optional[dict[str, Any]] = None
+    metadata_json: Optional[dict[str, Any]] = None
 
 
 class WallResponse(BaseModel):

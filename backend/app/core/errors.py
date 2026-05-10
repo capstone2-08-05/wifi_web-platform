@@ -50,6 +50,11 @@ class ErrorCode(StrEnum):
     DRAFT_ALREADY_PROMOTED = "DRAFT_ALREADY_PROMOTED"
     SCENE_VERSION_CONFLICT = "SCENE_VERSION_CONFLICT"
 
+    ROOM_NOT_FOUND = "ROOM_NOT_FOUND"
+    WALL_NOT_FOUND = "WALL_NOT_FOUND"
+    OPENING_NOT_FOUND = "OPENING_NOT_FOUND"
+    OBJECT_NOT_FOUND = "OBJECT_NOT_FOUND"
+
 
 class AppError(Exception):
     def __init__(self, code: ErrorCode, message: str, status_code: int):
