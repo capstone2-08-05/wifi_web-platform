@@ -46,6 +46,10 @@ class ErrorCode(StrEnum):
     DRAFT_OBJECT_NOT_FOUND = "DRAFT_OBJECT_NOT_FOUND"
     INVALID_GEOMETRY = "INVALID_GEOMETRY"
 
+    SCENE_VERSION_NOT_FOUND = "SCENE_VERSION_NOT_FOUND"
+    DRAFT_ALREADY_PROMOTED = "DRAFT_ALREADY_PROMOTED"
+    SCENE_VERSION_CONFLICT = "SCENE_VERSION_CONFLICT"
+
 
 class AppError(Exception):
     def __init__(self, code: ErrorCode, message: str, status_code: int):

@@ -13,7 +13,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
@@ -69,4 +69,29 @@ class SceneVersion(Base):
     created_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+    rooms = relationship(
+        "Room",
+        back_populates="scene_version",
+        cascade="all, delete",
+        passive_deletes=True,
+    )
+    walls = relationship(
+        "Wall",
+        back_populates="scene_version",
+        cascade="all, delete",
+        passive_deletes=True,
+    )
+    openings = relationship(
+        "Opening",
+        back_populates="scene_version",
+        cascade="all, delete",
+        passive_deletes=True,
+    )
+    objects = relationship(
+        "SceneObject",
+        back_populates="scene_version",
+        cascade="all, delete",
+        passive_deletes=True,
     )
