@@ -6,7 +6,19 @@ from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class RoomUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    room_name: Optional[str] = None
+    room_type: Optional[str] = None
+    confidence: Optional[Decimal] = None
+    source_method: Optional[str] = None
+    polygon_geom: Optional[dict[str, Any]] = None
+    centroid_geom: Optional[dict[str, Any]] = None
+    metadata_json: Optional[dict[str, Any]] = None
 
 
 class RoomResponse(BaseModel):

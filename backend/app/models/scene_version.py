@@ -95,3 +95,9 @@ class SceneVersion(Base):
         cascade="all, delete",
         passive_deletes=True,
     )
+    patch_logs = relationship(
+        "PatchLog",
+        back_populates="scene_version",
+        cascade="all, delete",
+        passive_deletes=True,
+    )

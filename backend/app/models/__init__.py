@@ -9,6 +9,7 @@ from app.models.measurement_point import MeasurementPoint
 from app.models.measurement_session import MeasurementSession
 from app.models.object import SceneObject
 from app.models.opening import Opening
+from app.models.patch_log import PatchLog
 from app.models.project import Project
 from app.models.room import Room
 from app.models.scene_draft import SceneDraft
@@ -31,6 +32,7 @@ __all__ = [
     "Wall",
     "Opening",
     "SceneObject",
+    "PatchLog",
     "MeasurementLink",
     "MeasurementSession",
     "MeasurementPoint",
