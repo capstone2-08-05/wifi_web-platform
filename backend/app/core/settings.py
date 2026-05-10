@@ -9,6 +9,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT_DIR / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 MASK_DIR = DATA_DIR / "masks"
+ASSETS_DIR = Path(os.getenv("ASSETS_DIR", str(DATA_DIR / "assets")))
 
 
 def database_url() -> str:

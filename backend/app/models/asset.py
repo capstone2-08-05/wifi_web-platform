@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -35,8 +35,11 @@ class Asset(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
-    asset_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    asset_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_format: Mapped[str | None] = mapped_column(String(50), nullable=True)
     storage_url: Mapped[str] = mapped_column(Text(), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    file_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
         JSONB,
         nullable=False,
