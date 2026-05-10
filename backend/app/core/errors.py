@@ -55,6 +55,10 @@ class ErrorCode(StrEnum):
     OPENING_NOT_FOUND = "OPENING_NOT_FOUND"
     OBJECT_NOT_FOUND = "OBJECT_NOT_FOUND"
 
+    MATERIAL_NOT_FOUND = "MATERIAL_NOT_FOUND"
+    MATERIAL_RF_PROFILE_NOT_FOUND = "MATERIAL_RF_PROFILE_NOT_FOUND"
+    MATERIAL_HYPOTHESIS_NOT_FOUND = "MATERIAL_HYPOTHESIS_NOT_FOUND"
+
 
 class AppError(Exception):
     def __init__(self, code: ErrorCode, message: str, status_code: int):
