@@ -59,6 +59,9 @@ class ErrorCode(StrEnum):
     MATERIAL_RF_PROFILE_NOT_FOUND = "MATERIAL_RF_PROFILE_NOT_FOUND"
     MATERIAL_HYPOTHESIS_NOT_FOUND = "MATERIAL_HYPOTHESIS_NOT_FOUND"
 
+    RF_RUN_NOT_FOUND = "RF_RUN_NOT_FOUND"
+    JOB_NOT_FOUND = "JOB_NOT_FOUND"
+
 
 class AppError(Exception):
     def __init__(self, code: ErrorCode, message: str, status_code: int):
