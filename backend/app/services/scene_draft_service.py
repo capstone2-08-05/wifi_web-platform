@@ -282,6 +282,38 @@ def get_scene_draft(
         updated_at=scene_draft.updated_at,
     )
 
+def delete_scene_draft(
+    db: Session, scene_draft_id: str, current_user: User
+) -> None:
+    scene_draft = (
+        db.query(SceneDraft)
+        .join(Project, SceneDraft.project_id == Project.id)
+        .filter(
+            SceneDraft.id == scene_draft_id,
+            Project.owner_user_id == current_user.id,
+        )
+        .first()
+    )
+
+    if scene_draft is None:
+        raise AppError(
+            ErrorCode.SCENE_DRAFT_NOT_FOUND,
+            "Scene draft not found.",
+            status_code=404,
+        )
+
+    try:
+        db.delete(scene_draft)
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise AppError(
+            ErrorCode.SCENE_DRAFT_SAVE_FAILED,
+            f"Failed to delete scene draft: {exc}",
+            500,
+        ) from exc
+
+
 def list_scene_drafts(
     db: Session,
     current_user: User,

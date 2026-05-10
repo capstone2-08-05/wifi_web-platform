@@ -53,7 +53,27 @@ class SceneDraft(Base):
     project = relationship("Project", back_populates="scene_drafts")
     floor = relationship("Floor", back_populates="scene_drafts")
     source_asset = relationship("Asset", back_populates="source_scene_drafts")
-    draft_rooms = relationship("DraftRoom", back_populates="scene_draft")
-    draft_walls = relationship("DraftWall", back_populates="scene_draft")
-    draft_openings = relationship("DraftOpening", back_populates="scene_draft")
-    draft_objects = relationship("DraftObject", back_populates="scene_draft")
+    draft_rooms = relationship(
+        "DraftRoom",
+        back_populates="scene_draft",
+        cascade="all, delete",
+        passive_deletes=True,
+    )
+    draft_walls = relationship(
+        "DraftWall",
+        back_populates="scene_draft",
+        cascade="all, delete",
+        passive_deletes=True,
+    )
+    draft_openings = relationship(
+        "DraftOpening",
+        back_populates="scene_draft",
+        cascade="all, delete",
+        passive_deletes=True,
+    )
+    draft_objects = relationship(
+        "DraftObject",
+        back_populates="scene_draft",
+        cascade="all, delete",
+        passive_deletes=True,
+    )

@@ -14,6 +14,10 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.settings import CORS_ALLOW_ORIGINS
 from app.routers.assets import floor_assets_router, assets_router
+from app.routers.draft_rooms import scene_draft_rooms_router, draft_rooms_router
+from app.routers.draft_walls import scene_draft_walls_router, draft_walls_router
+from app.routers.draft_openings import scene_draft_openings_router, draft_openings_router
+from app.routers.draft_objects import scene_draft_objects_router, draft_objects_router
 
 
 app = FastAPI(title="capstone2-backend", version="0.1.0")
@@ -70,3 +74,11 @@ app.include_router(floors_router)
 app.include_router(scene_drafts_router)
 app.include_router(floor_assets_router)
 app.include_router(assets_router)
+app.include_router(scene_draft_rooms_router)
+app.include_router(draft_rooms_router)
+app.include_router(scene_draft_walls_router)
+app.include_router(draft_walls_router)
+app.include_router(scene_draft_openings_router)
+app.include_router(draft_openings_router)
+app.include_router(scene_draft_objects_router)
+app.include_router(draft_objects_router)
