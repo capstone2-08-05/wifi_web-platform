@@ -3,7 +3,7 @@ Scene Draft 라우터
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -51,3 +51,17 @@ def get_scene_draft(
     current_user: User = Depends(get_current_user),
 ) -> SceneDraftDetailResponse:
     return scene_draft_service.get_scene_draft(db, scene_draft_id, current_user)
+
+
+@router.delete(
+    "/{scene_draft_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Scene Draft 삭제 (자식 cascade)",
+)
+def delete_scene_draft(
+    scene_draft_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    scene_draft_service.delete_scene_draft(db, scene_draft_id, current_user)
+    return None
