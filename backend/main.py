@@ -18,6 +18,11 @@ from app.routers.draft_rooms import scene_draft_rooms_router, draft_rooms_router
 from app.routers.draft_walls import scene_draft_walls_router, draft_walls_router
 from app.routers.draft_openings import scene_draft_openings_router, draft_openings_router
 from app.routers.draft_objects import scene_draft_objects_router, draft_objects_router
+from app.routers.scene_versions import (
+    promote_router,
+    scene_versions_router,
+    floor_scene_versions_router,
+)
 
 
 app = FastAPI(title="capstone2-backend", version="0.1.0")
@@ -82,3 +87,6 @@ app.include_router(scene_draft_openings_router)
 app.include_router(draft_openings_router)
 app.include_router(scene_draft_objects_router)
 app.include_router(draft_objects_router)
+app.include_router(promote_router)
+app.include_router(scene_versions_router)
+app.include_router(floor_scene_versions_router)
