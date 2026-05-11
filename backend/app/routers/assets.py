@@ -13,7 +13,11 @@ from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.asset import AssetResponse
-from app.services import asset_service
+from app.schemas.scene_draft import (
+    AnalyzeFromAssetRequest,
+    AnalyzeFromAssetResponse,
+)
+from app.services import asset_service, scene_draft_service
 
 
 
@@ -88,3 +92,22 @@ def delete_asset(
 ) -> None:
     asset_service.delete_asset(db=db, asset_id=asset_id, user=current_user)
     return None
+
+
+@assets_router.post(
+    "/{asset_id}/analyze",
+    response_model=AnalyzeFromAssetResponse,
+    summary="Asset 도면 분석 → Scene Draft 생성 (source_asset_id 채워짐)",
+)
+async def analyze_asset(
+    payload: AnalyzeFromAssetRequest,
+    asset_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> AnalyzeFromAssetResponse:
+    return await scene_draft_service.analyze_from_asset(
+        db=db,
+        asset_id=asset_id,
+        real_width_m=payload.real_width_m,
+        current_user=current_user,
+    )
