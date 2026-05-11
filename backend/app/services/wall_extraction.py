@@ -205,6 +205,21 @@ class WallExtractor:
 
     # ── 6. 짧은 선분 제거 ─────────────────────────────────────────────────
 
+    def _filter_border(self, lines: List, img_shape: Tuple, margin_ratio: float = 0.01) -> List:
+        """이미지 가장자리에 붙은 라인(캔버스 경계 잡힌 것) 제거."""
+        h, w = img_shape[:2]
+        margin = max(5, int(min(h, w) * margin_ratio))
+        result = []
+        for x1, y1, x2, y2 in lines:
+            on_left = x1 < margin and x2 < margin
+            on_right = x1 > w - margin and x2 > w - margin
+            on_top = y1 < margin and y2 < margin
+            on_bottom = y1 > h - margin and y2 > h - margin
+            if on_left or on_right or on_top or on_bottom:
+                continue
+            result.append([x1, y1, x2, y2])
+        return result
+
     def _filter_short(self, lines: List, img_shape: Tuple) -> List:
         h, w = img_shape[:2]
         if not lines:
@@ -431,8 +446,8 @@ class WallExtractor:
         snapped   = self._snap_endpoints(snapped, tol=20.0)
         filtered  = self._filter_short(snapped, skeleton.shape)
         
-        # 3. 신뢰도 필터
-        filtered  = self._filter_by_confidence(filtered, prob, min_conf=0.6)
+        # 3. 신뢰도 필터 (완화: 0.6 → 0.4. mask 자체가 이미 prob>thr 로 1차 필터된 상태)
+        filtered  = self._filter_by_confidence(filtered, prob, min_conf=0.4)
 
         filled = self._fill_opening_gaps(filtered, detections or [])
         filled = self._merge_lines(filled, pos_thresh=int(wall_thickness * 3.0))
@@ -448,6 +463,21 @@ class WallExtractor:
                     float((p1 - v * 10)[0]), float((p1 - v * 10)[1]),
                     float((p2 + v * 10)[0]), float((p2 + v * 10)[1]),
                 ])
+
+        # 끊긴 끝점 → 가장 가까운 직각 벽으로 연장
+        result = self._snap_intersections(result, tol=40.0)
+        result = self._snap_endpoints(result, tol=35.0)
+        # dangling extend 전에 H/V 강제 정렬 + 비축 라인 제거 (대각선 부작용 차단)
+        result = self._snap_to_hv(result)
+        result = self._filter_hv(result, angle_thresh=5.0)
+        result = self._extend_dangling_endpoints(result, max_extend=200.0, snap_tol=15.0)
+        result = self._snap_intersections(result, tol=20.0)
+
+        # 잔여 중복 라인 합치기 (1~2픽셀 차이로 안 합쳐진 것들) + 길이 0 제거
+        result = self._merge_lines(result, pos_thresh=10)
+        result = [l for l in result if (l[2] - l[0]) ** 2 + (l[3] - l[1]) ** 2 >= 1.0]
+        # 이미지 가장자리에 잡힌 캔버스 경계 라인 제거
+        result = self._filter_border(result, skeleton.shape, margin_ratio=0.01)
 
         self._save_debug(skeleton, result, detections or [])
         return result
