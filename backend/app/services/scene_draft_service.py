@@ -27,10 +27,12 @@ from app.models import (
     User,
 )
 from app.schemas.scene_draft import (
+    AnalyzeFromAssetResponse,
     SaveSceneDraftRequestDTO,
     SaveSceneDraftResultDTO,
     SceneDraftDetailResponse,
-    SceneDraftSummaryResponse
+    SceneDraftSummaryResponse,
+    UploadStorageMetadataDTO,
 )
 
 
@@ -136,6 +138,7 @@ def save_scene_draft(
     db: Session,
     request_dto: SaveSceneDraftRequestDTO,
     current_user: User,
+    source_asset_id: str | None = None,
 ) -> SaveSceneDraftResultDTO:
     resolved_project_id, resolved_floor_id = _resolve_project_floor(
         db, request_dto.project_id, request_dto.floor_id, current_user,
@@ -152,7 +155,7 @@ def save_scene_draft(
         project_id=resolved_project_id,
         floor_id=resolved_floor_id,
         source_mode=DEFAULT_DRAFT_SOURCE_MODE,
-        source_asset_id=None,
+        source_asset_id=source_asset_id,
         source_method=DEFAULT_DRAFT_ANALYSIS_METHOD,
         summary_json=summary_json,
         status="draft",
@@ -237,6 +240,80 @@ def save_scene_draft(
             f"Failed to persist scene draft and draft entities: {exc}",
             500,
         ) from exc
+
+
+async def analyze_from_asset(
+    db: Session,
+    asset_id: UUID,
+    real_width_m: float,
+    current_user: User,
+) -> AnalyzeFromAssetResponse:
+    """이미 등록된 Asset 도면을 분석해서 Scene Draft 생성."""
+    from pathlib import Path
+
+    from app.services.asset_service import _get_owned_asset_or_404
+    from app.services.fusion_service import fusion_service
+
+    asset, _floor, _project = _get_owned_asset_or_404(db, asset_id, current_user)
+
+    storage_path = Path(asset.storage_url)
+    if not storage_path.exists():
+        raise AppError(
+            ErrorCode.UPLOADED_FILE_NOT_FOUND,
+            f"Asset file not found on storage: {asset.storage_url}",
+            status_code=500,
+        )
+
+    try:
+        content = storage_path.read_bytes()
+    except OSError as exc:
+        raise AppError(
+            ErrorCode.FILE_SAVE_FAILED,
+            f"Failed to read asset file: {exc}",
+            status_code=500,
+        ) from exc
+
+    filename = storage_path.name
+
+    try:
+        scene = await fusion_service.process_image_to_scene_async(
+            image_bytes=content,
+            filename=filename,
+            real_width_m=real_width_m,
+        )
+    except AppError:
+        raise
+    except Exception as exc:
+        raise AppError(
+            ErrorCode.INTERNAL_SERVER_ERROR,
+            f"Floorplan analysis failed: {exc}",
+            status_code=500,
+        ) from exc
+
+    request_dto = SaveSceneDraftRequestDTO(
+        scene=scene,
+        upload=UploadStorageMetadataDTO(
+            provider="local",
+            original_filename=filename,
+            content_type=asset.mime_type,
+            size_bytes=asset.file_size_bytes,
+            local_saved_path=str(storage_path),
+        ),
+        project_id=asset.project_id,
+        floor_id=asset.floor_id,
+        created_by=current_user.email,
+    )
+
+    result = save_scene_draft(
+        db, request_dto, current_user, source_asset_id=asset.id
+    )
+
+    return AnalyzeFromAssetResponse(
+        status="ok",
+        scene_draft_id=result.scene_draft_id,
+        asset_id=asset.id,
+        scene=scene,
+    )
 
 
 def get_scene_draft(

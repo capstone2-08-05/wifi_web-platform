@@ -33,6 +33,19 @@ class SaveSceneDraftRequestDTO(BaseModel):
 class SaveSceneDraftResultDTO(BaseModel):
     scene_draft_id: str
 
+
+class AnalyzeFromAssetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    real_width_m: float = 10.0
+
+
+class AnalyzeFromAssetResponse(BaseModel):
+    status: str
+    scene_draft_id: str
+    asset_id: str
+    scene: SceneSchema
+
 # ============================================
 # 단건 조회 응답 (GET /scene-drafts/{id})
 # ============================================
