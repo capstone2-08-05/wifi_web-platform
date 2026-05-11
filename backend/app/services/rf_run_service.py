@@ -1,6 +1,7 @@
-"""RF Run 큐 등록 + 조회"""
+"""RF Run 큐 등록 + 조회 + 결과 저장"""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import select
@@ -13,8 +14,16 @@ from app.models.rf_map import RfMap
 from app.models.rf_run import RfRun
 from app.models.scene_version import SceneVersion
 from app.models.user import User
-from app.schemas.rf_map import RfMapResponse
-from app.schemas.rf_run import RfRunCreate, RfRunCreatedResponse, RfRunResponse
+from app.schemas.rf_map import RfMapCreate, RfMapResponse
+from app.schemas.rf_run import (
+    RfRunCreate,
+    RfRunCreatedResponse,
+    RfRunResponse,
+    RfRunUpdate,
+)
+
+
+ALLOWED_RF_RUN_STATUS = {"queued", "running", "completed", "failed"}
 
 
 def _get_owned_scene_version(
@@ -131,3 +140,91 @@ def list_maps(
         .all()
     )
     return [RfMapResponse.model_validate(m, from_attributes=True) for m in rows]
+
+
+# ---------------------------------------------------------------------------
+# 시스템 호출 (AI 서버 → 백엔드)
+# ---------------------------------------------------------------------------
+def _get_rf_run_or_404(db: Session, rf_run_id: UUID) -> RfRun:
+    rr = db.execute(
+        select(RfRun).where(RfRun.id == str(rf_run_id))
+    ).scalar_one_or_none()
+    if rr is None:
+        raise AppError(
+            ErrorCode.RF_RUN_NOT_FOUND,
+            "RF run not found.",
+            status_code=404,
+        )
+    return rr
+
+
+def _find_associated_job(db: Session, rf_run_id: str) -> Job | None:
+    """input_json.rf_run_id 로 연관된 jobs row 1건 찾음."""
+    return db.execute(
+        select(Job).where(
+            Job.job_type == "rf_run",
+            Job.input_json["rf_run_id"].astext == rf_run_id,
+        )
+    ).scalar_one_or_none()
+
+
+def update_rf_run(
+    db: Session, rf_run_id: UUID, payload: RfRunUpdate
+) -> RfRunResponse:
+    rr = _get_rf_run_or_404(db, rf_run_id)
+    data = payload.model_dump(exclude_unset=True)
+
+    new_status = data.get("status")
+    if new_status is not None and new_status not in ALLOWED_RF_RUN_STATUS:
+        raise AppError(
+            ErrorCode.INVALID_RF_RUN_STATUS,
+            f"Invalid status: {new_status}. Allowed: {sorted(ALLOWED_RF_RUN_STATUS)}",
+            status_code=400,
+        )
+
+    if new_status is not None:
+        rr.status = new_status
+    if "metrics_json" in data and data["metrics_json"] is not None:
+        rr.metrics_json = data["metrics_json"]
+
+    job = _find_associated_job(db, rr.id)
+    if job is not None:
+        now = datetime.now(timezone.utc)
+        if new_status is not None:
+            job.status = new_status
+            if new_status == "running" and job.started_at is None:
+                job.started_at = now
+            if new_status in {"completed", "failed"}:
+                job.finished_at = now
+        if "error_message" in data:
+            job.error_message = data["error_message"]
+
+    try:
+        db.commit()
+        db.refresh(rr)
+    except Exception:
+        db.rollback()
+        raise
+    return _to_response(rr)
+
+
+def create_rf_map(
+    db: Session, rf_run_id: UUID, payload: RfMapCreate
+) -> RfMapResponse:
+    rr = _get_rf_run_or_404(db, rf_run_id)
+    rf_map = RfMap(
+        rf_run_id=rr.id,
+        map_type=payload.map_type,
+        resolution_cm=payload.resolution_cm,
+        storage_url=payload.storage_url,
+        bounds_json=payload.bounds_json or {},
+        metrics_json=payload.metrics_json or {},
+    )
+    try:
+        db.add(rf_map)
+        db.commit()
+        db.refresh(rf_map)
+    except Exception:
+        db.rollback()
+        raise
+    return RfMapResponse.model_validate(rf_map, from_attributes=True)

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, ErrorCode
 from app.core.security import decode_access_token
+from app.core.settings import INTERNAL_API_KEY
 from app.db.session import get_db
 from app.models.user import User
 
@@ -63,3 +64,20 @@ def get_current_user(
         )
 
     return user
+
+
+def verify_internal_api_key(request: Request) -> None:
+    """
+    AI 서버 등 시스템 호출용 의존성.
+    X-Internal-API-Key 헤더가 settings.INTERNAL_API_KEY 와 일치해야 함.
+    """
+    provided = (
+        request.headers.get("X-Internal-API-Key")
+        or request.headers.get("x-internal-api-key")
+    )
+    if not provided or provided != INTERNAL_API_KEY:
+        raise AppError(
+            ErrorCode.INVALID_INTERNAL_API_KEY,
+            "Invalid or missing X-Internal-API-Key header.",
+            status_code=401,
+        )
