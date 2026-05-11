@@ -46,6 +46,12 @@ JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES
 
 
 # ============================================
+# Internal API Key (AI 서버 → 백엔드 호출용)
+# ============================================
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "dev-internal-key-change-me")
+
+
+# ============================================
 # CORS
 # ============================================
 CORS_ALLOW_ORIGINS = [

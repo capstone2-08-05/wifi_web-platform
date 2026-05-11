@@ -30,3 +30,11 @@ class RfRunResponse(BaseModel):
 
 class RfRunCreatedResponse(RfRunResponse):
     job_id: UUID
+
+
+class RfRunUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Optional[str] = None
+    metrics_json: Optional[dict[str, Any]] = None
+    error_message: Optional[str] = None
