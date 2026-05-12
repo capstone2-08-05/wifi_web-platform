@@ -3,7 +3,7 @@ import { useAuthStore } from '@/stores/auth-store';
 export default function SettingsPage() {
   const user = useAuthStore((s) => s.user);
   return (
-    <div className="space-y-6">
+    <div className="h-full space-y-6 overflow-auto p-6">
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">설정</h1>
       </header>

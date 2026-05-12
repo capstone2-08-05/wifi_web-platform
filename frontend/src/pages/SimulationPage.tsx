@@ -1,6 +1,6 @@
 export default function SimulationPage() {
   return (
-    <div className="space-y-6">
+    <div className="h-full space-y-6 overflow-auto p-6">
       <header className="space-y-1.5">
         <h1 className="text-2xl font-semibold tracking-tight">시뮬레이션</h1>
         <p className="text-sm text-muted-foreground">

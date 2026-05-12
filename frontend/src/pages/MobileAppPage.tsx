@@ -1,6 +1,6 @@
 export default function MobileAppPage() {
   return (
-    <div className="space-y-6">
+    <div className="h-full space-y-6 overflow-auto p-6">
       <header className="space-y-1.5">
         <h1 className="text-2xl font-semibold tracking-tight">모바일 앱</h1>
         <p className="text-sm text-muted-foreground">QR 코드로 모바일 기기 연결</p>

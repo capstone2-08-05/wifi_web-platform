@@ -67,7 +67,7 @@ const QUICK_ACTIONS = [
 
 export default function DashboardPage() {
   return (
-    <div className="space-y-6">
+    <div className="h-full space-y-6 overflow-auto p-6">
       <header className="space-y-1.5">
         <h1 className="text-2xl font-semibold tracking-tight">대시보드</h1>
         <p className="text-sm text-muted-foreground">
