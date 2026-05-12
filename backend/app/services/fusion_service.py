@@ -27,8 +27,9 @@ class FusionService:
         if p.suffix == ".npy":
             try:
                 prob = np.load(str(p))
+                # threshold 미지정 시 wall_extraction 내부에서 Otsu 로 자동 결정
                 raw_coords = wall_extractor.execute_from_prob_map(
-                    p, threshold=0.5, detections=detections
+                    p, threshold=None, detections=detections
                 )
             except Exception as e:
                 logger.error(f"❌ .npy 로드 중 오류: {e}")
@@ -98,23 +99,9 @@ class FusionService:
         target_path = ml_output.wall_segmentation.prob_map_path or ml_output.wall_segmentation.mask_path
         raw_walls = self.extract_walls_from_mask(target_path, ml_output.detections)
 
-        next_id = len(raw_walls)
-        virtual_walls = []
-        for det in ml_output.detections:
-            if det.class_name in ["door", "window"]:
-                bx1, by1, bx2, by2 = det.bbox_xyxy
-                is_horizontal = (bx2 - bx1) > (by2 - by1)
-                mid = (by1 + by2) / 2 if is_horizontal else (bx1 + bx2) / 2
-                virtual_walls.append(Wall(
-                    id=str(next_id), 
-                    x1=float(bx1) if is_horizontal else float(mid),
-                    y1=float(mid) if is_horizontal else float(by1),
-                    x2=float(bx2) if is_horizontal else float(mid),
-                    y2=float(mid) if is_horizontal else float(by2)
-                ))
-                next_id += 1
-
-        calibrated_walls = geo_service.calibrate_walls(raw_walls + virtual_walls, ml_output.detections)
+        # opening 위치는 wall_extraction._fill_opening_gaps 에서 이미 메우므로
+        # 여기서 virtual_walls 를 또 추가하지 않음 (중복 wall 방지)
+        calibrated_walls = geo_service.calibrate_walls(raw_walls, ml_output.detections)
         extracted_rooms  = geo_service.extract_rooms(calibrated_walls)
         topology_result  = topo_service.analyze(extracted_rooms, ml_output.detections)
 

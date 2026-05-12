@@ -3,14 +3,39 @@ from app.routers.experiments import router as experiments_router
 from app.routers.health import router as health_router
 from app.routers.upload import router as upload_router
 from app.routers.rf_run import router as rf_run_router
+from app.routers.measurements import router as measurements_router
 from app.routers.auth import router as auth_router
 from app.routers.projects import router as projects_router
 from app.routers.floors import router as floors_router
+from app.routers.scene_drafts import router as scene_drafts_router
 from app.core.errors import AppError, ErrorCode
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.settings import CORS_ALLOW_ORIGINS
+from app.routers.assets import floor_assets_router, assets_router
+from app.routers.draft_rooms import scene_draft_rooms_router, draft_rooms_router
+from app.routers.draft_walls import scene_draft_walls_router, draft_walls_router
+from app.routers.draft_openings import scene_draft_openings_router, draft_openings_router
+from app.routers.draft_objects import scene_draft_objects_router, draft_objects_router
+from app.routers.scene_versions import (
+    promote_router,
+    scene_versions_router,
+    floor_scene_versions_router,
+)
+from app.routers.rooms import router as rooms_router
+from app.routers.walls import router as walls_router
+from app.routers.openings import router as openings_router
+from app.routers.objects import router as objects_router
+from app.routers.patch_logs import router as patch_logs_router
+from app.routers.materials import router as materials_router
+from app.routers.material_hypotheses import (
+    wall_hypotheses_router,
+    hypotheses_router,
+)
+from app.routers.rf_runs import router as rf_runs_router
+from app.routers.jobs import router as jobs_router
+
 
 app = FastAPI(title="capstone2-backend", version="0.1.0")
 
@@ -59,6 +84,31 @@ app.include_router(health_router)
 app.include_router(upload_router)
 app.include_router(experiments_router)
 app.include_router(rf_run_router)
+app.include_router(measurements_router)
 app.include_router(auth_router)
 app.include_router(projects_router)
 app.include_router(floors_router)
+app.include_router(scene_drafts_router)
+app.include_router(floor_assets_router)
+app.include_router(assets_router)
+app.include_router(scene_draft_rooms_router)
+app.include_router(draft_rooms_router)
+app.include_router(scene_draft_walls_router)
+app.include_router(draft_walls_router)
+app.include_router(scene_draft_openings_router)
+app.include_router(draft_openings_router)
+app.include_router(scene_draft_objects_router)
+app.include_router(draft_objects_router)
+app.include_router(promote_router)
+app.include_router(scene_versions_router)
+app.include_router(floor_scene_versions_router)
+app.include_router(rooms_router)
+app.include_router(walls_router)
+app.include_router(openings_router)
+app.include_router(objects_router)
+app.include_router(patch_logs_router)
+app.include_router(materials_router)
+app.include_router(wall_hypotheses_router)
+app.include_router(hypotheses_router)
+app.include_router(rf_runs_router)
+app.include_router(jobs_router)

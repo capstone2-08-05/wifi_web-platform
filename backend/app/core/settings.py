@@ -9,6 +9,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT_DIR / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 MASK_DIR = DATA_DIR / "masks"
+ASSETS_DIR = Path(os.getenv("ASSETS_DIR", str(DATA_DIR / "assets")))
 
 
 def database_url() -> str:
@@ -27,14 +28,27 @@ def ai_service_url() -> str:
     return os.getenv("AI_SERVICE_URL", "http://localhost:9000").strip()
 
 def rf_server_url() -> str:
-    return os.getenv("RF_SERVER_URL", "http://localhost:9100").strip()
+    return os.getenv("RF_SERVER_URL", "http://localhost:9000").strip()
 
+
+MEASUREMENT_LINK_TTL_SECONDS = int(os.getenv("MEASUREMENT_LINK_TTL_SECONDS", "600"))
+MEASUREMENT_DEEP_LINK_SCHEME = os.getenv("MEASUREMENT_DEEP_LINK_SCHEME", "wifispace://measure").strip()
+MEASUREMENT_WEB_FALLBACK_BASE_URL = os.getenv(
+    "MEASUREMENT_WEB_FALLBACK_BASE_URL",
+    "http://localhost:5173/mobile/measure",
+).strip()
 # ============================================
 # Auth / JWT
 # ============================================
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-secret-change-me-in-production")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+
+
+# ============================================
+# Internal API Key (AI 서버 → 백엔드 호출용)
+# ============================================
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "dev-internal-key-change-me")
 
 
 # ============================================

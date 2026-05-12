@@ -3,9 +3,10 @@ from __future__ import annotations
 from uuid import UUID
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
+from app.schemas.pagination import PaginatedResponse
 
 from app.core.errors import AppError, ErrorCode
 from app.core.settings import (
@@ -23,8 +24,16 @@ from app.models import (
     Floor,
     Project,
     SceneDraft,
+    User,
 )
-from app.schemas.scene_draft import SaveSceneDraftRequestDTO, SaveSceneDraftResultDTO
+from app.schemas.scene_draft import (
+    AnalyzeFromAssetResponse,
+    SaveSceneDraftRequestDTO,
+    SaveSceneDraftResultDTO,
+    SceneDraftDetailResponse,
+    SceneDraftSummaryResponse,
+    UploadStorageMetadataDTO,
+)
 
 
 def _to_float(value: Any, default: float | None = None) -> float | None:
@@ -43,7 +52,10 @@ def _positive(value: float | None, fallback: float) -> float:
 
 
 def _resolve_project_floor(
-    db: Session, project_id: str | None, floor_id: str | None
+    db: Session,
+    project_id: str | None,
+    floor_id: str | None,
+    current_user: User,
 ) -> tuple[str, str]:
     if bool(project_id) ^ bool(floor_id):
         raise AppError(
@@ -74,19 +86,32 @@ def _resolve_project_floor(
                 "Invalid project_id/floor_id pair",
                 400,
             )
-        if db.get(Project, project_id) is None:
+        project = db.get(Project, project_id)
+        if project is None:
             raise AppError(
                 ErrorCode.INVALID_PROJECT_ID, "Invalid project_id: project not found", 400
             )
+        # 본인 소유 권한 체크
+        if project.owner_user_id != current_user.id:
+            raise AppError(
+                ErrorCode.PROJECT_NOT_FOUND,
+                "Project not found.",
+                404,
+            )
         return project_id, floor_id
 
+    # default 프로젝트: 유저별로 분리해서 찾거나 생성
     project = db.scalar(
-        select(Project).where(Project.name == DEFAULT_DRAFT_PROJECT_NAME)
+        select(Project).where(
+            Project.name == DEFAULT_DRAFT_PROJECT_NAME,
+            Project.owner_user_id == current_user.id,
+        )
     )
     if project is None:
         project = Project(
             name=DEFAULT_DRAFT_PROJECT_NAME,
             description="Auto-created project for local upload analysis flow",
+            owner_user_id=current_user.id,
         )
         db.add(project)
         db.flush()
@@ -109,9 +134,14 @@ def _resolve_project_floor(
     return project.id, floor.id
 
 
-def save_scene_draft(db: Session, request_dto: SaveSceneDraftRequestDTO) -> SaveSceneDraftResultDTO:
+def save_scene_draft(
+    db: Session,
+    request_dto: SaveSceneDraftRequestDTO,
+    current_user: User,
+    source_asset_id: str | None = None,
+) -> SaveSceneDraftResultDTO:
     resolved_project_id, resolved_floor_id = _resolve_project_floor(
-        db, request_dto.project_id, request_dto.floor_id
+        db, request_dto.project_id, request_dto.floor_id, current_user,
     )
 
     summary_json = {
@@ -125,11 +155,11 @@ def save_scene_draft(db: Session, request_dto: SaveSceneDraftRequestDTO) -> Save
         project_id=resolved_project_id,
         floor_id=resolved_floor_id,
         source_mode=DEFAULT_DRAFT_SOURCE_MODE,
-        source_asset_id=None,
+        source_asset_id=source_asset_id,
         source_method=DEFAULT_DRAFT_ANALYSIS_METHOD,
         summary_json=summary_json,
         status="draft",
-        created_by=request_dto.created_by,
+        created_by=request_dto.created_by or current_user.email,
     )
 
     try:
@@ -210,3 +240,192 @@ def save_scene_draft(db: Session, request_dto: SaveSceneDraftRequestDTO) -> Save
             f"Failed to persist scene draft and draft entities: {exc}",
             500,
         ) from exc
+
+
+async def analyze_from_asset(
+    db: Session,
+    asset_id: UUID,
+    real_width_m: float,
+    current_user: User,
+) -> AnalyzeFromAssetResponse:
+    """이미 등록된 Asset 도면을 분석해서 Scene Draft 생성."""
+    from pathlib import Path
+
+    from app.services.asset_service import _get_owned_asset_or_404
+    from app.services.fusion_service import fusion_service
+
+    asset, _floor, _project = _get_owned_asset_or_404(db, asset_id, current_user)
+
+    storage_path = Path(asset.storage_url)
+    if not storage_path.exists():
+        raise AppError(
+            ErrorCode.UPLOADED_FILE_NOT_FOUND,
+            f"Asset file not found on storage: {asset.storage_url}",
+            status_code=500,
+        )
+
+    try:
+        content = storage_path.read_bytes()
+    except OSError as exc:
+        raise AppError(
+            ErrorCode.FILE_SAVE_FAILED,
+            f"Failed to read asset file: {exc}",
+            status_code=500,
+        ) from exc
+
+    filename = storage_path.name
+
+    try:
+        scene = await fusion_service.process_image_to_scene_async(
+            image_bytes=content,
+            filename=filename,
+            real_width_m=real_width_m,
+        )
+    except AppError:
+        raise
+    except Exception as exc:
+        raise AppError(
+            ErrorCode.INTERNAL_SERVER_ERROR,
+            f"Floorplan analysis failed: {exc}",
+            status_code=500,
+        ) from exc
+
+    request_dto = SaveSceneDraftRequestDTO(
+        scene=scene,
+        upload=UploadStorageMetadataDTO(
+            provider="local",
+            original_filename=filename,
+            content_type=asset.mime_type,
+            size_bytes=asset.file_size_bytes,
+            local_saved_path=str(storage_path),
+        ),
+        project_id=asset.project_id,
+        floor_id=asset.floor_id,
+        created_by=current_user.email,
+    )
+
+    result = save_scene_draft(
+        db, request_dto, current_user, source_asset_id=asset.id
+    )
+
+    return AnalyzeFromAssetResponse(
+        status="ok",
+        scene_draft_id=result.scene_draft_id,
+        asset_id=asset.id,
+        scene=scene,
+    )
+
+
+def get_scene_draft(
+    db: Session, scene_draft_id: str, current_user: User
+) -> SceneDraftDetailResponse:
+    scene_draft = (
+        db.query(SceneDraft)
+        .join(Project, SceneDraft.project_id == Project.id)
+        .filter(
+            SceneDraft.id == scene_draft_id,
+            Project.owner_user_id == current_user.id,
+        )
+        .options(
+            selectinload(SceneDraft.draft_rooms),
+            selectinload(SceneDraft.draft_walls),
+            selectinload(SceneDraft.draft_openings),
+            selectinload(SceneDraft.draft_objects),
+        )
+        .first()
+    )
+
+    if scene_draft is None:
+        raise AppError(
+            ErrorCode.SCENE_DRAFT_NOT_FOUND,
+            "Scene draft not found.",
+            status_code=404,
+        )
+
+    return SceneDraftDetailResponse(
+        id=scene_draft.id,
+        project_id=scene_draft.project_id,
+        floor_id=scene_draft.floor_id,
+        source_mode=scene_draft.source_mode,
+        source_asset_id=scene_draft.source_asset_id,
+        source_method=scene_draft.source_method,
+        summary_json=scene_draft.summary_json,
+        status=scene_draft.status,
+        rooms=scene_draft.draft_rooms,
+        walls=scene_draft.draft_walls,
+        openings=scene_draft.draft_openings,
+        objects=scene_draft.draft_objects,
+        created_at=scene_draft.created_at,
+        updated_at=scene_draft.updated_at,
+    )
+
+def delete_scene_draft(
+    db: Session, scene_draft_id: str, current_user: User
+) -> None:
+    scene_draft = (
+        db.query(SceneDraft)
+        .join(Project, SceneDraft.project_id == Project.id)
+        .filter(
+            SceneDraft.id == scene_draft_id,
+            Project.owner_user_id == current_user.id,
+        )
+        .first()
+    )
+
+    if scene_draft is None:
+        raise AppError(
+            ErrorCode.SCENE_DRAFT_NOT_FOUND,
+            "Scene draft not found.",
+            status_code=404,
+        )
+
+    try:
+        db.delete(scene_draft)
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise AppError(
+            ErrorCode.SCENE_DRAFT_SAVE_FAILED,
+            f"Failed to delete scene draft: {exc}",
+            500,
+        ) from exc
+
+
+def list_scene_drafts(
+    db: Session,
+    current_user: User,
+    page: int,
+    page_size: int,
+    project_id: str | None = None,
+    floor_id: str | None = None,
+    status: str | None = None,
+) -> PaginatedResponse[SceneDraftSummaryResponse]:
+    
+    base_query = (
+        db.query(SceneDraft)
+        .join(Project, SceneDraft.project_id == Project.id)
+        .filter(Project.owner_user_id == current_user.id)
+    )
+
+    if project_id is not None:
+        base_query = base_query.filter(SceneDraft.project_id == project_id)
+    if floor_id is not None:
+        base_query = base_query.filter(SceneDraft.floor_id == floor_id)
+    if status is not None:
+        base_query = base_query.filter(SceneDraft.status == status)
+
+    total = base_query.with_entities(func.count(SceneDraft.id)).scalar() or 0
+
+    items = (
+        base_query.order_by(SceneDraft.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    return PaginatedResponse[SceneDraftSummaryResponse](
+        items=[SceneDraftSummaryResponse.model_validate(d) for d in items],
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
