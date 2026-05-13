@@ -40,11 +40,32 @@ class AnalyzeFromAssetRequest(BaseModel):
     real_width_m: float = 10.0
 
 
-class AnalyzeFromAssetResponse(BaseModel):
-    status: str
-    scene_draft_id: str
+class SubmitFloorplanJobResponse(BaseModel):
+    """도면 분석 비동기 Job 제출 공통 응답 (HTTP 202).
+
+    완료/진행 상태는 GET /floorplan-jobs/{job_id} 로 폴링.
+    """
+
+    status: str = "submitted"
+    job_id: str
+    project_id: str | None = None
+    floor_id: str | None = None
+    job_status: str
+    sagemaker_inference_id: str | None = None
+    poll_url: str
+
+
+class UploadAndAnalyzeFloorplanResponse(SubmitFloorplanJobResponse):
+    """POST /upload/floorplan/analyze 응답."""
+
+    fileId: str
+    savedPath: str
+
+
+class AnalyzeFromAssetResponse(SubmitFloorplanJobResponse):
+    """POST /assets/{asset_id}/analyze 응답."""
+
     asset_id: str
-    scene: SceneSchema
 
 # ============================================
 # 단건 조회 응답 (GET /scene-drafts/{id})

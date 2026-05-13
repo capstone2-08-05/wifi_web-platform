@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 from typing import Any
 
+from geoalchemy2 import WKTElement
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
@@ -144,12 +145,14 @@ def save_scene_draft(
         db, request_dto.project_id, request_dto.floor_id, current_user,
     )
 
-    summary_json = {
+    summary_json: dict[str, Any] = {
         "source": DEFAULT_DRAFT_SOURCE,
         "analysis_method": DEFAULT_DRAFT_ANALYSIS_METHOD,
         "raw_result_version": request_dto.scene.scene_version,
         "storage": request_dto.upload.model_dump(),
     }
+    if request_dto.scene.inference_metadata:
+        summary_json["inference_metadata"] = request_dto.scene.inference_metadata
 
     scene_draft = SceneDraft(
         project_id=resolved_project_id,
@@ -248,11 +251,15 @@ async def analyze_from_asset(
     real_width_m: float,
     current_user: User,
 ) -> AnalyzeFromAssetResponse:
-    """이미 등록된 Asset 도면을 분석해서 Scene Draft 생성."""
+    """이미 등록된 Asset 도면을 분석해서 비동기 Job 등록.
+
+    /upload/floorplan/analyze 와 동일하게 Job 패턴 사용 → 202 응답 + job_id.
+    완료 조회는 GET /floorplan-jobs/{job_id}.
+    """
     from pathlib import Path
 
     from app.services.asset_service import _get_owned_asset_or_404
-    from app.services.fusion_service import fusion_service
+    from app.services.floorplan_job_service import submit_floorplan_analysis
 
     asset, _floor, _project = _get_owned_asset_or_404(db, asset_id, current_user)
 
@@ -273,46 +280,35 @@ async def analyze_from_asset(
             status_code=500,
         ) from exc
 
-    filename = storage_path.name
+    upload_metadata = UploadStorageMetadataDTO(
+        provider="local",
+        original_filename=storage_path.name,
+        content_type=asset.mime_type,
+        size_bytes=asset.file_size_bytes,
+        local_saved_path=str(storage_path),
+    )
 
-    try:
-        scene = await fusion_service.process_image_to_scene_async(
-            image_bytes=content,
-            filename=filename,
-            real_width_m=real_width_m,
-        )
-    except AppError:
-        raise
-    except Exception as exc:
-        raise AppError(
-            ErrorCode.INTERNAL_SERVER_ERROR,
-            f"Floorplan analysis failed: {exc}",
-            status_code=500,
-        ) from exc
-
-    request_dto = SaveSceneDraftRequestDTO(
-        scene=scene,
-        upload=UploadStorageMetadataDTO(
-            provider="local",
-            original_filename=filename,
-            content_type=asset.mime_type,
-            size_bytes=asset.file_size_bytes,
-            local_saved_path=str(storage_path),
-        ),
+    job = await submit_floorplan_analysis(
+        db,
+        image_bytes=content,
+        filename=storage_path.name,
+        content_type=asset.mime_type or "application/octet-stream",
+        real_width_m=real_width_m,
         project_id=asset.project_id,
         floor_id=asset.floor_id,
+        current_user=current_user,
+        upload_metadata=upload_metadata,
         created_by=current_user.email,
     )
 
-    result = save_scene_draft(
-        db, request_dto, current_user, source_asset_id=asset.id
-    )
-
     return AnalyzeFromAssetResponse(
-        status="ok",
-        scene_draft_id=result.scene_draft_id,
-        asset_id=asset.id,
-        scene=scene,
+        job_id=str(job.id),
+        asset_id=str(asset.id),
+        project_id=str(job.project_id) if job.project_id else None,
+        floor_id=str(job.floor_id) if job.floor_id else None,
+        job_status=job.status,
+        sagemaker_inference_id=(job.input_json or {}).get("sagemaker", {}).get("inference_id"),
+        poll_url=f"/floorplan-jobs/{job.id}",
     )
 
 

@@ -1,131 +1,189 @@
+"""raw AI outputs → SceneSchema 변환 (순수 후처리, SageMaker 호출 없음).
+
+흐름:
+  - 호출자가 SageMaker invocation 결과 (`InferenceResult`) 를 미리 받아옴
+  - 이 서비스는 그 raw outputs 를 wall_extraction/geometry/topology 파이프라인으로
+    SceneSchema 로 변환만 함
+  - SageMaker 통신과 DB 영속화는 floorplan_job_service 의 책임
+
+기존 동기 HTTP 흐름은 제거됨 (ai_client.py 삭제, 2026-05-13). Job 비동기 패턴으로 전환됨.
+"""
+from __future__ import annotations
+
 import logging
-from typing import Dict, Any, List
-from pathlib import Path
-import numpy as np
-import cv2
-import random
+from typing import Any
+
 from starlette.concurrency import run_in_threadpool
 
-from app.schemas.ai_response import MlOutputDTO, MetaDTO, WallSegmentationDTO, DetectionDTO
-from app.schemas.scene import SceneSchema, Wall, Opening, Room, Topology
-
-from app.services.geometry_service import GeometryService  
-from app.services.wall_extraction import wall_extractor
+from app.geometry import assign_wall_refs
+from app.schemas.ai_response import (
+    DetectionDTO,
+    MetaDTO,
+    MlOutputDTO,
+    WallSegmentationDTO,
+)
+from app.schemas.scene import Opening, Room, SceneSchema, Wall
+from app.services.geometry_service import GeometryService
+from app.services.sagemaker_inference_service import InferenceResult
 from app.services.topology_service import TopologyService
-from app.services.ai_client import ai_client
+from app.services.wall_extraction import wall_extractor
 
 logger = logging.getLogger(__name__)
 
+
 class FusionService:
-    def __init__(self):
-        self.ai_client = ai_client
-
-    def extract_walls_from_mask(self, mask_path: str, detections: List[DetectionDTO] = None) -> List[Wall]:
-        detections = detections or []
-        p = Path(mask_path)
-
-        if p.suffix == ".npy":
-            try:
-                prob = np.load(str(p))
-                # threshold 미지정 시 wall_extraction 내부에서 Otsu 로 자동 결정
-                raw_coords = wall_extractor.execute_from_prob_map(
-                    p, threshold=None, detections=detections
-                )
-            except Exception as e:
-                logger.error(f"❌ .npy 로드 중 오류: {e}")
-                return []
-        else:
-            img = cv2.imread(mask_path)
-            if img is None: return []
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            raw_coords = wall_extractor.execute_from_mask(gray, detections=detections)
-
-        walls = []
-        for i, coord in enumerate(raw_coords):
-            x1, y1, x2, y2 = coord
-            walls.append(Wall(
-                id=str(i), x1=float(x1), y1=float(y1),
-                x2=float(x2), y2=float(y2), thickness=0.2 # 미터 단위 기본값
-            ))
-        return walls
-
-    async def process_image_to_scene_async(
-        self, image_bytes: bytes, filename: str, real_width_m: float
+    async def build_scene_from_inference(
+        self,
+        *,
+        result: InferenceResult,
+        filename: str,
+        real_width_m: float,
     ) -> SceneSchema:
-        try:
-            ai_results = await self.ai_client.fetch_ai_inference_async(image_bytes, filename)
+        """SageMaker raw outputs (download 완료된 상태) → SceneSchema.
 
-            unet_res = ai_results.get("unet", {})
-            yolo_res = ai_results.get("yolo", {})
-            unet_output = unet_res.get("output", {})
-            yolo_output = yolo_res.get("output", {})
-            unet_metrics = unet_res.get("metrics", {})
+        CPU 후처리가 무거우므로 thread pool 에서 실행.
+        호출자가 `result.cleanup()` 책임.
+        """
+        ml_output = _build_ml_output_from_inference(result, filename)
+        sagemaker_meta = _build_sagemaker_meta(result)
+        scene = await run_in_threadpool(
+            self._run_wi_twin_pipeline,
+            ml_output,
+            real_width_m,
+            result.prob_map_local_path,
+            sagemaker_meta,
+        )
+        return scene
 
-            ml_output = MlOutputDTO(
-                meta=MetaDTO(
-                    sample_id=unet_res.get("fileId", "temp_id"),
-                    image_name=filename,
-                    original_width=unet_metrics.get("width", 1000),
-                    original_height=unet_metrics.get("height", 1000),
-                ),
-                wall_segmentation=WallSegmentationDTO(
-                    mask_path=unet_output.get("wallProbOverlayPath", ""),
-                    prob_map_path=unet_output.get("wallProbNpyPath", ""),
-                ),
-                detections=[
-                    DetectionDTO(
-                        id=f"det_{i}",
-                        class_name=det.get("class_name"),
-                        score=float(det.get("confidence", 0.0)),
-                        bbox_xyxy=det.get("bbox"),
-                    )
-                    for i, det in enumerate(yolo_output.get("detections", []) or [])
-                ],
-            )
-
-            return await run_in_threadpool(self.run_wi_twin_pipeline, ml_output, real_width_m)
-        except Exception as exc:
-            logger.error(f"도면 분석 중 오류 발생: {exc}")
-            raise
-
-    def run_wi_twin_pipeline(self, ml_output: MlOutputDTO, real_width_m: float) -> SceneSchema:
-        geo_service  = GeometryService(
+    def _run_wi_twin_pipeline(
+        self,
+        ml_output: MlOutputDTO,
+        real_width_m: float,
+        prob_map_local_path,
+        sagemaker_meta: dict[str, Any] | None = None,
+    ) -> SceneSchema:
+        geo_service = GeometryService(
             pixel_width=ml_output.meta.original_width,
             pixel_height=ml_output.meta.original_height,
-            real_width_m=real_width_m
+            real_width_m=real_width_m,
         )
         topo_service = TopologyService()
-        
-        target_path = ml_output.wall_segmentation.prob_map_path or ml_output.wall_segmentation.mask_path
-        raw_walls = self.extract_walls_from_mask(target_path, ml_output.detections)
+        scale_ratio = geo_service.scale_ratio
 
-        # opening 위치는 wall_extraction._fill_opening_gaps 에서 이미 메우므로
-        # 여기서 virtual_walls 를 또 추가하지 않음 (중복 wall 방지)
+        # wall_extraction 은 .npy 파일 경로를 받아 prob_map 로딩
+        raw_coords = wall_extractor.execute_from_prob_map(
+            prob_map_local_path, threshold=None, detections=ml_output.detections
+        )
+
+        raw_walls: list[Wall] = []
+        for i, coord in enumerate(raw_coords):
+            x1, y1, x2, y2 = coord
+            raw_walls.append(
+                Wall(
+                    id=str(i),
+                    x1=float(x1),
+                    y1=float(y1),
+                    x2=float(x2),
+                    y2=float(y2),
+                    thickness=0.2,
+                )
+            )
+
         calibrated_walls = geo_service.calibrate_walls(raw_walls, ml_output.detections)
-        extracted_rooms  = geo_service.extract_rooms(calibrated_walls)
-        topology_result  = topo_service.analyze(extracted_rooms, ml_output.detections)
+        extracted_rooms: list[Room] = geo_service.extract_rooms(calibrated_walls)
+        topology_result = topo_service.analyze(extracted_rooms, ml_output.detections)
 
-        openings = []
-        furniture_objects = []
+        openings: list[Opening] = []
+        furniture_objects: list[DetectionDTO] = []
         for i, det in enumerate(ml_output.detections):
-            if det.class_name in ["door", "window"]:
+            if det.class_name in {"door", "window"}:
                 bx1, by1, bx2, by2 = det.bbox_xyxy
-                openings.append(Opening(
-                    id=f"opening_{i}", type=det.class_name,
-                    x1=float(bx1), y1=float(by1), x2=float(bx2), y2=float(by2)
-                ))
+                openings.append(
+                    Opening(
+                        id=f"opening_{i}",
+                        type=det.class_name,
+                        x1=float(bx1),
+                        y1=float(by1),
+                        x2=float(bx2),
+                        y2=float(by2),
+                        width_m=abs(bx2 - bx1) * scale_ratio,
+                        height_m=abs(by2 - by1) * scale_ratio,
+                        score=float(det.score),
+                    )
+                )
             else:
                 det.id = f"furniture_{len(furniture_objects)}"
                 furniture_objects.append(det)
 
+        # Phase 2.5: 각 opening 의 bbox 방향과 일치하는 가장 가까운 wall 의 id 를 wall_ref 로.
+        matched_count = assign_wall_refs(openings, calibrated_walls)
+        if openings:
+            logger.info(
+                "wall-opening match: %d/%d openings linked", matched_count, len(openings)
+            )
+
         return SceneSchema(
-       
-        scale_ratio=geo_service.scale_ratio,
-        
-        walls=[w.model_dump() for w in calibrated_walls],
-        openings=[o.model_dump() for o in openings],
-        rooms=[r.model_dump() for r in extracted_rooms],
-        topology=topology_result.model_dump(),
-        objects=[obj.model_dump() for obj in furniture_objects]
+            scale_ratio=scale_ratio,
+            walls=[w.model_dump() for w in calibrated_walls],
+            openings=[o.model_dump() for o in openings],
+            rooms=[r.model_dump() for r in extracted_rooms],
+            topology=topology_result.model_dump(),
+            objects=[obj.model_dump() for obj in furniture_objects],
+            inference_metadata=sagemaker_meta,
+        )
+
+
+def _build_sagemaker_meta(result: InferenceResult) -> dict[str, Any]:
+    """InferenceResult 에서 감사/디버깅용 메타만 추려서 dict 로.
+
+    summary_json.sagemaker 에 저장될 형태.
+    """
+    payload = result.result_payload or {}
+    return {
+        "job_id": result.job_id,
+        "inference_id": payload.get("inference_id"),
+        "endpoint_name": payload.get("endpoint_name"),
+        "started_at": payload.get("started_at"),
+        "completed_at": payload.get("completed_at"),
+        "stages": payload.get("stages") or {},
+        "runtime": payload.get("runtime") or {},
+        "outputs": payload.get("outputs") or {},
+        "image": payload.get("image") or {
+            "width_px": result.image_width_px,
+            "height_px": result.image_height_px,
+        },
+    }
+
+
+def _build_ml_output_from_inference(
+    result: InferenceResult, filename: str
+) -> MlOutputDTO:
+    """InferenceResult (S3 다운로드 결과) → 기존 MlOutputDTO 로 변환."""
+    detections = [
+        DetectionDTO.model_validate(
+            {
+                "id": f"det_{i}",
+                "class": det.get("class_name") or str(det.get("class_id", "unknown")),
+                "score": float(det.get("confidence", 0.0)),
+                "bbox_xyxy": [float(v) for v in det.get("bbox", [0, 0, 0, 0])],
+            }
+        )
+        for i, det in enumerate(result.detections)
+    ]
+
+    return MlOutputDTO(
+        meta=MetaDTO(
+            sample_id=result.job_id,
+            image_name=filename,
+            original_width=result.image_width_px or 1,
+            original_height=result.image_height_px or 1,
+        ),
+        wall_segmentation=WallSegmentationDTO(
+            mask_path=str(result.mask_local_path),
+            prob_map_path=str(result.prob_map_local_path),
+        ),
+        detections=detections,
     )
+
+
 fusion_service = FusionService()

@@ -1,20 +1,19 @@
 import uuid
-from app.api.deps import get_current_user
-from app.models.user import User
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile, status
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
 from app.core.errors import AppError, ErrorCode
 from app.core.settings import UPLOAD_DIR
 from app.db.session import get_db
+from app.models.user import User
 from app.schemas.scene_draft import (
-    SaveSceneDraftRequestDTO,
+    UploadAndAnalyzeFloorplanResponse,
     UploadStorageMetadataDTO,
 )
-from app.services.fusion_service import fusion_service
-from app.services.scene_draft_service import save_scene_draft
+from app.services.floorplan_job_service import submit_floorplan_analysis
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
@@ -61,7 +60,12 @@ async def upload_floorplan(file: UploadFile = File(...)) -> dict:
     }
 
 
-@router.post("/floorplan/analyze")
+@router.post(
+    "/floorplan/analyze",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=UploadAndAnalyzeFloorplanResponse,
+    summary="도면 분석 Job 등록 (비동기). job_id 받아서 GET /floorplan-jobs/{job_id} 로 폴링.",
+)
 async def upload_and_analyze_floorplan(
     file: UploadFile = File(...),
     real_width_m: float = Form(10.0),
@@ -70,43 +74,38 @@ async def upload_and_analyze_floorplan(
     created_by: str | None = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> dict:
+) -> UploadAndAnalyzeFloorplanResponse:
     content = await file.read()
     file_id, save_path = _validate_and_save_file(file, content)
 
-    try:
-        scene = await fusion_service.process_image_to_scene_async(
-            image_bytes=content,
-            filename=file.filename or f"{file_id}",
-            real_width_m=real_width_m,
-        )
-    except Exception as exc:
-        raise AppError(
-            ErrorCode.INTERNAL_SERVER_ERROR,
-            f"Floorplan analysis failed: {exc}",
-            500,
-        ) from exc
+    upload_metadata = UploadStorageMetadataDTO(
+        provider="local",
+        original_filename=file.filename,
+        content_type=file.content_type,
+        size_bytes=len(content),
+        local_saved_path=str(save_path),
+    )
 
-    request_dto = SaveSceneDraftRequestDTO(
-        scene=scene,
-        upload=UploadStorageMetadataDTO(
-            provider="local",
-            original_filename=file.filename,
-            content_type=file.content_type,
-            size_bytes=len(content),
-            local_saved_path=str(save_path),
-        ),
+    job = await submit_floorplan_analysis(
+        db,
+        image_bytes=content,
+        filename=file.filename or f"{file_id}",
+        content_type=file.content_type or "application/octet-stream",
+        real_width_m=real_width_m,
         project_id=project_id,
         floor_id=floor_id,
+        current_user=current_user,
+        upload_metadata=upload_metadata,
         created_by=created_by,
     )
 
-    result = save_scene_draft(db, request_dto, current_user)
-
-    return {
-        "status": "ok",
-        "scene_draft_id": result.scene_draft_id,
-        "fileId": file_id,
-        "savedPath": str(save_path),
-        "scene": scene.model_dump(),
-    }
+    return UploadAndAnalyzeFloorplanResponse(
+        job_id=str(job.id),
+        project_id=str(job.project_id) if job.project_id else None,
+        floor_id=str(job.floor_id) if job.floor_id else None,
+        job_status=job.status,
+        sagemaker_inference_id=(job.input_json or {}).get("sagemaker", {}).get("inference_id"),
+        fileId=file_id,
+        savedPath=str(save_path),
+        poll_url=f"/floorplan-jobs/{job.id}",
+    )

@@ -52,6 +52,16 @@ INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "dev-internal-key-change-me")
 
 
 # ============================================
+# AWS / SageMaker (도면 분석 inference)
+# ============================================
+AWS_REGION = os.getenv("AWS_REGION", "ap-northeast-2").strip()
+AWS_S3_BUCKET = os.getenv("AWS_S3_BUCKET", "").strip()
+SAGEMAKER_ENDPOINT_NAME = os.getenv("SAGEMAKER_ENDPOINT_NAME", "ai-inference-endpoint").strip()
+SAGEMAKER_POLL_INTERVAL_SECONDS = float(os.getenv("SAGEMAKER_POLL_INTERVAL_SECONDS", "5"))
+SAGEMAKER_POLL_TIMEOUT_SECONDS = float(os.getenv("SAGEMAKER_POLL_TIMEOUT_SECONDS", "900"))
+
+
+# ============================================
 # CORS
 # ============================================
 CORS_ALLOW_ORIGINS = [
