@@ -37,6 +37,7 @@ export const sceneDraftApi = {
     return api
       .post<AnalyzeFloorplanResponse>('/upload/floorplan/analyze', fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 5*60*1000,
       })
       .then((r) => r.data);
   },

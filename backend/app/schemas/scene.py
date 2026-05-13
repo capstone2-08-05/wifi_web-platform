@@ -52,3 +52,6 @@ class SceneSchema(BaseModel):
     topology: dict = {"adjacencies": [], "connectivity": []}
     objects: List[dict] = []
     scene_draft_id: Optional[str] = None
+    # AI inference run metadata — fusion_service 가 SageMaker InferenceResult 에서 채움.
+    # summary_json 으로 영속됨 (감사/디버깅용). 선택적이라 기존 caller 깨지지 않음.
+    inference_metadata: Optional[dict] = None

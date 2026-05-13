@@ -14,7 +14,7 @@ from app.schemas.scene_draft import (
     UploadStorageMetadataDTO,
 )
 from app.services.fusion_service import fusion_service
-from app.services.scene_draft_service import save_scene_draft
+from app.services.scene_draft_service import _resolve_project_floor, save_scene_draft
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
@@ -74,12 +74,23 @@ async def upload_and_analyze_floorplan(
     content = await file.read()
     file_id, save_path = _validate_and_save_file(file, content)
 
+    # SageMaker invoke 는 project_id/floor_id 기반 S3 경로를 사용하므로
+    # default project/floor 로 먼저 해소 (scene_draft_service 와 동일 로직 재사용)
+    resolved_project_id, resolved_floor_id = _resolve_project_floor(
+        db, project_id, floor_id, current_user
+    )
+
     try:
         scene = await fusion_service.process_image_to_scene_async(
             image_bytes=content,
             filename=file.filename or f"{file_id}",
             real_width_m=real_width_m,
+            project_id=resolved_project_id,
+            floor_id=resolved_floor_id,
+            content_type=file.content_type or "application/octet-stream",
         )
+    except AppError:
+        raise
     except Exception as exc:
         raise AppError(
             ErrorCode.INTERNAL_SERVER_ERROR,
@@ -96,8 +107,8 @@ async def upload_and_analyze_floorplan(
             size_bytes=len(content),
             local_saved_path=str(save_path),
         ),
-        project_id=project_id,
-        floor_id=floor_id,
+        project_id=resolved_project_id,
+        floor_id=resolved_floor_id,
         created_by=created_by,
     )
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 from typing import Any
 
+from geoalchemy2 import WKTElement
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
