@@ -17,6 +17,13 @@ from app.core.settings import (
     DEFAULT_DRAFT_SOURCE,
     DEFAULT_DRAFT_SOURCE_MODE,
 )
+from app.geometry import (
+    object_point_geom,
+    opening_line_geom,
+    room_centroid_geom,
+    room_polygon_geom,
+    wall_centerline_geom,
+)
 from app.models import (
     DraftObject,
     DraftOpening,
@@ -165,6 +172,8 @@ def save_scene_draft(
         created_by=request_dto.created_by or current_user.email,
     )
 
+    scale_ratio = float(request_dto.scene.scale_ratio or 1.0)
+
     try:
         db.add(scene_draft)
         db.flush()
@@ -176,6 +185,8 @@ def save_scene_draft(
                     room_name=str(room.get("id")) if room.get("id") is not None else None,
                     room_type=room.get("type"),
                     source_method=DEFAULT_DRAFT_ANALYSIS_METHOD,
+                    polygon_geom=room_polygon_geom(room, scale_ratio),
+                    centroid_geom=room_centroid_geom(room, scale_ratio),
                     metadata_json={"raw": room},
                 )
             )
@@ -189,6 +200,7 @@ def save_scene_draft(
                 height_m=_to_float(wall.get("height")),
                 material_label=wall.get("material"),
                 source_method=DEFAULT_DRAFT_ANALYSIS_METHOD,
+                centerline_geom=wall_centerline_geom(wall, scale_ratio),
                 metadata_json={"raw": wall},
             )
             db.add(draft_wall)
@@ -215,6 +227,7 @@ def save_scene_draft(
                     width_m=_positive(width, 0.8),
                     height_m=_positive(height, 1.2),
                     source_method=DEFAULT_DRAFT_ANALYSIS_METHOD,
+                    line_geom=opening_line_geom(opening, scale_ratio),
                     metadata_json={"raw": opening},
                 )
             )
@@ -227,6 +240,7 @@ def save_scene_draft(
                     object_type=obj_type,
                     confidence=_to_float(obj.get("score") or obj.get("confidence")),
                     source_method=DEFAULT_DRAFT_ANALYSIS_METHOD,
+                    point_geom=object_point_geom(obj, scale_ratio),
                     metadata_json={"raw": obj},
                 )
             )
