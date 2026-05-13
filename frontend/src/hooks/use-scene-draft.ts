@@ -40,32 +40,34 @@ function analyzeErrorMessage(err: unknown): string {
   return e.message ?? '도면 분석에 실패했습니다.';
 }
 
-/** §6.1 — 신규 도면 업로드 + 즉시 분석 */
+/**
+ * §6.1 — 신규 도면 업로드 + 분석 Job 등록.
+ *
+ * 백엔드가 비동기로 전환되어 mutation 은 즉시 job_id 만 반환함.
+ * 실제 완료 여부는 useFloorplanJob(jobId) 폴링으로 확인하고,
+ * 완료/실패 토스트도 그 훅에서 발화함.
+ */
 export function useAnalyzeFloorplan() {
-  const qc = useQueryClient();
   return useMutation({
     mutationFn: (params: AnalyzeFloorplanParams) => sceneDraftApi.analyzeFloorplan(params),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['scene-drafts'] });
-      toast.success('도면 분석 완료', '결과를 확인하고 확정해주세요.');
+      toast.info('도면 분석 시작', '분석이 완료되면 결과를 알려드릴게요.');
     },
     onError: (err) => {
-      toast.error('도면 분석 실패', analyzeErrorMessage(err));
+      toast.error('도면 분석 요청 실패', analyzeErrorMessage(err));
     },
   });
 }
 
-/** §6.1.1 — 이미 등록된 Asset 도면을 재분석. 권장 흐름. */
+/** §6.1.1 — 이미 등록된 Asset 도면을 재분석. 권장 흐름. (동일하게 비동기 Job) */
 export function useAnalyzeFromAsset() {
-  const qc = useQueryClient();
   return useMutation({
     mutationFn: (params: AnalyzeFromAssetParams) => sceneDraftApi.analyzeFromAsset(params),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['scene-drafts'] });
-      toast.success('도면 분석 완료', '결과를 확인하고 확정해주세요.');
+      toast.info('도면 분석 시작', '분석이 완료되면 결과를 알려드릴게요.');
     },
     onError: (err) => {
-      toast.error('도면 분석 실패', analyzeErrorMessage(err));
+      toast.error('도면 분석 요청 실패', analyzeErrorMessage(err));
     },
   });
 }

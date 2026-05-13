@@ -1,0 +1,82 @@
+import { useEffect, useRef } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { rfRunApi } from '@/api/rf-run';
+import type { HttpError } from '@/api/client';
+import { toast } from '@/stores/toast-store';
+import type { UUID } from '@/types/common';
+import type { RfRun, RfRunCreate } from '@/types/rf';
+
+const POLL_INTERVAL_MS = 3_000;
+
+/** POST /rf-runs — 시뮬레이션 큐 등록. */
+export function useCreateRfRun() {
+  return useMutation({
+    mutationFn: (body: RfRunCreate) => rfRunApi.create(body),
+    onSuccess: () => {
+      toast.info('RF 시뮬레이션 시작', '분석이 완료되면 결과를 알려드릴게요.');
+    },
+    onError: (err) => {
+      const e = err as HttpError | null;
+      toast.error(
+        'RF 시뮬레이션 요청 실패',
+        e?.message ?? '잠시 후 다시 시도해주세요.',
+      );
+    },
+  });
+}
+
+/**
+ * RF Run 진행 상태 폴링.
+ * succeeded/failed 시 자동 중지 + 토스트 (중복 발화 방지).
+ */
+export function useRfRun(rfRunId: UUID | null) {
+  const settledRef = useRef<string | null>(null);
+
+  const query = useQuery({
+    queryKey: ['rf-run', rfRunId] as const,
+    queryFn: () => rfRunApi.get(rfRunId as UUID),
+    enabled: !!rfRunId,
+    refetchInterval: (q) => {
+      const s = q.state.data?.status;
+      if (s === 'succeeded' || s === 'failed') return false;
+      return POLL_INTERVAL_MS;
+    },
+    refetchIntervalInBackground: false,
+  });
+
+  useEffect(() => {
+    const data = query.data;
+    if (!data || !rfRunId) return;
+    if (settledRef.current === rfRunId) return;
+    if (data.status === 'succeeded') {
+      settledRef.current = rfRunId;
+      toast.success('RF 시뮬레이션 완료', '결과를 확인해주세요.');
+    } else if (data.status === 'failed') {
+      settledRef.current = rfRunId;
+      const err = (data.metrics_json?.['error_message'] as string | undefined) ?? undefined;
+      toast.error('RF 시뮬레이션 실패', err ?? '잠시 후 다시 시도해주세요.');
+    }
+  }, [query.data, rfRunId]);
+
+  useEffect(() => {
+    settledRef.current = null;
+  }, [rfRunId]);
+
+  const rfRun: RfRun | null = query.data ?? null;
+  const status = rfRun?.status;
+  return {
+    rfRun,
+    isPolling: !!rfRunId && status !== 'succeeded' && status !== 'failed',
+    isSucceeded: status === 'succeeded',
+    isFailed: status === 'failed',
+  };
+}
+
+/** GET /rf-runs/{id}/maps — RF Run 이 succeeded 된 후에만 활성화 */
+export function useRfMaps(rfRunId: UUID | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ['rf-maps', rfRunId] as const,
+    queryFn: () => rfRunApi.listMaps(rfRunId as UUID),
+    enabled: !!rfRunId && enabled,
+  });
+}

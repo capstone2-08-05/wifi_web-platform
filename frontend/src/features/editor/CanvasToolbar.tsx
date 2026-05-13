@@ -4,6 +4,8 @@ import {
   Square,
   Circle,
   Type,
+  Hexagon,
+  DoorOpen,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -29,6 +31,8 @@ const TOP_TOOLS: ToolDef[] = [
 
 const SHAPE_TOOLS: ToolDef[] = [
   { id: 'rect', icon: Square, label: '벽/구조물', onClick: 'change' },
+  { id: 'polygon', icon: Hexagon, label: '방 만들기', onClick: 'change' },
+  { id: 'opening', icon: DoorOpen, label: '문/창 추가', onClick: 'change' },
   { id: 'circle', icon: Circle, label: '가구 배치', onClick: 'change' },
   { id: 'text', icon: Type, label: '구역 라벨', onClick: 'change' },
 ];
