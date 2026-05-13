@@ -94,7 +94,9 @@ export function AppLayout() {
                 <button
                   type="button"
                   onClick={editorActions.onSaveFloorplan}
-                  className="inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-sm font-medium text-foreground/80 shadow-sm transition-colors hover:bg-accent"
+                  disabled={!editorActions.onSaveFloorplan}
+                  title={!editorActions.onSaveFloorplan ? '저장할 분석 결과가 없습니다' : undefined}
+                  className="inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-sm font-medium text-foreground/80 shadow-sm transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-background"
                 >
                   <Save className="h-4 w-4" />
                   도면 저장하기

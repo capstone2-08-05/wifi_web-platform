@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, Map as MapIcon } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ChevronRight, Loader2, Map as MapIcon } from 'lucide-react';
 import { useAppStore } from '@/stores/app-store';
 import { useEditorStore } from '@/stores/editor-store';
 import {
@@ -63,12 +64,12 @@ export default function EditorPage() {
   const nextVersionNo =
     versions.length > 0 ? Math.max(...versions.map((v) => v.version_no)) + 1 : 1;
 
-  const handleFile = (file: File) => {
+  const handleFile = (file: File, realWidthM: number) => {
     setPendingFileName(file.name);
     if (!floorId) return;
     analyze.mutate({
       file,
-      real_width_m: 10,
+      real_width_m: realWidthM,
       project_id: projectId ?? undefined,
       floor_id: floorId,
     });
@@ -95,14 +96,17 @@ export default function EditorPage() {
   const openFilePicker = () => fileInputRef.current?.click();
 
   // Wire global header buttons (도면 불러오기 / 도면 저장하기) to this page.
+  // 저장하기는 활성 draft 가 있고 다른 mutation 이 안 돌고 있을 때만 활성화.
+  const canSave =
+    !!activeDraftSummary && !analyze.isPending && !promote.isPending && !removeDraft.isPending;
   useEffect(() => {
     registerActions({
       onLoadFloorplan: openFilePicker,
-      onSaveFloorplan: handlePromote,
+      onSaveFloorplan: canSave ? handlePromote : undefined,
     });
     return () => clearActions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeDraftSummary?.id, nextVersionNo]);
+  }, [activeDraftSummary?.id, nextVersionNo, canSave]);
 
   const isBusy = analyze.isPending;
   const showOverlay =
@@ -117,47 +121,51 @@ export default function EditorPage() {
       />
 
       <div className="relative flex flex-1 overflow-hidden">
-        <CanvasArea
-          fileInputRef={fileInputRef}
-          isPending={isBusy}
-          errorMessage={readError(analyze.error) ?? undefined}
-          selectedFileName={pendingFileName}
-          onFile={handleFile}
-        />
+        {floorId ? (
+          <>
+            <CanvasArea
+              fileInputRef={fileInputRef}
+              isPending={isBusy}
+              errorMessage={readError(analyze.error) ?? undefined}
+              selectedFileName={pendingFileName}
+              onFile={handleFile}
+            />
 
-        {showOverlay && (
-          <OverlayLayer>
-            {!floorId ? (
-              <NoFloorCard hasProject={!!projectId} />
-            ) : justPromoted ? (
-              <PromotedCard
-                version={justPromoted}
-                onReupload={() => {
-                  setJustPromoted(null);
-                  setPendingFileName(null);
-                }}
-              />
-            ) : analyze.isPending ? (
-              <BusyOverlay
-                title="도면 분석 중..."
-                subtitle="이미지 분석은 수십 초 정도 걸릴 수 있습니다."
-              />
-            ) : activeDraft ? (
-              <ReviewCard
-                draft={activeDraft}
-                nextVersionNo={nextVersionNo}
-                isPromoting={promote.isPending}
-                isResetting={removeDraft.isPending}
-                onPromote={handlePromote}
-                onReset={handleResetDraft}
-                errorMessage={
-                  readError(promote.error) ?? readError(removeDraft.error) ?? undefined
-                }
-              />
-            ) : activeDraftSummary ? (
-              <BusyOverlay title="Draft 불러오는 중..." />
-            ) : null}
-          </OverlayLayer>
+            {showOverlay && (
+              <OverlayLayer>
+                {justPromoted ? (
+                  <PromotedCard
+                    version={justPromoted}
+                    onReupload={() => {
+                      setJustPromoted(null);
+                      setPendingFileName(null);
+                    }}
+                  />
+                ) : analyze.isPending ? (
+                  <BusyOverlay
+                    title="도면 분석 중..."
+                    subtitle="이미지 분석은 수십 초 정도 걸릴 수 있습니다."
+                  />
+                ) : activeDraft ? (
+                  <ReviewCard
+                    draft={activeDraft}
+                    nextVersionNo={nextVersionNo}
+                    isPromoting={promote.isPending}
+                    isResetting={removeDraft.isPending}
+                    onPromote={handlePromote}
+                    onReset={handleResetDraft}
+                    errorMessage={
+                      readError(promote.error) ?? readError(removeDraft.error) ?? undefined
+                    }
+                  />
+                ) : activeDraftSummary ? (
+                  <BusyOverlay title="Draft 불러오는 중..." />
+                ) : null}
+              </OverlayLayer>
+            )}
+          </>
+        ) : (
+          <NoFloorScreen hasProject={!!projectId} />
         )}
       </div>
 
@@ -188,16 +196,29 @@ function BusyOverlay({ title, subtitle }: { title: string; subtitle?: string }) 
   );
 }
 
-function NoFloorCard({ hasProject }: { hasProject: boolean }) {
+function NoFloorScreen({ hasProject }: { hasProject: boolean }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed bg-card p-10 text-center shadow-sm">
-      <MapIcon className="h-8 w-8 text-muted-foreground/60" />
-      <p className="text-sm font-medium">
-        {hasProject ? '층을 선택해주세요' : '프로젝트를 먼저 선택해주세요'}
-      </p>
-      <p className="text-xs text-muted-foreground">
-        대시보드에서 작업할 도면(층)을 선택하면 편집을 시작할 수 있습니다.
-      </p>
+    <div className="flex flex-1 items-center justify-center bg-muted/30 p-10">
+      <div className="flex max-w-md flex-col items-center justify-center gap-3 rounded-xl border border-dashed bg-background p-10 text-center shadow-sm">
+        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
+          <MapIcon className="h-6 w-6 text-primary" strokeWidth={1.8} />
+        </div>
+        <p className="text-base font-semibold">
+          {hasProject ? '층을 선택해주세요' : '프로젝트를 먼저 선택해주세요'}
+        </p>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          대시보드에서 프로젝트와 도면(층)을 선택하면
+          <br />
+          편집을 시작할 수 있습니다.
+        </p>
+        <Link
+          to="/dashboard"
+          className="mt-2 inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          대시보드로 이동
+          <ChevronRight className="h-3.5 w-3.5" />
+        </Link>
+      </div>
     </div>
   );
 }
