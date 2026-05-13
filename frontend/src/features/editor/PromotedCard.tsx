@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
-import { CheckCircle2 } from 'lucide-react';
+import { CheckCircle2, History } from 'lucide-react';
 import type { SceneVersion } from '@/types/scene';
+import { useVersionPatchLogs } from '@/hooks/use-patch-logs';
 
 interface PromotedCardProps {
   version: SceneVersion;
@@ -8,6 +9,10 @@ interface PromotedCardProps {
 }
 
 export function PromotedCard({ version, onReupload }: PromotedCardProps) {
+  // 확정본 변경 이력 (§9.1) — Draft 단계 변경은 안 쌓이고, 확정 후 PATCH 시 기록됨.
+  const patchLogsQuery = useVersionPatchLogs(version.id, { page: 1, page_size: 1 });
+  const totalPatchLogs = patchLogsQuery.data?.total ?? 0;
+
   return (
     <div className="rounded-xl border bg-card p-6 shadow-sm">
       <div className="flex items-start gap-3">
@@ -29,6 +34,11 @@ export function PromotedCard({ version, onReupload }: PromotedCardProps) {
         <Row label="floor_id" value={version.floor_id} mono />
         <Row label="source_draft_id" value={version.source_draft_id} mono />
       </dl>
+
+      <div className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
+        <History className="h-3.5 w-3.5" />
+        변경 이력 {totalPatchLogs} 건 (확정 후 수정 시 기록됩니다)
+      </div>
 
       <div className="mt-5 flex justify-end gap-2">
         <button

@@ -1,4 +1,4 @@
-import { ChevronDown, RotateCcw, ScanLine, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, RotateCcw, ScanLine, Sparkles, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type {
   DraftObject,
@@ -7,6 +7,13 @@ import type {
   DraftWall,
   SelectedEntityResolved,
 } from '@/types/scene';
+import type { Material } from '@/types/material';
+import type { MaterialHypothesis } from '@/types/material-hypothesis';
+import { useMaterials } from '@/hooks/use-materials';
+import {
+  useSelectMaterialHypothesis,
+  useWallMaterialHypotheses,
+} from '@/hooks/use-material-hypotheses';
 
 interface PropertiesPanelProps {
   selected: SelectedEntityResolved | null;
@@ -28,12 +35,13 @@ const KIND_LABELS: Record<SelectedEntityResolved['kind'], string> = {
   object: '객체',
 };
 
-const MATERIAL_OPTIONS = [
-  '목재 테이블 (신호 감쇠 보통)',
-  '금속 캐비닛 (신호 감쇠 높음)',
-  '유리 (신호 감쇠 낮음)',
-  '플라스틱 (신호 감쇠 매우 낮음)',
-  '콘크리트 벽 (신호 감쇠 매우 높음)',
+/** 백엔드 Materials API 가 비어있을 때 fallback 으로 쓸 mock 목록. */
+const FALLBACK_MATERIAL_NAMES = [
+  '목재',
+  '금속',
+  '유리',
+  '플라스틱',
+  '콘크리트',
 ];
 
 export function PropertiesPanel({
@@ -98,7 +106,7 @@ function SelectedBody({
 
       {selected.kind === 'wall' && (
         <Section label="장애물 재질 설정">
-          <MaterialSelect
+          <MaterialSelectWired
             value={getMaterial(selected)}
             onChange={onUpdateMaterial}
             disabled={isSaving}
@@ -108,6 +116,10 @@ function SelectedBody({
             {isSaving && ' 저장 중…'}
           </p>
         </Section>
+      )}
+
+      {selected.kind === 'wall' && (
+        <WallHypothesesSection wallId={selected.data.id} />
       )}
 
       <div className="flex gap-2">
@@ -211,7 +223,11 @@ function ObjectFields({ object }: { object: DraftObject }) {
   );
 }
 
-function MaterialSelect({
+/**
+ * 백엔드 §12.1 GET /materials 결과를 옵션으로 사용.
+ * 로딩 중이거나 비어있으면 fallback 옵션으로 동작.
+ */
+function MaterialSelectWired({
   value,
   onChange,
   disabled,
@@ -219,6 +235,43 @@ function MaterialSelect({
   value: string;
   onChange?: (next: string) => void;
   disabled?: boolean;
+}) {
+  const { data: materials, isLoading } = useMaterials();
+  const options = materialNamesFrom(materials);
+  return (
+    <MaterialSelect
+      value={value}
+      onChange={onChange}
+      disabled={disabled || isLoading || !onChange}
+      options={options}
+      sourceLabel={
+        materials && materials.length > 0
+          ? '백엔드 재질 DB'
+          : isLoading
+          ? '재질 목록 불러오는 중...'
+          : '기본 재질 목록 사용 (백엔드 비어있음)'
+      }
+    />
+  );
+}
+
+function materialNamesFrom(materials: Material[] | undefined): string[] {
+  if (!materials || materials.length === 0) return FALLBACK_MATERIAL_NAMES;
+  return materials.map((m) => m.material_name);
+}
+
+function MaterialSelect({
+  value,
+  onChange,
+  disabled,
+  options,
+  sourceLabel,
+}: {
+  value: string;
+  onChange?: (next: string) => void;
+  disabled?: boolean;
+  options: string[];
+  sourceLabel?: string;
 }) {
   return (
     <div className="relative">
@@ -228,10 +281,10 @@ function MaterialSelect({
         disabled={disabled || !onChange}
         className="w-full appearance-none rounded-md border bg-background px-3 py-2.5 pr-9 text-sm text-foreground shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-70"
       >
-        {!MATERIAL_OPTIONS.includes(value) && value && (
+        {!options.includes(value) && value && (
           <option value={value}>{value}</option>
         )}
-        {MATERIAL_OPTIONS.map((m) => (
+        {options.map((m) => (
           <option key={m} value={m}>
             {m}
           </option>
@@ -239,8 +292,88 @@ function MaterialSelect({
         {!value && <option value="">재질 미지정</option>}
       </select>
       <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+      {sourceLabel && (
+        <p className="mt-1 text-[10px] text-muted-foreground/80">{sourceLabel}</p>
+      )}
     </div>
   );
+}
+
+/**
+ * §12.3 — 벽의 자동 추출된 재질 후보 목록.
+ * 백엔드는 *확정본 Wall* 기준이라 Draft 단계에선 빈 응답 가능.
+ * 비어있거나 에러면 섹션 자체를 안 보임 (조용히 graceful 처리).
+ */
+function WallHypothesesSection({ wallId }: { wallId: string }) {
+  const { data, isError } = useWallMaterialHypotheses(wallId);
+  const select = useSelectMaterialHypothesis();
+
+  if (isError || !data || data.length === 0) return null;
+
+  return (
+    <Section label="추출된 재질 후보">
+      <ul className="space-y-1.5">
+        {data.map((h) => (
+          <HypothesisRow
+            key={h.id}
+            hypothesis={h}
+            onSelect={() => select.mutate(h.id)}
+            disabled={select.isPending}
+          />
+        ))}
+      </ul>
+      <p className="mt-2 text-[10px] text-muted-foreground/80">
+        AI 가 추출한 후보. 클릭하면 해당 후보로 확정됩니다.
+      </p>
+    </Section>
+  );
+}
+
+function HypothesisRow({
+  hypothesis,
+  onSelect,
+  disabled,
+}: {
+  hypothesis: MaterialHypothesis;
+  onSelect: () => void;
+  disabled: boolean;
+}) {
+  const confidence = parseConfidencePercent(hypothesis.confidence);
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onSelect}
+        disabled={disabled || hypothesis.is_selected}
+        className={cn(
+          'flex w-full items-center justify-between gap-2 rounded-md border bg-background px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent disabled:cursor-not-allowed',
+          hypothesis.is_selected && 'border-primary/40 bg-primary/5 disabled:opacity-100',
+        )}
+      >
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium">{hypothesis.material_name}</p>
+          {confidence != null && (
+            <p className="text-[11px] text-muted-foreground">신뢰도 {confidence}%</p>
+          )}
+        </div>
+        {hypothesis.is_selected ? (
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+            <Check className="h-3 w-3" />
+            적용됨
+          </span>
+        ) : (
+          <Sparkles className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        )}
+      </button>
+    </li>
+  );
+}
+
+function parseConfidencePercent(value: string | null): number | null {
+  if (value == null) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n * 100);
 }
 
 function EmptyBody() {
