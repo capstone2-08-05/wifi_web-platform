@@ -6,18 +6,16 @@ import {
   Smartphone,
   Activity,
   Settings,
-  Bell,
   Wifi,
   FolderOpen,
   Save,
-  User,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useAuthStore } from '@/stores/auth-store';
-import { useLogout } from '@/hooks/use-auth';
 import { useEditorStore } from '@/stores/editor-store';
 import { ProjectSelector } from '@/features/header/ProjectSelector';
 import { FloorSelector } from '@/features/header/FloorSelector';
+import { ProfileMenu } from '@/features/header/ProfileMenu';
+import { NotificationsMenu } from '@/features/header/NotificationsMenu';
 
 const NAV = [
   { to: '/dashboard', label: '대시보드', icon: LayoutGrid },
@@ -28,8 +26,6 @@ const NAV = [
 ] as const;
 
 export function AppLayout() {
-  const user = useAuthStore((s) => s.user);
-  const logout = useLogout();
   const location = useLocation();
   const editorActions = useEditorStore((s) => s.actions);
   const isEditor = location.pathname.startsWith('/editor');
@@ -86,7 +82,9 @@ export function AppLayout() {
                 <button
                   type="button"
                   onClick={editorActions.onLoadFloorplan}
-                  className="inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-sm font-medium text-foreground/80 shadow-sm transition-colors hover:bg-accent"
+                  disabled={!editorActions.onLoadFloorplan}
+                  title={!editorActions.onLoadFloorplan ? '층을 선택하거나 현재 작업을 마친 후 새 도면을 불러올 수 있습니다' : undefined}
+                  className="inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-sm font-medium text-foreground/80 shadow-sm transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-background"
                 >
                   <FolderOpen className="h-4 w-4" />
                   도면 불러오기
@@ -110,35 +108,13 @@ export function AppLayout() {
               </div>
             )}
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <button className="inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-sm font-medium text-foreground/80 shadow-sm transition-colors hover:bg-accent">
               <Smartphone className="h-4 w-4" />
               모바일 앱 연결
             </button>
-            <button className="relative rounded-md p-2 hover:bg-accent" aria-label="알림">
-              <Bell className="h-5 w-5 text-muted-foreground" />
-              <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-destructive" />
-            </button>
-            <div className="flex items-center gap-2">
-              <button
-                aria-label="프로필"
-                className="flex h-9 w-9 items-center justify-center rounded-full bg-muted text-muted-foreground hover:bg-accent"
-              >
-                {user?.name ? (
-                  <span className="text-xs font-medium">
-                    {user.name.slice(0, 1)}
-                  </span>
-                ) : (
-                  <User className="h-4 w-4" />
-                )}
-              </button>
-              <button
-                onClick={logout}
-                className="rounded-md border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                로그아웃
-              </button>
-            </div>
+            <NotificationsMenu />
+            <ProfileMenu />
           </div>
         </header>
 

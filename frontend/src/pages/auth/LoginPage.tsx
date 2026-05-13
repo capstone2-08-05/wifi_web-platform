@@ -31,9 +31,14 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
       <div className="w-full max-w-sm rounded-xl border bg-card p-8 shadow-sm">
-        <div className="mb-6 flex items-center justify-center gap-2">
-          <Wifi className="h-6 w-6 text-primary" />
-          <h1 className="text-xl font-semibold">Wi-Fang!</h1>
+        <div className="mb-6 flex flex-col items-center gap-2 text-center">
+          <div className="flex items-center gap-2">
+            <Wifi className="h-6 w-6 text-primary" />
+            <h1 className="text-xl font-semibold tracking-tight">Wi-Fi Space</h1>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            매장의 와이파이를 더 똑똑하게
+          </p>
         </div>
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           <div className="space-y-1.5">
