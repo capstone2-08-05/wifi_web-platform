@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.schemas.pagination import PaginatedResponse
 
 from app.core.errors import AppError, ErrorCode
+from app.core.geom import wkb_to_geojson
 from app.core.settings import (
     DEFAULT_DRAFT_ANALYSIS_METHOD,
     DEFAULT_DRAFT_FLOOR_NAME,
@@ -36,6 +37,10 @@ from app.models import (
 )
 from app.schemas.scene_draft import (
     AnalyzeFromAssetResponse,
+    DraftObjectResponse,
+    DraftOpeningResponse,
+    DraftRoomResponse,
+    DraftWallResponse,
     SaveSceneDraftRequestDTO,
     SaveSceneDraftResultDTO,
     SceneDraftDetailResponse,
@@ -361,12 +366,79 @@ def get_scene_draft(
         source_method=scene_draft.source_method,
         summary_json=scene_draft.summary_json,
         status=scene_draft.status,
-        rooms=scene_draft.draft_rooms,
-        walls=scene_draft.draft_walls,
-        openings=scene_draft.draft_openings,
-        objects=scene_draft.draft_objects,
+        rooms=[_draft_room_to_response(r) for r in scene_draft.draft_rooms],
+        walls=[_draft_wall_to_response(w) for w in scene_draft.draft_walls],
+        openings=[_draft_opening_to_response(o) for o in scene_draft.draft_openings],
+        objects=[_draft_object_to_response(o) for o in scene_draft.draft_objects],
         created_at=scene_draft.created_at,
         updated_at=scene_draft.updated_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# ORM → DTO 변환 (WKB → GeoJSON 변환 포함)
+# ---------------------------------------------------------------------------
+def _draft_room_to_response(r: DraftRoom) -> DraftRoomResponse:
+    return DraftRoomResponse(
+        id=r.id,
+        scene_draft_id=r.scene_draft_id,
+        room_name=r.room_name,
+        room_type=r.room_type,
+        confidence=r.confidence,
+        source_method=r.source_method,
+        polygon_geom=wkb_to_geojson(r.polygon_geom),
+        centroid_geom=wkb_to_geojson(r.centroid_geom),
+        metadata_json=r.metadata_json or {},
+        created_at=r.created_at,
+    )
+
+
+def _draft_wall_to_response(w: DraftWall) -> DraftWallResponse:
+    return DraftWallResponse(
+        id=w.id,
+        scene_draft_id=w.scene_draft_id,
+        wall_role=w.wall_role,
+        thickness_m=w.thickness_m,
+        height_m=w.height_m,
+        material_label=w.material_label,
+        confidence=w.confidence,
+        source_method=w.source_method,
+        centerline_geom=wkb_to_geojson(w.centerline_geom),
+        polygon_geom=wkb_to_geojson(w.polygon_geom),
+        metadata_json=w.metadata_json or {},
+        created_at=w.created_at,
+    )
+
+
+def _draft_opening_to_response(o: DraftOpening) -> DraftOpeningResponse:
+    return DraftOpeningResponse(
+        id=o.id,
+        scene_draft_id=o.scene_draft_id,
+        wall_id=o.wall_id,
+        opening_type=o.opening_type,
+        width_m=o.width_m,
+        height_m=o.height_m,
+        sill_height_m=o.sill_height_m,
+        confidence=o.confidence,
+        source_method=o.source_method,
+        line_geom=wkb_to_geojson(o.line_geom),
+        polygon_geom=wkb_to_geojson(o.polygon_geom),
+        metadata_json=o.metadata_json or {},
+        created_at=o.created_at,
+    )
+
+
+def _draft_object_to_response(o: DraftObject) -> DraftObjectResponse:
+    return DraftObjectResponse(
+        id=o.id,
+        scene_draft_id=o.scene_draft_id,
+        object_type=o.object_type,
+        confidence=o.confidence,
+        source_method=o.source_method,
+        point_geom=wkb_to_geojson(o.point_geom),
+        z_m=o.z_m,
+        metadata_json=o.metadata_json or {},
+        created_at=o.created_at,
     )
 
 def delete_scene_draft(

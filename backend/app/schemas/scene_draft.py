@@ -78,6 +78,8 @@ class DraftRoomResponse(BaseModel):
     room_type: str | None
     confidence: Decimal | None
     source_method: str | None
+    polygon_geom: dict[str, Any] | None = None
+    centroid_geom: dict[str, Any] | None = None
     metadata_json: dict[str, Any]
     created_at: datetime
 
@@ -93,6 +95,8 @@ class DraftWallResponse(BaseModel):
     material_label: str | None
     confidence: Decimal | None
     source_method: str | None
+    centerline_geom: dict[str, Any] | None = None
+    polygon_geom: dict[str, Any] | None = None
     metadata_json: dict[str, Any]
     created_at: datetime
 
@@ -109,6 +113,8 @@ class DraftOpeningResponse(BaseModel):
     sill_height_m: Decimal | None
     confidence: Decimal | None
     source_method: str | None
+    line_geom: dict[str, Any] | None = None
+    polygon_geom: dict[str, Any] | None = None
     metadata_json: dict[str, Any]
     created_at: datetime
 
@@ -121,6 +127,7 @@ class DraftObjectResponse(BaseModel):
     object_type: str
     confidence: Decimal | None
     source_method: str | None
+    point_geom: dict[str, Any] | None = None
     z_m: Decimal | None
     metadata_json: dict[str, Any]
     created_at: datetime
