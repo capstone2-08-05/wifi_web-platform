@@ -12,6 +12,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -122,7 +123,13 @@ async def poll_floorplan_job(
     job_id: str,
     current_user: User,
 ) -> Job:
-    """Job 조회. status=running 이면 S3 결과 확인 → 완료/실패 시 본 트랜잭션에서 마무리."""
+    """Job 조회. status=running 이면 S3 결과 확인 → 완료/실패 시 본 트랜잭션에서 마무리.
+
+    동시 폴링 안전성:
+      - 비싼 S3/CPU 작업은 lock 없이 진행 (race window 허용)
+      - 최종 DB write 직전에 `with_for_update()` 로 row lock 잡고 status 재확인
+      - 이미 다른 poller 가 완료/실패 처리했다면 그 결과를 그대로 반환 (idempotent)
+    """
     job = _get_owned_floorplan_job_or_404(db, job_id, current_user)
 
     if job.status != JOB_STATUS_RUNNING:
@@ -141,25 +148,40 @@ async def poll_floorplan_job(
             message="Job.input_json.sagemaker.output_prefix missing",
         )
 
-    status = sagemaker_inference_service.check_status(
-        output_prefix, sagemaker_failure_location=sagemaker_failure_location
+    # boto3 는 blocking → threadpool 로 이벤트 루프 보호
+    status = await run_in_threadpool(
+        sagemaker_inference_service.check_status,
+        output_prefix,
+        sagemaker_failure_location=sagemaker_failure_location,
     )
 
     if status == "running":
         return job
 
     if status == "infra_failed":
-        return _mark_job_failed(
+        return _claim_and_finalize(
             db,
-            job,
-            code=ErrorCode.INTERNAL_SERVER_ERROR,
-            stage="sagemaker_infra",
-            message=f"SageMaker infrastructure error (see {sagemaker_failure_location})",
+            job_id,
+            current_user,
+            finalize=lambda locked: _mark_job_failed(
+                db,
+                locked,
+                code=ErrorCode.INTERNAL_SERVER_ERROR,
+                stage="sagemaker_infra",
+                message=f"SageMaker infrastructure error (see {sagemaker_failure_location})",
+            ),
         )
 
     if status == "failed":
-        failure = sagemaker_inference_service.download_failure(output_prefix)
-        return _mark_job_failed_from_container(db, job, failure)
+        failure = await run_in_threadpool(
+            sagemaker_inference_service.download_failure, output_prefix
+        )
+        return _claim_and_finalize(
+            db,
+            job_id,
+            current_user,
+            finalize=lambda locked: _mark_job_failed_from_container(db, locked, failure),
+        )
 
     # status == "completed"
     return await _complete_floorplan_job(db, job, current_user, output_prefix)
@@ -174,8 +196,10 @@ async def _complete_floorplan_job(
     current_user: User,
     output_prefix: str,
 ) -> Job:
-    inference = sagemaker_inference_service.download_result(
-        job_id=str(job.id), output_prefix=output_prefix
+    inference = await run_in_threadpool(
+        sagemaker_inference_service.download_result,
+        str(job.id),
+        output_prefix,
     )
 
     input_meta = job.input_json or {}
@@ -190,40 +214,57 @@ async def _complete_floorplan_job(
             filename=filename,
             real_width_m=real_width_m,
         )
+
+        # race-safe: row lock 잡고 status 재확인. 다른 poller 가 이미 done/failed 라면 그대로 반환.
+        locked = _lock_job(db, str(job.id))
+        if locked.status != JOB_STATUS_RUNNING:
+            return locked
+
         request_dto = SaveSceneDraftRequestDTO(
             scene=scene,
             upload=UploadStorageMetadataDTO(**upload_meta) if upload_meta else UploadStorageMetadataDTO(),
-            project_id=job.project_id,
-            floor_id=job.floor_id,
+            project_id=locked.project_id,
+            floor_id=locked.floor_id,
             created_by=created_by,
         )
         save_result = save_scene_draft(db, request_dto, current_user)
     except SageMakerInferenceFailure as failure:
         # build 중에 발생할 일은 거의 없지만 방어적으로
-        return _mark_job_failed_from_container(db, job, failure)
-    except AppError as exc:
-        return _mark_job_failed(
+        return _claim_and_finalize(
             db,
-            job,
-            code=exc.code,
-            stage="scene_build",
-            message=exc.message,
+            str(job.id),
+            current_user,
+            finalize=lambda l: _mark_job_failed_from_container(db, l, failure),
+        )
+    except AppError as exc:
+        return _claim_and_finalize(
+            db,
+            str(job.id),
+            current_user,
+            finalize=lambda l: _mark_job_failed(
+                db, l, code=exc.code, stage="scene_build", message=exc.message
+            ),
         )
     except Exception as exc:
         logger.exception("Unexpected error completing floorplan job %s", job.id)
-        return _mark_job_failed(
+        return _claim_and_finalize(
             db,
-            job,
-            code=ErrorCode.INTERNAL_SERVER_ERROR,
-            stage="scene_build",
-            message=f"unexpected error: {exc}",
+            str(job.id),
+            current_user,
+            finalize=lambda l: _mark_job_failed(
+                db,
+                l,
+                code=ErrorCode.INTERNAL_SERVER_ERROR,
+                stage="scene_build",
+                message=f"unexpected error: {exc}",
+            ),
         )
     finally:
         inference.cleanup()
 
-    # 성공 — Job 마무리
-    job.status = JOB_STATUS_DONE
-    job.result_json = {
+    # 성공 — Job 마무리 (locked 위에서 잡혀 있음, 같은 트랜잭션)
+    locked.status = JOB_STATUS_DONE
+    locked.result_json = {
         "scene_draft_id": save_result.scene_draft_id,
         "scale_ratio_m_per_px": scene.scale_ratio,
         "counts": {
@@ -233,11 +274,11 @@ async def _complete_floorplan_job(
             "rooms": len(scene.rooms),
         },
     }
-    job.error_message = None
-    job.finished_at = _now_utc()
+    locked.error_message = None
+    locked.finished_at = _now_utc()
     try:
         db.commit()
-        db.refresh(job)
+        db.refresh(locked)
     except SQLAlchemyError as exc:
         db.rollback()
         raise AppError(
@@ -245,8 +286,8 @@ async def _complete_floorplan_job(
             f"Failed to mark floorplan job done: {exc}",
             500,
         ) from exc
-    logger.info("Floorplan job done job_id=%s scene_draft_id=%s", job.id, save_result.scene_draft_id)
-    return job
+    logger.info("Floorplan job done job_id=%s scene_draft_id=%s", locked.id, save_result.scene_draft_id)
+    return locked
 
 
 def _mark_job_failed_from_container(
@@ -330,3 +371,26 @@ def _get_owned_floorplan_job_or_404(
     if job is None:
         raise AppError(ErrorCode.JOB_NOT_FOUND, "Floorplan analysis job not found.", 404)
     return job
+
+
+def _lock_job(db: Session, job_id: str) -> Job:
+    """SELECT ... FOR UPDATE 로 Job row lock 획득. 같은 row 에 대한 동시 poller 직렬화.
+
+    인증/소유권 확인은 이미 _get_owned_floorplan_job_or_404 에서 끝났다고 가정.
+    """
+    stmt = select(Job).where(Job.id == job_id).with_for_update()
+    return db.execute(stmt).scalar_one()
+
+
+def _claim_and_finalize(
+    db: Session,
+    job_id: str,
+    current_user: User,
+    *,
+    finalize,
+) -> Job:
+    """동시 폴링 시 중복 실패 처리 방지. row lock 후 상태 재확인 → 아직 running 일 때만 finalize 호출."""
+    locked = _lock_job(db, job_id)
+    if locked.status != JOB_STATUS_RUNNING:
+        return locked
+    return finalize(locked)

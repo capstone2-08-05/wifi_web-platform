@@ -129,7 +129,7 @@ class FusionService:
             rooms=[r.model_dump() for r in extracted_rooms],
             topology=topology_result.model_dump(),
             objects=[obj.model_dump() for obj in furniture_objects],
-            sagemaker_meta=sagemaker_meta,
+            inference_metadata=sagemaker_meta,
         )
 
 

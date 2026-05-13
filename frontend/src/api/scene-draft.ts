@@ -2,13 +2,19 @@ import { api } from './client';
 import type { Paginated, UUID } from '@/types/common';
 import type {
   AnalyzeFloorplanResponse,
+  AnalyzeFromAssetResponse,
   DraftObject,
   DraftOpening,
   DraftRoom,
   DraftWall,
   SceneDraft,
   SceneDraftStatus,
+  SceneDraftSummary,
 } from '@/types/scene';
+
+// AI 분석은 수십 초 ~ 1분 이상 걸릴 수 있어 axios 글로벌 30s 로는 부족함.
+// (백엔드 비동기 전환되면 빠른 응답으로 바뀌어 이 override 가 사라질 예정)
+const ANALYZE_TIMEOUT_MS = 180_000;
 
 export interface AnalyzeFloorplanParams {
   file: File;
@@ -16,6 +22,11 @@ export interface AnalyzeFloorplanParams {
   project_id?: UUID;
   floor_id?: UUID;
   created_by?: string;
+}
+
+export interface AnalyzeFromAssetParams {
+  asset_id: UUID;
+  real_width_m: number;
 }
 
 export interface SceneDraftListParams {
@@ -27,6 +38,7 @@ export interface SceneDraftListParams {
 }
 
 export const sceneDraftApi = {
+  // §6.1 POST /upload/floorplan/analyze
   analyzeFloorplan: ({ file, ...rest }: AnalyzeFloorplanParams) => {
     const fd = new FormData();
     fd.append('file', file);
@@ -37,17 +49,32 @@ export const sceneDraftApi = {
     return api
       .post<AnalyzeFloorplanResponse>('/upload/floorplan/analyze', fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
-        timeout: 5*60*1000,
+        timeout: ANALYZE_TIMEOUT_MS,
       })
       .then((r) => r.data);
   },
 
-  list: (params?: SceneDraftListParams) =>
-    api.get<Paginated<SceneDraft>>('/scene-drafts', { params }).then((r) => r.data),
+  // §6.1.1 POST /assets/{asset_id}/analyze
+  analyzeFromAsset: ({ asset_id, real_width_m }: AnalyzeFromAssetParams) =>
+    api
+      .post<AnalyzeFromAssetResponse>(
+        `/assets/${asset_id}/analyze`,
+        { real_width_m },
+        { timeout: ANALYZE_TIMEOUT_MS },
+      )
+      .then((r) => r.data),
 
+  // §6.3 GET /scene-drafts  — 자식 배열 없는 summary 응답
+  list: (params?: SceneDraftListParams) =>
+    api.get<Paginated<SceneDraftSummary>>('/scene-drafts', { params }).then((r) => r.data),
+
+  // §6.2 GET /scene-drafts/{id}
   get: (id: UUID) => api.get<SceneDraft>(`/scene-drafts/${id}`).then((r) => r.data),
 
+  // §6.5 DELETE /scene-drafts/{id}
   remove: (id: UUID) => api.delete<void>(`/scene-drafts/${id}`).then((r) => r.data),
+
+  // §6.4 Draft 자식 리소스 CRUD ----------------------------------------------
 
   // Rooms
   patchRoom: (roomId: UUID, body: Partial<DraftRoom>) =>

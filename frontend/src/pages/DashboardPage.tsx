@@ -1,13 +1,20 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  Activity,
   ChevronRight,
+  ImageOff,
   Map,
   Radio,
   Smartphone,
   type LucideIcon,
 } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
+import { HelpFab } from '@/components/HelpFab';
 import { cn } from '@/lib/utils';
+import { useAppStore } from '@/stores/app-store';
+import { FloorPreview } from '@/features/dashboard/FloorPreview';
+import { DiagnosticsList } from '@/features/dashboard/DiagnosticsList';
 
 type Tone = 'blue' | 'purple' | 'green';
 
@@ -66,38 +73,58 @@ const QUICK_ACTIONS = [
 }>;
 
 export default function DashboardPage() {
+  const projectId = useAppStore((s) => s.selectedProjectId);
+  const floorId = useAppStore((s) => s.selectedFloorId);
+  const hasFloorSelected = !!projectId && !!floorId;
+  const [expanded, setExpanded] = useState(false);
+  const toggleExpand = () => setExpanded((v) => !v);
+
   return (
-    <div className="space-y-6">
-      <header className="space-y-1.5">
-        <h1 className="text-2xl font-semibold tracking-tight">대시보드</h1>
-        <p className="text-sm text-muted-foreground">
-          현장 앱과 연동된 매장 도면 및 최신 진단 내역을 확인하세요.
-        </p>
-      </header>
+    <div className="relative h-full overflow-auto p-6">
+      <div className="space-y-6">
+        <header className="space-y-1.5">
+          <h1 className="text-2xl font-semibold tracking-tight">대시보드</h1>
+          <p className="text-sm text-muted-foreground">
+            현장 앱과 연동된 매장 도면 및 최신 진단 내역을 확인하세요.
+          </p>
+        </header>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[2fr_1fr]">
-        <Card title="현재 작업 중인 도면" className="min-h-96">
-          <div className="flex h-full min-h-80 items-center justify-center rounded-md bg-muted/40 text-sm text-muted-foreground">
-            (도면 미리보기 — Editor 구현 후 연결)
-          </div>
-        </Card>
-
-        <div className="space-y-6">
-          <Card title="빠른 실행">
-            <ul className="space-y-3">
-              {QUICK_ACTIONS.map((a) => (
-                <QuickAction key={a.to} {...a} />
-              ))}
-            </ul>
-          </Card>
-
-          <Card title="현장 앱 최근 진단">
-            <div className="text-sm text-muted-foreground">
-              (진단 API 스펙 수신 후 연결)
+        <div
+          className={
+            expanded
+              ? 'grid grid-cols-1 gap-6'
+              : 'grid grid-cols-1 gap-6 lg:grid-cols-[2fr_minmax(320px,1fr)]'
+          }
+        >
+          <Card title="현재 작업 중인 도면" className="min-h-140">
+            <div className={expanded ? 'h-180' : 'h-120'}>
+              {hasFloorSelected ? (
+                <FloorPreview expanded={expanded} onToggleExpand={toggleExpand} />
+              ) : (
+                <FloorEmptyState hasProject={!!projectId} />
+              )}
             </div>
           </Card>
+
+          {!expanded && (
+            <div className="space-y-6">
+              <Card title="빠른 실행">
+                <ul className="space-y-3">
+                  {QUICK_ACTIONS.map((a) => (
+                    <QuickAction key={a.to} {...a} />
+                  ))}
+                </ul>
+              </Card>
+
+              <Card title="현장 앱 최근 진단">
+                {hasFloorSelected ? <DiagnosticsList /> : <DiagnosticsEmptyState />}
+              </Card>
+            </div>
+          )}
         </div>
       </div>
+
+      <HelpFab />
     </div>
   );
 }
@@ -144,3 +171,41 @@ function QuickAction({
     </li>
   );
 }
+
+function FloorEmptyState({ hasProject }: { hasProject: boolean }) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 rounded-md border border-dashed bg-muted/20 p-8 text-center">
+      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+        <ImageOff className="h-5 w-5 text-muted-foreground" />
+      </div>
+      <p className="text-sm font-medium">
+        {hasProject ? '층을 선택해주세요' : '프로젝트를 먼저 선택해주세요'}
+      </p>
+      <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
+        상단 셀렉터에서 작업할 도면(층)을 선택하면 현재 작업 중인 도면 미리보기가 표시됩니다.
+      </p>
+      <Link
+        to="/editor"
+        className="mt-2 inline-flex items-center gap-1 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-accent"
+      >
+        공간 편집으로 이동
+        <ChevronRight className="h-3.5 w-3.5" />
+      </Link>
+    </div>
+  );
+}
+
+function DiagnosticsEmptyState() {
+  return (
+    <div className="flex flex-col items-center justify-center gap-2 py-6 text-center">
+      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-muted">
+        <Activity className="h-4 w-4 text-muted-foreground" />
+      </div>
+      <p className="text-sm font-medium">진단된 내역이 없습니다</p>
+      <p className="max-w-xs text-[11px] leading-relaxed text-muted-foreground">
+        모바일 앱으로 현장을 측정하면 이곳에 신호 약점 / 이상 구역이 표시됩니다.
+      </p>
+    </div>
+  );
+}
+

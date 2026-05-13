@@ -145,12 +145,14 @@ def save_scene_draft(
         db, request_dto.project_id, request_dto.floor_id, current_user,
     )
 
-    summary_json = {
+    summary_json: dict[str, Any] = {
         "source": DEFAULT_DRAFT_SOURCE,
         "analysis_method": DEFAULT_DRAFT_ANALYSIS_METHOD,
         "raw_result_version": request_dto.scene.scene_version,
         "storage": request_dto.upload.model_dump(),
     }
+    if request_dto.scene.inference_metadata:
+        summary_json["inference_metadata"] = request_dto.scene.inference_metadata
 
     scene_draft = SceneDraft(
         project_id=resolved_project_id,

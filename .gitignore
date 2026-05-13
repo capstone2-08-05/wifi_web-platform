@@ -35,3 +35,6 @@ build/
 *.log
 .DS_Store
 Thumbs.db
+
+# local docs
+frontend/api명세서.md
