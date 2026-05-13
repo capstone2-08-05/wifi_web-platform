@@ -6,6 +6,7 @@ import {
   useAnalyzeFloorplan,
   useDeleteSceneDraft,
   useDraftsForFloor,
+  useSceneDraft,
 } from '@/hooks/use-scene-draft';
 import { useFloorVersions, usePromoteDraft } from '@/hooks/use-scene-version';
 import { CanvasToolbar } from '@/features/editor/CanvasToolbar';
@@ -52,7 +53,12 @@ export default function EditorPage() {
   const [pendingFileName, setPendingFileName] = useState<string | null>(null);
   const [selected, setSelected] = useState<SelectedObject | null>(DEMO_SELECTED);
 
-  const activeDraft = draftsQuery.data?.items.find((d) => d.status === 'draft') ?? null;
+  // list 응답은 summary (자식 배열 없음). 상세는 별도 GET 으로 가져와야 함.
+  const activeDraftSummary =
+    draftsQuery.data?.items.find((d) => d.status === 'draft') ?? null;
+  const activeDraftQuery = useSceneDraft(activeDraftSummary?.id ?? null);
+  const activeDraft = activeDraftQuery.data ?? null;
+
   const versions = versionsQuery.data ?? [];
   const nextVersionNo =
     versions.length > 0 ? Math.max(...versions.map((v) => v.version_no)) + 1 : 1;
@@ -69,10 +75,11 @@ export default function EditorPage() {
   };
 
   const handlePromote = () => {
-    if (!activeDraft) return;
+    const draftId = activeDraftSummary?.id ?? activeDraft?.id;
+    if (!draftId) return;
     promote.mutate(
       {
-        draftId: activeDraft.id,
+        draftId,
         body: { version_no: nextVersionNo, is_current: true },
       },
       { onSuccess: setJustPromoted },
@@ -80,8 +87,9 @@ export default function EditorPage() {
   };
 
   const handleResetDraft = () => {
-    if (!activeDraft) return;
-    removeDraft.mutate(activeDraft.id);
+    const draftId = activeDraftSummary?.id ?? activeDraft?.id;
+    if (!draftId) return;
+    removeDraft.mutate(draftId);
   };
 
   const openFilePicker = () => fileInputRef.current?.click();
@@ -94,10 +102,11 @@ export default function EditorPage() {
     });
     return () => clearActions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeDraft?.id, nextVersionNo]);
+  }, [activeDraftSummary?.id, nextVersionNo]);
 
   const isBusy = analyze.isPending;
-  const showOverlay = !floorId || !!justPromoted || isBusy || !!activeDraft;
+  const showOverlay =
+    !floorId || !!justPromoted || isBusy || !!activeDraftSummary;
 
   return (
     <div className="flex h-full">
@@ -145,6 +154,8 @@ export default function EditorPage() {
                   readError(promote.error) ?? readError(removeDraft.error) ?? undefined
                 }
               />
+            ) : activeDraftSummary ? (
+              <BusyOverlay title="Draft 불러오는 중..." />
             ) : null}
           </OverlayLayer>
         )}
