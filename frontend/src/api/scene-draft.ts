@@ -12,12 +12,9 @@ import type {
   SceneDraftSummary,
 } from '@/types/scene';
 
-// AI 분석:
-//  - 콜드 스타트 (SageMaker 컨테이너 새로 띄울 때) 약 10분
-//  - 웜 상태에서는 추론 ~3초
-// 글로벌 30s 로는 콜드 스타트는 물론, 일반 분석도 부족함.
-// 백엔드 비동기 전환 (Job 큐 + 폴링) 끝나면 이 override 가 사라질 예정.
-const ANALYZE_TIMEOUT_MS = 900_000; // 15분
+// 분석 호출은 이제 비동기 Job 으로 전환됨 (HTTP 202 즉시 반환).
+// 추론 대기는 GET /floorplan-jobs/{job_id} 폴링으로 처리하므로
+// 글로벌 30s 타임아웃으로 충분.
 
 export interface AnalyzeFloorplanParams {
   file: File;
@@ -41,7 +38,7 @@ export interface SceneDraftListParams {
 }
 
 export const sceneDraftApi = {
-  // §6.1 POST /upload/floorplan/analyze
+  // §6.1 POST /upload/floorplan/analyze — Job 큐 등록, HTTP 202 + job_id 반환
   analyzeFloorplan: ({ file, ...rest }: AnalyzeFloorplanParams) => {
     const fd = new FormData();
     fd.append('file', file);
@@ -52,19 +49,14 @@ export const sceneDraftApi = {
     return api
       .post<AnalyzeFloorplanResponse>('/upload/floorplan/analyze', fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
-        timeout: ANALYZE_TIMEOUT_MS,
       })
       .then((r) => r.data);
   },
 
-  // §6.1.1 POST /assets/{asset_id}/analyze
+  // §6.1.1 POST /assets/{asset_id}/analyze — Job 큐 등록
   analyzeFromAsset: ({ asset_id, real_width_m }: AnalyzeFromAssetParams) =>
     api
-      .post<AnalyzeFromAssetResponse>(
-        `/assets/${asset_id}/analyze`,
-        { real_width_m },
-        { timeout: ANALYZE_TIMEOUT_MS },
-      )
+      .post<AnalyzeFromAssetResponse>(`/assets/${asset_id}/analyze`, { real_width_m })
       .then((r) => r.data),
 
   // §6.3 GET /scene-drafts  — 자식 배열 없는 summary 응답

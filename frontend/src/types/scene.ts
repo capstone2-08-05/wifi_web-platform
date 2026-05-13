@@ -149,21 +149,33 @@ export interface AnalyzedScene {
   sourceType?: string;
 }
 
-// §6.1
-export interface AnalyzeFloorplanResponse {
-  status: 'ok' | string;
-  scene_draft_id: UUID;
-  fileId: UUID;
-  savedPath: string;
-  scene: AnalyzedScene;
+// ============================================
+// 분석 호출 응답 (비동기 Job)
+// 백엔드가 동기 → 비동기 Job 으로 전환됨. POST 즉시 202 + job_id 반환.
+// 결과는 GET /floorplan-jobs/{job_id} 로 폴링.
+// ============================================
+
+import type { JobStatus } from './job';
+
+export interface SubmitFloorplanJobResponse {
+  status: 'submitted' | string;
+  job_id: UUID;
+  project_id: UUID | null;
+  floor_id: UUID | null;
+  job_status: JobStatus;
+  sagemaker_inference_id: string | null;
+  poll_url: string;
 }
 
-// §6.1.1
-export interface AnalyzeFromAssetResponse {
-  status: 'ok' | string;
-  scene_draft_id: UUID;
+// §6.1 POST /upload/floorplan/analyze
+export interface AnalyzeFloorplanResponse extends SubmitFloorplanJobResponse {
+  fileId: string;
+  savedPath: string;
+}
+
+// §6.1.1 POST /assets/{asset_id}/analyze
+export interface AnalyzeFromAssetResponse extends SubmitFloorplanJobResponse {
   asset_id: UUID;
-  scene: AnalyzedScene;
 }
 
 // ============================================
@@ -199,3 +211,20 @@ export interface PromoteRequest {
   version_no: number;
   is_current: boolean;
 }
+
+// ============================================
+// 캔버스 선택 상태 (UI 전용)
+// ============================================
+
+export type DraftEntityKind = 'wall' | 'room' | 'opening' | 'object';
+
+export interface SelectedEntityRef {
+  kind: DraftEntityKind;
+  id: UUID;
+}
+
+export type SelectedEntityResolved =
+  | { kind: 'wall'; data: DraftWall }
+  | { kind: 'room'; data: DraftRoom }
+  | { kind: 'opening'; data: DraftOpening }
+  | { kind: 'object'; data: DraftObject };
