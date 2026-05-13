@@ -1,6 +1,13 @@
 import { create } from 'zustand';
 
-export type EditorTool = 'select' | 'upload' | 'rect' | 'circle' | 'text';
+export type EditorTool =
+  | 'select'
+  | 'upload'
+  | 'rect'      // 벽/구조물 (LineString — 2 클릭)
+  | 'circle'    // 가구 (Point — 1 클릭)
+  | 'text'      // 구역 라벨 (백엔드 미지원, placeholder)
+  | 'polygon'   // 방 (Polygon — 다중 클릭 + 시작점 클릭으로 닫기)
+  | 'opening';  // 문/창 (LineString — 2 클릭)
 
 interface EditorActions {
   onLoadFloorplan?: () => void;

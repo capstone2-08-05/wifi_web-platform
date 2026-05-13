@@ -83,8 +83,27 @@ type DragState =
       delta: Coord;
     };
 
-/** 생성 진행 중 임시 상태 (예: 벽 그릴 때 첫 클릭 후 두 번째 대기). */
-type CreatingState = { kind: 'wall'; firstPoint: Coord } | null;
+/** 생성 진행 중 임시 상태. */
+type CreatingState =
+  | { kind: 'wall'; firstPoint: Coord }
+  | { kind: 'opening'; firstPoint: Coord }
+  | { kind: 'polygon'; points: Coord[] }
+  | null;
+
+/** 폴리곤 닫기 임계값 (미터). 시작점 근처 클릭으로 인식. */
+const POLYGON_CLOSE_THRESHOLD_M = 0.4;
+
+function distance(a: Coord, b: Coord): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1]);
+}
+
+function polygonCentroid(points: Coord[]): Coord {
+  if (points.length === 0) return [0, 0];
+  const n = points.length;
+  const sx = points.reduce((s, p) => s + p[0], 0);
+  const sy = points.reduce((s, p) => s + p[1], 0);
+  return [sx / n, sy / n];
+}
 
 interface Props {
   draft: SceneDraft;
@@ -121,7 +140,12 @@ export function DraftSceneCanvas({
     setCursorPos(null);
   }
 
-  const isCreationMode = tool === 'rect' || tool === 'circle' || tool === 'text';
+  const isCreationMode =
+    tool === 'rect' ||
+    tool === 'circle' ||
+    tool === 'text' ||
+    tool === 'polygon' ||
+    tool === 'opening';
 
   // Escape 키로 진행 중 생성 취소
   useEffect(() => {
@@ -199,32 +223,50 @@ export function DraftSceneCanvas({
   };
 
   const handleSvgPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
-    // 생성 모드 처리
+    // ─ 벽 (2 클릭 LineString) ─
     if (tool === 'rect') {
       const pt = getSvgPoint(e);
       if (!pt) return;
-      if (!creating) {
-        // 첫 클릭: 시작점 저장
+      if (!creating || creating.kind !== 'wall') {
         setCreating({ kind: 'wall', firstPoint: pt });
       } else {
-        // 두 번째 클릭: 벽 생성
         const start = creating.firstPoint;
-        const dx = pt[0] - start[0];
-        const dy = pt[1] - start[1];
-        if (Math.abs(dx) > DRAG_THRESHOLD_M || Math.abs(dy) > DRAG_THRESHOLD_M) {
+        if (Math.abs(pt[0] - start[0]) > DRAG_THRESHOLD_M || Math.abs(pt[1] - start[1]) > DRAG_THRESHOLD_M) {
           onCreate?.('wall', {
             wall_role: 'inner',
             source_method: 'user_drawn',
-            centerline_geom: {
-              type: 'LineString',
-              coordinates: [start, pt],
-            },
+            centerline_geom: { type: 'LineString', coordinates: [start, pt] },
           });
         }
         setCreating(null);
       }
       return;
     }
+
+    // ─ 문/창 (2 클릭 LineString, opening_type=door 기본) ─
+    if (tool === 'opening') {
+      const pt = getSvgPoint(e);
+      if (!pt) return;
+      if (!creating || creating.kind !== 'opening') {
+        setCreating({ kind: 'opening', firstPoint: pt });
+      } else {
+        const start = creating.firstPoint;
+        const width = distance(start, pt);
+        if (width > DRAG_THRESHOLD_M) {
+          onCreate?.('opening', {
+            opening_type: 'door',
+            width_m: Number(width.toFixed(2)),
+            height_m: 2.1,
+            source_method: 'user_drawn',
+            line_geom: { type: 'LineString', coordinates: [start, pt] },
+          });
+        }
+        setCreating(null);
+      }
+      return;
+    }
+
+    // ─ 가구 (1 클릭 Point) ─
     if (tool === 'circle') {
       const pt = getSvgPoint(e);
       if (!pt) return;
@@ -235,6 +277,34 @@ export function DraftSceneCanvas({
       });
       return;
     }
+
+    // ─ 방 (다중 클릭 Polygon, 시작점 클릭 또는 Enter 로 닫기) ─
+    if (tool === 'polygon') {
+      const pt = getSvgPoint(e);
+      if (!pt) return;
+      if (!creating || creating.kind !== 'polygon') {
+        setCreating({ kind: 'polygon', points: [pt] });
+        return;
+      }
+      const pts = creating.points;
+      // 3 점 이상일 때 시작점 근처 클릭 → 닫기
+      if (pts.length >= 3 && distance(pt, pts[0]) < POLYGON_CLOSE_THRESHOLD_M) {
+        const ring = [...pts, pts[0]];
+        const centroid = polygonCentroid(pts);
+        onCreate?.('room', {
+          room_type: 'general',
+          source_method: 'user_drawn',
+          polygon_geom: { type: 'Polygon', coordinates: [ring] },
+          centroid_geom: { type: 'Point', coordinates: centroid },
+        });
+        setCreating(null);
+        return;
+      }
+      // 그 외 → 점 추가
+      setCreating({ kind: 'polygon', points: [...pts, pt] });
+      return;
+    }
+
     // select 모드: 빈 영역 클릭 → 선택 해제
     if (e.target === e.currentTarget) onSelect?.(null);
   };
@@ -307,7 +377,7 @@ export function DraftSceneCanvas({
           />
         ))}
 
-        {/* 벽 생성 preview — 첫 점 찍은 후 cursor 까지 점선 */}
+        {/* 벽 생성 preview */}
         {creating?.kind === 'wall' && cursorPos && (
           <g pointerEvents="none">
             <line
@@ -329,6 +399,96 @@ export function DraftSceneCanvas({
             />
           </g>
         )}
+
+        {/* 개구부(문/창) 생성 preview */}
+        {creating?.kind === 'opening' && cursorPos && (
+          <g pointerEvents="none">
+            <line
+              x1={creating.firstPoint[0]}
+              y1={creating.firstPoint[1]}
+              x2={cursorPos[0]}
+              y2={cursorPos[1]}
+              stroke="oklch(0.55 0.22 264)"
+              strokeWidth="5"
+              strokeDasharray="4 3"
+              vectorEffect="non-scaling-stroke"
+            />
+            <circle
+              cx={creating.firstPoint[0]}
+              cy={creating.firstPoint[1]}
+              r="0.15"
+              fill="oklch(0.55 0.22 264)"
+            />
+          </g>
+        )}
+
+        {/* 방(다각형) 생성 preview */}
+        {creating?.kind === 'polygon' && (() => {
+          const pts = creating.points;
+          const canClose =
+            pts.length >= 3 && cursorPos && distance(cursorPos, pts[0]) < POLYGON_CLOSE_THRESHOLD_M;
+          const polyPoints = pts.map(([x, y]) => `${x},${y}`).join(' ');
+          return (
+            <g pointerEvents="none">
+              {/* 닫혀 보이도록 hover 상태에선 채우기 */}
+              {canClose && pts.length >= 3 && (
+                <polygon
+                  points={polyPoints}
+                  fill="oklch(0.92 0.05 264 / 0.3)"
+                  stroke="oklch(0.55 0.22 264)"
+                  strokeWidth="3"
+                  strokeDasharray="6 4"
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
+              {/* 이어진 변들 */}
+              {!canClose && pts.length >= 2 && (
+                <polyline
+                  points={polyPoints}
+                  fill="none"
+                  stroke="oklch(0.55 0.22 264)"
+                  strokeWidth="3"
+                  strokeDasharray="6 4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
+              {/* 마지막 점 → cursor preview 변 */}
+              {!canClose && cursorPos && pts.length > 0 && (
+                <line
+                  x1={pts[pts.length - 1][0]}
+                  y1={pts[pts.length - 1][1]}
+                  x2={cursorPos[0]}
+                  y2={cursorPos[1]}
+                  stroke="oklch(0.55 0.22 264)"
+                  strokeWidth="2"
+                  strokeDasharray="3 3"
+                  strokeLinecap="round"
+                  opacity="0.6"
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
+              {/* 꼭짓점들 — 첫 점은 크게(닫기 가능 표시) */}
+              {pts.map((p, i) => {
+                const isFirst = i === 0;
+                const isFirstHighlighted = isFirst && canClose;
+                return (
+                  <circle
+                    key={i}
+                    cx={p[0]}
+                    cy={p[1]}
+                    r={isFirstHighlighted ? 0.28 : isFirst ? 0.2 : 0.13}
+                    fill={isFirstHighlighted ? 'oklch(0.55 0.22 264)' : 'white'}
+                    stroke="oklch(0.55 0.22 264)"
+                    strokeWidth={isFirstHighlighted ? 2 : 3}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                );
+              })}
+            </g>
+          );
+        })()}
 
         {/* 가구 placement hover hint */}
         {tool === 'circle' && cursorPos && (
@@ -362,9 +522,23 @@ function CreationHint({
 }) {
   let text = '';
   if (tool === 'rect') {
-    text = creating
-      ? '두 번째 점을 클릭해 벽을 완성하세요. (Esc 취소)'
-      : '첫 번째 점을 클릭해 벽 그리기를 시작하세요.';
+    text =
+      creating?.kind === 'wall'
+        ? '두 번째 점을 클릭해 벽을 완성하세요. (Esc 취소)'
+        : '첫 번째 점을 클릭해 벽 그리기를 시작하세요.';
+  } else if (tool === 'opening') {
+    text =
+      creating?.kind === 'opening'
+        ? '두 번째 점을 클릭해 문/창을 완성하세요. (Esc 취소)'
+        : '첫 번째 점을 클릭해 문/창 그리기를 시작하세요.';
+  } else if (tool === 'polygon') {
+    if (!creating || creating.kind !== 'polygon') {
+      text = '첫 번째 점을 클릭해 방 만들기를 시작하세요.';
+    } else if (creating.points.length < 3) {
+      text = `점을 클릭해 방 외곽을 만드세요 (${creating.points.length}/3+). Esc 로 취소.`;
+    } else {
+      text = `시작점을 다시 클릭하면 방이 완성됩니다. (현재 ${creating.points.length}개 점)`;
+    }
   } else if (tool === 'circle') {
     text = '캔버스를 클릭해 가구를 배치하세요.';
   } else if (tool === 'text') {
