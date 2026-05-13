@@ -28,9 +28,9 @@ const TOP_TOOLS: ToolDef[] = [
 ];
 
 const SHAPE_TOOLS: ToolDef[] = [
-  { id: 'rect', icon: Square, label: '사각형', onClick: 'change' },
-  { id: 'circle', icon: Circle, label: '원', onClick: 'change' },
-  { id: 'text', icon: Type, label: '텍스트', onClick: 'change' },
+  { id: 'rect', icon: Square, label: '벽/구조물', onClick: 'change' },
+  { id: 'circle', icon: Circle, label: '가구 배치', onClick: 'change' },
+  { id: 'text', icon: Type, label: '구역 라벨', onClick: 'change' },
 ];
 
 export function CanvasToolbar({ tool, onChangeTool, onUploadClick }: CanvasToolbarProps) {
