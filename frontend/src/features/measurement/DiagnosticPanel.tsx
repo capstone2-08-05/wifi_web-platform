@@ -1,19 +1,31 @@
 import { Activity, AlertTriangle, ChevronRight, MapPin, QrCode } from 'lucide-react';
+import type { PointDiagnosis } from './mocks';
 
-// 우측 진단 패널 - 선택된 측정 포인트의 예측치/실측치 비교, 상세지표, 원인 분석 mock.
-// 실제로는 GET /measurement-sessions/{id}/points + simulated value 조합으로 채워질 예정.
+interface Props {
+  diagnosis: PointDiagnosis;
+  onShowFix?: () => void;
+}
 
-export function DiagnosticPanel() {
+const SEVERITY_BADGE: Record<PointDiagnosis['severity'], { bg: string; text: string; label: string }> = {
+  bad: { bg: 'bg-red-100', text: 'text-red-600', label: '상태 불량' },
+  warning: { bg: 'bg-amber-100', text: 'text-amber-700', label: '주의 필요' },
+  good: { bg: 'bg-emerald-100', text: 'text-emerald-700', label: '양호' },
+};
+
+export function DiagnosticPanel({ diagnosis, onShowFix }: Props) {
   return (
     <aside className="flex w-90 shrink-0 flex-col gap-4">
-      <CombinedDiagnosisCard />
-      <CauseAnalysisCard />
+      <CombinedDiagnosisCard diagnosis={diagnosis} />
+      <CauseAnalysisCard diagnosis={diagnosis} onShowFix={onShowFix} />
       <MobileConnectCard />
     </aside>
   );
 }
 
-function CombinedDiagnosisCard() {
+function CombinedDiagnosisCard({ diagnosis }: { diagnosis: PointDiagnosis }) {
+  const badge = SEVERITY_BADGE[diagnosis.severity];
+  const measuredColor = diagnosis.severity === 'bad' ? 'text-red-500' : 'text-foreground';
+
   return (
     <section className="rounded-2xl border bg-background p-5 shadow-sm">
       <header className="mb-4 flex items-center gap-2">
@@ -25,32 +37,50 @@ function CombinedDiagnosisCard() {
         <div className="flex items-center gap-1.5">
           <MapPin className="h-4 w-4 text-red-500" />
           <span className="text-base font-bold">
-            창고 앞 구석 <span className="text-foreground/70">(P-05)</span>
+            {diagnosis.pointLabel}{' '}
+            <span className="text-foreground/70">({diagnosis.pointCode})</span>
           </span>
         </div>
-        <span className="shrink-0 rounded-full bg-red-100 px-2.5 py-1 text-[11px] font-semibold text-red-600">
-          상태 불량
+        <span
+          className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ${badge.bg} ${badge.text}`}
+        >
+          {badge.label}
         </span>
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-3 rounded-lg border bg-muted/30 p-3">
-        <MetricCompare label="예측치 (시뮬레이션)" value="-72" unit="dBm" />
-        <MetricCompare label="실측치 (어제 15:00)" value="-84" unit="dBm" valueColor="text-red-500" />
+        <MetricCompare
+          label="예측치 (시뮬레이션)"
+          value={`${diagnosis.predictedRssiDbm}`}
+          unit="dBm"
+        />
+        <MetricCompare
+          label={`실측치 (${diagnosis.measuredAtLabel})`}
+          value={`${diagnosis.measuredRssiDbm}`}
+          unit="dBm"
+          valueColor={measuredColor}
+        />
       </div>
 
       <div className="mt-4">
         <h4 className="text-xs font-semibold text-foreground/80">상세 품질 지표</h4>
         <div className="mt-2 grid grid-cols-3 gap-2">
-          <Metric value="55ms" label="지연시간" />
-          <Metric value="4.2Mbps" label="다운로드" />
-          <Metric value="2.4GHz" label="대역" />
+          <Metric value={`${diagnosis.latencyMs}ms`} label="지연시간" />
+          <Metric value={`${diagnosis.downloadMbps}Mbps`} label="다운로드" />
+          <Metric value={diagnosis.bandLabel} label="대역" />
         </div>
       </div>
     </section>
   );
 }
 
-function CauseAnalysisCard() {
+function CauseAnalysisCard({
+  diagnosis,
+  onShowFix,
+}: {
+  diagnosis: PointDiagnosis;
+  onShowFix?: () => void;
+}) {
   return (
     <section className="rounded-2xl border bg-background p-5 shadow-sm">
       <header className="mb-3 flex items-center gap-2">
@@ -59,12 +89,12 @@ function CauseAnalysisCard() {
       </header>
 
       <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[13px] leading-relaxed text-foreground/85">
-        예측보다 실측 수치가 훨씬 낮습니다. 창고 가벽의 전파 흡수율이 예상보다
-        높거나, 주변에 전파 간섭을 일으키는 금속성 물체가 있을 수 있습니다.
+        {diagnosis.causeText}
       </p>
 
       <button
         type="button"
+        onClick={onShowFix}
         className="mt-4 inline-flex w-full items-center justify-between rounded-lg border px-3 py-2.5 text-sm font-medium text-foreground/80 hover:bg-accent"
       >
         조치 방법 확인하기

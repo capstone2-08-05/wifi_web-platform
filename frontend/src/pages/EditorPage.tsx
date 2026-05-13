@@ -96,17 +96,21 @@ export default function EditorPage() {
   const openFilePicker = () => fileInputRef.current?.click();
 
   // Wire global header buttons (도면 불러오기 / 도면 저장하기) to this page.
-  // 저장하기는 활성 draft 가 있고 다른 mutation 이 안 돌고 있을 때만 활성화.
+  // 불러오기: 층이 선택돼있고 분석이 안 도는 중이고, 아직 활성 draft 가 없을 때만.
+  //   (이미 draft 가 있는데 또 업로드하면 헷갈리므로 막음 — "다시 업로드" 는 리뷰 카드에서.)
+  // 저장하기: 활성 draft 가 있고 다른 mutation 이 안 돌고 있을 때만.
+  const canLoad =
+    !!floorId && !analyze.isPending && !activeDraftSummary && !justPromoted;
   const canSave =
     !!activeDraftSummary && !analyze.isPending && !promote.isPending && !removeDraft.isPending;
   useEffect(() => {
     registerActions({
-      onLoadFloorplan: openFilePicker,
+      onLoadFloorplan: canLoad ? openFilePicker : undefined,
       onSaveFloorplan: canSave ? handlePromote : undefined,
     });
     return () => clearActions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeDraftSummary?.id, nextVersionNo, canSave]);
+  }, [activeDraftSummary?.id, nextVersionNo, canLoad, canSave]);
 
   const isBusy = analyze.isPending;
   const showOverlay =

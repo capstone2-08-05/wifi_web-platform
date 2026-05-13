@@ -7,6 +7,12 @@ import {
   type MeasurementView,
 } from '@/features/measurement/MeasurementCanvas';
 import { DiagnosticPanel } from '@/features/measurement/DiagnosticPanel';
+import {
+  MOCK_MEASUREMENT_FLOOR_SCENE,
+  MOCK_MEASUREMENT_HEATMAP,
+  MOCK_MEASUREMENT_POINTS,
+  MOCK_POINT_DIAGNOSIS,
+} from '@/features/measurement/mocks';
 
 const TABS: { id: MeasurementView; label: string }[] = [
   { id: 'path', label: '측정 경로 보기' },
@@ -26,10 +32,15 @@ export default function MeasurementPage() {
 
       <div className="mt-5 grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
         <div className="min-h-0 rounded-2xl border bg-background p-4 shadow-sm">
-          <MeasurementCanvas view={view} />
+          <MeasurementCanvas
+            view={view}
+            scene={MOCK_MEASUREMENT_FLOOR_SCENE}
+            points={MOCK_MEASUREMENT_POINTS}
+            heatmap={MOCK_MEASUREMENT_HEATMAP}
+          />
         </div>
         <aside className="flex min-h-0 flex-col overflow-y-auto pr-1">
-          <DiagnosticPanel />
+          <DiagnosticPanel diagnosis={MOCK_POINT_DIAGNOSIS} />
         </aside>
       </div>
 

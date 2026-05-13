@@ -15,6 +15,10 @@ import { cn } from '@/lib/utils';
 import { useAppStore } from '@/stores/app-store';
 import { FloorPreview } from '@/features/dashboard/FloorPreview';
 import { DiagnosticsList } from '@/features/dashboard/DiagnosticsList';
+import {
+  MOCK_DASHBOARD_FLOOR_SCENE,
+  MOCK_DIAGNOSTICS,
+} from '@/features/dashboard/mocks';
 
 type Tone = 'blue' | 'purple' | 'green';
 
@@ -99,7 +103,11 @@ export default function DashboardPage() {
           <Card title="현재 작업 중인 도면" className="min-h-140">
             <div className={expanded ? 'h-180' : 'h-120'}>
               {hasFloorSelected ? (
-                <FloorPreview expanded={expanded} onToggleExpand={toggleExpand} />
+                <FloorPreview
+                  scene={MOCK_DASHBOARD_FLOOR_SCENE}
+                  expanded={expanded}
+                  onToggleExpand={toggleExpand}
+                />
               ) : (
                 <FloorEmptyState hasProject={!!projectId} />
               )}
@@ -117,7 +125,11 @@ export default function DashboardPage() {
               </Card>
 
               <Card title="현장 앱 최근 진단">
-                {hasFloorSelected ? <DiagnosticsList /> : <DiagnosticsEmptyState />}
+                {hasFloorSelected ? (
+                <DiagnosticsList items={MOCK_DIAGNOSTICS} />
+              ) : (
+                <DiagnosticsEmptyState />
+              )}
               </Card>
             </div>
           )}

@@ -6,30 +6,13 @@ import {
   type SimulationState,
 } from '@/features/simulation/SimulationCanvas';
 import { SimulationResultCard } from '@/features/simulation/SimulationResultCard';
+import { SimulationHistory } from '@/features/simulation/SimulationHistory';
 import {
-  SimulationHistory,
-  type SimulationHistoryItem,
-} from '@/features/simulation/SimulationHistory';
-
-// 시뮬레이션 기록 mock — 실제는 RF Run + Job 목록에서 가져올 예정 (§13 / §15).
-const HISTORY_BASE: SimulationHistoryItem[] = [
-  {
-    id: 'sim-base',
-    label: '초기 배치 (어제)',
-    timeLabel: '14:20',
-    avgRssiDbm: -72,
-    coveragePercent: 65,
-  },
-];
-
-const NEW_RESULT: SimulationHistoryItem = {
-  id: 'sim-new',
-  label: '새로운 가구 배치 (방금 전)',
-  timeLabel: '오후 02:18',
-  avgRssiDbm: -62,
-  coveragePercent: 85,
-  active: true,
-};
+  MOCK_SIMULATION_FLOOR_SCENE,
+  MOCK_SIMULATION_HEATMAP,
+  MOCK_SIMULATION_HISTORY_BASE,
+  MOCK_SIMULATION_NEW_RESULT,
+} from '@/features/simulation/mocks';
 
 const SIM_DURATION_MS = 2500;
 
@@ -53,7 +36,7 @@ export default function SimulationPage() {
   };
 
   const history =
-    state === 'complete' ? [NEW_RESULT, ...HISTORY_BASE] : HISTORY_BASE;
+    state === 'complete' ? [MOCK_SIMULATION_NEW_RESULT, ...MOCK_SIMULATION_HISTORY_BASE] : MOCK_SIMULATION_HISTORY_BASE;
 
   return (
     <div className="relative flex h-full flex-col p-6">
@@ -73,6 +56,8 @@ export default function SimulationPage() {
         <div className="min-h-0">
           <SimulationCanvas
             state={state}
+            scene={MOCK_SIMULATION_FLOOR_SCENE}
+            heatmap={MOCK_SIMULATION_HEATMAP}
             expanded={expanded}
             onToggleExpand={() => setExpanded((v) => !v)}
           />
@@ -82,8 +67,8 @@ export default function SimulationPage() {
           <aside className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1">
             {state === 'complete' && (
               <SimulationResultCard
-                avgRssiDbm={NEW_RESULT.avgRssiDbm}
-                coveragePercent={NEW_RESULT.coveragePercent}
+                avgRssiDbm={MOCK_SIMULATION_NEW_RESULT.avgRssiDbm}
+                coveragePercent={MOCK_SIMULATION_NEW_RESULT.coveragePercent}
               />
             )}
             <SimulationHistory

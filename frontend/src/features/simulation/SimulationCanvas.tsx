@@ -7,17 +7,35 @@ import {
   RotateCw,
   Wifi,
 } from 'lucide-react';
+import type {
+  FloorAp,
+  FloorObject,
+  FloorRoom,
+  FloorScene,
+  HeatmapRegion,
+} from '@/types/floor-scene';
 import { ApPaletteMenu } from './ApPaletteMenu';
 
 export type SimulationState = 'idle' | 'running' | 'complete';
 
 interface Props {
   state: SimulationState;
+  scene: FloorScene;
+  heatmap?: HeatmapRegion[];
   expanded?: boolean;
   onToggleExpand?: () => void;
 }
 
-export function SimulationCanvas({ state, expanded, onToggleExpand }: Props) {
+export function SimulationCanvas({
+  state,
+  scene,
+  heatmap,
+  expanded,
+  onToggleExpand,
+}: Props) {
+  const showHeatmap = state === 'complete' && !!heatmap?.length;
+  const showSelection = state === 'idle';
+
   return (
     <div className="relative flex h-full w-full flex-col overflow-hidden rounded-2xl border bg-[#f8fafc] [background-image:radial-gradient(circle,_oklch(0.92_0_0)_1px,_transparent_1px)] [background-position:0_0] [background-size:18px_18px]">
       <div className="relative z-10 flex items-start justify-between gap-3 p-5">
@@ -62,8 +80,9 @@ export function SimulationCanvas({ state, expanded, onToggleExpand }: Props) {
           }
         >
           <FloorPlanSvg
-            withHeatmap={state === 'complete'}
-            withSelection={state === 'idle'}
+            scene={scene}
+            heatmap={showHeatmap ? heatmap : undefined}
+            withSelection={showSelection}
           />
         </div>
 
@@ -86,7 +105,7 @@ export function SimulationCanvas({ state, expanded, onToggleExpand }: Props) {
 function TopLeftBadge({ state }: { state: SimulationState }) {
   if (state === 'idle') {
     return (
-      <div className="absolute left-5 top-5 z-10 inline-flex items-center gap-2 rounded-lg border bg-background px-3.5 py-2 text-sm shadow-sm">
+      <div className="inline-flex items-center gap-2 rounded-lg border bg-background px-3.5 py-2 text-sm shadow-sm">
         <MousePointer2 className="h-4 w-4 text-primary" />
         <span className="font-semibold">도면 배치 모드</span>
         <span className="text-muted-foreground">- AP와 가구를 드래그하여 이동할 수 있습니다.</span>
@@ -95,14 +114,14 @@ function TopLeftBadge({ state }: { state: SimulationState }) {
   }
   if (state === 'running') {
     return (
-      <div className="absolute left-5 top-5 z-10 inline-flex items-center gap-2 rounded-lg border bg-background px-3.5 py-2 text-sm shadow-sm">
+      <div className="inline-flex items-center gap-2 rounded-lg border bg-background px-3.5 py-2 text-sm shadow-sm">
         <RotateCw className="h-4 w-4 animate-spin text-primary" />
         <span className="font-semibold">전파 도달 범위 계산 중...</span>
       </div>
     );
   }
   return (
-    <div className="absolute left-5 top-5 z-10 inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-sm shadow-sm">
+    <div className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-sm shadow-sm">
       <CheckCircle2 className="h-4 w-4 text-emerald-600" />
       <span className="font-semibold text-emerald-700">시뮬레이션 완료 (새로운 배치)</span>
     </div>
@@ -119,14 +138,16 @@ function LegendDot({ color, label }: { color: string; label: string }) {
 }
 
 interface FloorPlanSvgProps {
-  withHeatmap: boolean;
+  scene: FloorScene;
+  heatmap?: HeatmapRegion[];
   withSelection: boolean;
 }
 
-function FloorPlanSvg({ withHeatmap, withSelection }: FloorPlanSvgProps) {
+function FloorPlanSvg({ scene, heatmap, withSelection }: FloorPlanSvgProps) {
+  const { viewBox } = scene;
   return (
     <svg
-      viewBox="0 0 800 520"
+      viewBox={`0 0 ${viewBox.width} ${viewBox.height}`}
       preserveAspectRatio="xMidYMid meet"
       className="h-full w-full p-4"
     >
@@ -148,8 +169,8 @@ function FloorPlanSvg({ withHeatmap, withSelection }: FloorPlanSvgProps) {
       <rect
         x="60"
         y="100"
-        width="680"
-        height="380"
+        width={viewBox.width - 120}
+        height={viewBox.height - 140}
         rx="6"
         fill="white"
         stroke="oklch(0.85 0 0)"
@@ -159,131 +180,163 @@ function FloorPlanSvg({ withHeatmap, withSelection }: FloorPlanSvgProps) {
         x1="290"
         y1="100"
         x2="290"
-        y2="480"
+        y2={viewBox.height - 40}
         stroke="oklch(0.88 0 0)"
         strokeWidth="2"
       />
 
-      {withHeatmap && (
+      {heatmap && (
         <g>
-          <ellipse cx="500" cy="280" rx="280" ry="200" fill="url(#sim-good)" />
-          <ellipse cx="600" cy="200" rx="160" ry="120" fill="url(#sim-good)" />
-          <ellipse cx="170" cy="400" rx="160" ry="130" fill="url(#sim-bad)" />
-          <ellipse cx="540" cy="380" rx="80" ry="60" fill="url(#sim-warn)" />
+          {heatmap.map((r, i) => (
+            <ellipse
+              key={`h-${i}`}
+              cx={r.cx}
+              cy={r.cy}
+              rx={r.rx}
+              ry={r.ry}
+              fill={`url(#sim-${r.intensity})`}
+            />
+          ))}
         </g>
       )}
 
-      {/* 주방/카운터 */}
-      <g>
-        <rect x="100" y="140" width="160" height="100" rx="8" fill="oklch(0.92 0 0)" />
-        <text
-          x="180"
-          y="196"
-          textAnchor="middle"
-          className="fill-foreground/70"
-          style={{ fontSize: '15px', fontWeight: 500 }}
-        >
-          주방 / 카운터
-        </text>
-      </g>
-      {/* 창고 */}
-      <g>
-        <rect x="100" y="280" width="160" height="100" rx="8" fill="oklch(0.92 0 0)" />
-        <text
-          x="180"
-          y="336"
-          textAnchor="middle"
-          className="fill-foreground/70"
-          style={{ fontSize: '15px', fontWeight: 500 }}
-        >
-          창고
-        </text>
-      </g>
+      {scene.rooms.map((room) => (
+        <RoomShape key={room.id} room={room} />
+      ))}
 
-      {/* 테이블 우상 */}
-      <g>
-        <circle cx="600" cy="190" r="42" fill="oklch(0.95 0.04 256)" />
-        <text
-          x="600"
-          y="196"
-          textAnchor="middle"
-          className="fill-primary/80"
-          style={{ fontSize: '13px', fontWeight: 500 }}
-        >
-          테이블
-        </text>
-      </g>
-      {/* 테이블 좌하 */}
-      <g>
-        <circle cx="380" cy="380" r="38" fill="oklch(0.95 0.04 256)" />
-        <text
-          x="380"
-          y="386"
-          textAnchor="middle"
-          className="fill-primary/80"
-          style={{ fontSize: '13px', fontWeight: 500 }}
-        >
-          테이블
-        </text>
-      </g>
-      {/* 단체석 */}
-      <g>
-        <rect x="610" y="370" width="90" height="48" rx="6" fill="oklch(0.95 0.04 256)" />
-        <text
-          x="655"
-          y="400"
-          textAnchor="middle"
-          className="fill-primary/80"
-          style={{ fontSize: '13px', fontWeight: 500 }}
-        >
-          단체석
-        </text>
-      </g>
-
-      {/* 선택된 사각형 (idle 일 때만 핸들 표시) */}
-      {withSelection ? (
-        <g>
-          <rect
-            x="440"
-            y="290"
-            width="140"
-            height="80"
-            rx="4"
-            fill="white"
-            stroke="oklch(0.55 0.22 264)"
-            strokeWidth="2"
-          />
-          <Handle cx={440} cy={290} />
-          <Handle cx={580} cy={290} />
-          <Handle cx={440} cy={370} />
-          <Handle cx={580} cy={370} />
-          <rect x="565" y="282" width="14" height="14" fill="oklch(0.2 0 0)" />
-          <line
-            x1="510"
-            y1="290"
-            x2="510"
-            y2="252"
-            stroke="oklch(0.55 0.22 264)"
-            strokeWidth="2"
-          />
-          <circle cx="510" cy="244" r="11" fill="oklch(0.55 0.22 264)" />
-          <text
-            x="510"
-            y="248"
-            textAnchor="middle"
-            fill="white"
-            style={{ fontSize: '11px', fontWeight: 600 }}
-          >
-            ↑
-          </text>
-        </g>
-      ) : (
-        <rect x="500" y="330" width="14" height="14" fill="oklch(0.2 0 0)" />
+      {scene.objects.map((obj) =>
+        obj.id === scene.selectedObjectId ? (
+          withSelection ? (
+            <SelectedObject key={obj.id} obj={obj} />
+          ) : (
+            <BlackAnchor key={obj.id} obj={obj} />
+          )
+        ) : (
+          <FurnitureShape key={obj.id} obj={obj} />
+        ),
       )}
 
-      <ApMarker cx={430} cy={190} label="AP 1" />
-      <ApMarker cx={685} cy={465} label="AP 2" />
+      {scene.aps.map((ap) => (
+        <ApMarker key={ap.id} ap={ap} />
+      ))}
     </svg>
+  );
+}
+
+function RoomShape({ room }: { room: FloorRoom }) {
+  return (
+    <g>
+      <rect
+        x={room.x}
+        y={room.y}
+        width={room.width}
+        height={room.height}
+        rx="8"
+        fill="oklch(0.92 0 0)"
+      />
+      <text
+        x={room.x + room.width / 2}
+        y={room.y + room.height / 2 + 6}
+        textAnchor="middle"
+        className="fill-foreground/70"
+        style={{ fontSize: '15px', fontWeight: 500 }}
+      >
+        {room.label}
+      </text>
+    </g>
+  );
+}
+
+function FurnitureShape({ obj }: { obj: FloorObject }) {
+  if (obj.shape === 'circle') {
+    const { cx = 0, cy = 0, r = 30 } = obj;
+    return (
+      <g>
+        <circle cx={cx} cy={cy} r={r} fill="oklch(0.95 0.04 256)" />
+        <text
+          x={cx}
+          y={cy + 6}
+          textAnchor="middle"
+          className="fill-primary/80"
+          style={{ fontSize: '13px', fontWeight: 500 }}
+        >
+          {obj.label}
+        </text>
+      </g>
+    );
+  }
+  const { x = 0, y = 0, width = 0, height = 0 } = obj;
+  return (
+    <g>
+      <rect x={x} y={y} width={width} height={height} rx="6" fill="oklch(0.95 0.04 256)" />
+      <text
+        x={x + width / 2}
+        y={y + height / 2 + 5}
+        textAnchor="middle"
+        className="fill-primary/80"
+        style={{ fontSize: '13px', fontWeight: 500 }}
+      >
+        {obj.label}
+      </text>
+    </g>
+  );
+}
+
+function SelectedObject({ obj }: { obj: FloorObject }) {
+  if (obj.shape !== 'rect') return <FurnitureShape obj={obj} />;
+  const { x = 0, y = 0, width = 0, height = 0 } = obj;
+  const cxCenter = x + width / 2;
+  return (
+    <g>
+      <rect
+        x={x}
+        y={y}
+        width={width}
+        height={height}
+        rx="4"
+        fill="white"
+        stroke="oklch(0.55 0.22 264)"
+        strokeWidth="2"
+      />
+      <Handle cx={x} cy={y} />
+      <Handle cx={x + width} cy={y} />
+      <Handle cx={x} cy={y + height} />
+      <Handle cx={x + width} cy={y + height} />
+      <rect x={x + width - 15} y={y - 8} width="14" height="14" fill="oklch(0.2 0 0)" />
+      <line
+        x1={cxCenter}
+        y1={y}
+        x2={cxCenter}
+        y2={y - 38}
+        stroke="oklch(0.55 0.22 264)"
+        strokeWidth="2"
+      />
+      <circle cx={cxCenter} cy={y - 46} r="11" fill="oklch(0.55 0.22 264)" />
+      <text
+        x={cxCenter}
+        y={y - 42}
+        textAnchor="middle"
+        fill="white"
+        style={{ fontSize: '11px', fontWeight: 600 }}
+      >
+        ↑
+      </text>
+    </g>
+  );
+}
+
+function BlackAnchor({ obj }: { obj: FloorObject }) {
+  // running/complete 상태에선 핸들 대신 작은 검은 anchor 만 표시 (시안 일관성).
+  if (obj.shape !== 'rect') return null;
+  const { x = 0, y = 0, width = 0, height = 0 } = obj;
+  return (
+    <rect
+      x={x + width / 2 - 7}
+      y={y + height / 2 - 7}
+      width="14"
+      height="14"
+      fill="oklch(0.2 0 0)"
+    />
   );
 }
 
@@ -300,21 +353,21 @@ function Handle({ cx, cy }: { cx: number; cy: number }) {
   );
 }
 
-function ApMarker({ cx, cy, label }: { cx: number; cy: number; label: string }) {
+function ApMarker({ ap }: { ap: FloorAp }) {
   return (
     <g>
-      <circle cx={cx} cy={cy} r="22" fill="oklch(0.55 0.22 264)" />
-      <foreignObject x={cx - 9} y={cy - 9} width="18" height="18">
+      <circle cx={ap.cx} cy={ap.cy} r="22" fill="oklch(0.55 0.22 264)" />
+      <foreignObject x={ap.cx - 9} y={ap.cy - 9} width="18" height="18">
         <Wifi className="h-[18px] w-[18px] text-white" />
       </foreignObject>
       <text
-        x={cx}
-        y={cy + 42}
+        x={ap.cx}
+        y={ap.cy + 42}
         textAnchor="middle"
         className="fill-foreground"
         style={{ fontSize: '12px', fontWeight: 600 }}
       >
-        {label}
+        {ap.label}
       </text>
     </g>
   );

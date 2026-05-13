@@ -1,32 +1,32 @@
 import { Wifi } from 'lucide-react';
+import type {
+  FloorAp,
+  FloorObject,
+  FloorRoom,
+  FloorScene,
+  HeatmapRegion,
+} from '@/types/floor-scene';
+import type { MeasurementPoint, MeasurementSeverity } from './mocks';
 
 export type MeasurementView = 'path' | 'heatmap' | 'combined';
 
 interface Props {
   view: MeasurementView;
+  scene: FloorScene;
+  points: MeasurementPoint[];
+  heatmap?: HeatmapRegion[];
 }
 
-// 측정 포인트 (mock). 실제로는 GET /measurement-sessions/{id}/points 응답으로 받아야 함.
-const POINTS = [
-  { id: 'P-01', x: 420, y: 180, severity: 'good' as const },
-  { id: 'P-02', x: 510, y: 180, severity: 'good' as const },
-  { id: 'P-03', x: 510, y: 280, severity: 'good' as const },
-  { id: 'P-04', x: 320, y: 280, severity: 'good' as const },
-  { id: 'P-05', x: 320, y: 380, severity: 'bad' as const },
-  { id: 'P-06', x: 510, y: 340, severity: 'warning' as const },
-  { id: 'P-07', x: 640, y: 340, severity: 'good' as const },
-  { id: 'P-08', x: 640, y: 440, severity: 'good' as const },
-];
-
-const SEVERITY_COLOR: Record<'good' | 'warning' | 'bad', string> = {
+const SEVERITY_COLOR: Record<MeasurementSeverity, string> = {
   good: 'oklch(0.72 0.18 145)',
   warning: 'oklch(0.78 0.15 85)',
   bad: 'oklch(0.62 0.22 25)',
 };
 
-export function MeasurementCanvas({ view }: Props) {
-  const showHeatmap = view === 'heatmap' || view === 'combined';
+export function MeasurementCanvas({ view, scene, points, heatmap }: Props) {
+  const showHeatmap = (view === 'heatmap' || view === 'combined') && !!heatmap?.length;
   const showPath = view === 'path' || view === 'combined';
+  const { viewBox } = scene;
 
   return (
     <div className="relative flex h-full w-full flex-col overflow-hidden rounded-md border bg-[#f8fafc] [background-image:radial-gradient(circle,_oklch(0.92_0_0)_1px,_transparent_1px)] [background-position:0_0] [background-size:18px_18px]">
@@ -36,7 +36,7 @@ export function MeasurementCanvas({ view }: Props) {
 
       <div className="relative min-h-0 flex-1">
         <svg
-          viewBox="0 0 800 520"
+          viewBox={`0 0 ${viewBox.width} ${viewBox.height}`}
           preserveAspectRatio="xMidYMid meet"
           className="h-full w-full p-4"
         >
@@ -59,8 +59,8 @@ export function MeasurementCanvas({ view }: Props) {
           <rect
             x="60"
             y="100"
-            width="680"
-            height="380"
+            width={viewBox.width - 120}
+            height={viewBox.height - 140}
             rx="6"
             fill="white"
             stroke="oklch(0.85 0 0)"
@@ -70,95 +70,43 @@ export function MeasurementCanvas({ view }: Props) {
             x1="290"
             y1="100"
             x2="290"
-            y2="480"
+            y2={viewBox.height - 40}
             stroke="oklch(0.88 0 0)"
             strokeWidth="2"
           />
 
-          {/* 히트맵 레이어 (heatmap, combined 탭에서만) */}
-          {showHeatmap && (
+          {/* 히트맵 레이어 */}
+          {showHeatmap && heatmap && (
             <g>
-              {/* 좋은 영역 (도면 가운데~우측) */}
-              <ellipse cx="480" cy="270" rx="260" ry="190" fill="url(#hot-good)" />
-              {/* 주의 영역 (가운데 약간 우측) */}
-              <ellipse cx="540" cy="340" rx="100" ry="70" fill="url(#hot-warn)" />
-              {/* 불량 영역 (좌하단 창고 앞) */}
-              <ellipse cx="180" cy="400" rx="140" ry="110" fill="url(#hot-bad)" />
+              {heatmap.map((r, i) => (
+                <ellipse
+                  key={`h-${i}`}
+                  cx={r.cx}
+                  cy={r.cy}
+                  rx={r.rx}
+                  ry={r.ry}
+                  fill={`url(#hot-${r.intensity})`}
+                />
+              ))}
             </g>
           )}
 
-          {/* 방/구획 */}
-          <g>
-            <rect x="100" y="140" width="160" height="100" rx="8" fill="oklch(0.92 0 0)" />
-            <text
-              x="180"
-              y="196"
-              textAnchor="middle"
-              className="fill-foreground/70"
-              style={{ fontSize: '15px', fontWeight: 500 }}
-            >
-              주방 / 카운터
-            </text>
-          </g>
-          <g>
-            <rect x="100" y="280" width="160" height="100" rx="8" fill="oklch(0.92 0 0)" />
-            <text
-              x="180"
-              y="336"
-              textAnchor="middle"
-              className="fill-foreground/70"
-              style={{ fontSize: '15px', fontWeight: 500 }}
-            >
-              창고
-            </text>
-          </g>
+          {scene.rooms.map((room) => (
+            <RoomShape key={room.id} room={room} />
+          ))}
 
-          {/* 가구 */}
-          <g>
-            <circle cx="600" cy="190" r="42" fill="oklch(0.95 0.04 256)" />
-            <text
-              x="600"
-              y="196"
-              textAnchor="middle"
-              className="fill-primary/80"
-              style={{ fontSize: '13px', fontWeight: 500 }}
-            >
-              테이블
-            </text>
-          </g>
-          <g>
-            <circle cx="380" cy="380" r="38" fill="oklch(0.95 0.04 256)" />
-            <text
-              x="380"
-              y="386"
-              textAnchor="middle"
-              className="fill-primary/80"
-              style={{ fontSize: '13px', fontWeight: 500 }}
-            >
-              테이블
-            </text>
-          </g>
-          <g>
-            <rect x="610" y="370" width="90" height="48" rx="6" fill="oklch(0.95 0.04 256)" />
-            <text
-              x="655"
-              y="400"
-              textAnchor="middle"
-              className="fill-primary/80"
-              style={{ fontSize: '13px', fontWeight: 500 }}
-            >
-              단체석
-            </text>
-          </g>
+          {scene.objects.map((obj) => (
+            <FurnitureShape key={obj.id} obj={obj} />
+          ))}
 
-          {/* 검은 작은 사각형 (선택된 객체 표시 / 측정 마커 anchor) */}
+          {/* 검은 작은 사각형 (선택된 객체 표시 / 측정 마커 anchor) — 시안 일관성 */}
           <rect x="500" y="330" width="14" height="14" fill="oklch(0.2 0 0)" />
 
           {/* 경로 (path, combined 탭에서만) */}
           {showPath && (
             <g>
               <polyline
-                points={POINTS.map((p) => `${p.x},${p.y}`).join(' ')}
+                points={points.map((p) => `${p.x},${p.y}`).join(' ')}
                 fill="none"
                 stroke="oklch(0.55 0.22 264)"
                 strokeWidth="2.5"
@@ -166,7 +114,7 @@ export function MeasurementCanvas({ view }: Props) {
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
-              {POINTS.map((p) => (
+              {points.map((p) => (
                 <circle
                   key={p.id}
                   cx={p.x}
@@ -180,9 +128,9 @@ export function MeasurementCanvas({ view }: Props) {
             </g>
           )}
 
-          {/* AP 마커 */}
-          <ApMarker cx={430} cy={190} label="AP 1" />
-          <ApMarker cx={685} cy={465} label="AP 2" />
+          {scene.aps.map((ap) => (
+            <ApMarker key={ap.id} ap={ap} />
+          ))}
         </svg>
       </div>
     </div>
@@ -191,7 +139,7 @@ export function MeasurementCanvas({ view }: Props) {
 
 function Legend() {
   return (
-    <div className="absolute left-4 top-4 z-10 inline-flex items-center gap-4 rounded-lg border bg-background/90 px-4 py-2 text-xs shadow-sm backdrop-blur">
+    <div className="inline-flex items-center gap-4 rounded-lg border bg-background/90 px-4 py-2 text-xs shadow-sm backdrop-blur">
       <span className="font-semibold text-foreground/80">실측 포인트 범례</span>
       <span className="h-3 w-px bg-border" />
       <LegendDot color="bg-emerald-500" label="양호" />
@@ -210,21 +158,80 @@ function LegendDot({ color, label }: { color: string; label: string }) {
   );
 }
 
-function ApMarker({ cx, cy, label }: { cx: number; cy: number; label: string }) {
+function RoomShape({ room }: { room: FloorRoom }) {
   return (
     <g>
-      <circle cx={cx} cy={cy} r="22" fill="oklch(0.55 0.22 264)" />
-      <foreignObject x={cx - 9} y={cy - 9} width="18" height="18">
+      <rect
+        x={room.x}
+        y={room.y}
+        width={room.width}
+        height={room.height}
+        rx="8"
+        fill="oklch(0.92 0 0)"
+      />
+      <text
+        x={room.x + room.width / 2}
+        y={room.y + room.height / 2 + 6}
+        textAnchor="middle"
+        className="fill-foreground/70"
+        style={{ fontSize: '15px', fontWeight: 500 }}
+      >
+        {room.label}
+      </text>
+    </g>
+  );
+}
+
+function FurnitureShape({ obj }: { obj: FloorObject }) {
+  if (obj.shape === 'circle') {
+    const { cx = 0, cy = 0, r = 30 } = obj;
+    return (
+      <g>
+        <circle cx={cx} cy={cy} r={r} fill="oklch(0.95 0.04 256)" />
+        <text
+          x={cx}
+          y={cy + 6}
+          textAnchor="middle"
+          className="fill-primary/80"
+          style={{ fontSize: '13px', fontWeight: 500 }}
+        >
+          {obj.label}
+        </text>
+      </g>
+    );
+  }
+  const { x = 0, y = 0, width = 0, height = 0 } = obj;
+  return (
+    <g>
+      <rect x={x} y={y} width={width} height={height} rx="6" fill="oklch(0.95 0.04 256)" />
+      <text
+        x={x + width / 2}
+        y={y + height / 2 + 5}
+        textAnchor="middle"
+        className="fill-primary/80"
+        style={{ fontSize: '13px', fontWeight: 500 }}
+      >
+        {obj.label}
+      </text>
+    </g>
+  );
+}
+
+function ApMarker({ ap }: { ap: FloorAp }) {
+  return (
+    <g>
+      <circle cx={ap.cx} cy={ap.cy} r="22" fill="oklch(0.55 0.22 264)" />
+      <foreignObject x={ap.cx - 9} y={ap.cy - 9} width="18" height="18">
         <Wifi className="h-[18px] w-[18px] text-white" />
       </foreignObject>
       <text
-        x={cx}
-        y={cy + 42}
+        x={ap.cx}
+        y={ap.cy + 42}
         textAnchor="middle"
         className="fill-foreground"
         style={{ fontSize: '12px', fontWeight: 600 }}
       >
-        {label}
+        {ap.label}
       </text>
     </g>
   );

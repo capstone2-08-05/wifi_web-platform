@@ -12,9 +12,12 @@ import type {
   SceneDraftSummary,
 } from '@/types/scene';
 
-// AI 분석은 수십 초 ~ 1분 이상 걸릴 수 있어 axios 글로벌 30s 로는 부족함.
-// (백엔드 비동기 전환되면 빠른 응답으로 바뀌어 이 override 가 사라질 예정)
-const ANALYZE_TIMEOUT_MS = 180_000;
+// AI 분석:
+//  - 콜드 스타트 (SageMaker 컨테이너 새로 띄울 때) 약 10분
+//  - 웜 상태에서는 추론 ~3초
+// 글로벌 30s 로는 콜드 스타트는 물론, 일반 분석도 부족함.
+// 백엔드 비동기 전환 (Job 큐 + 폴링) 끝나면 이 override 가 사라질 예정.
+const ANALYZE_TIMEOUT_MS = 900_000; // 15분
 
 export interface AnalyzeFloorplanParams {
   file: File;
