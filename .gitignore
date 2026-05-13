@@ -23,6 +23,7 @@ backend/.pytest_cache/
 htmlcov/
 *.cover
 .hypothesis/
+backend/tests/
 
 # build
 *.egg-info/

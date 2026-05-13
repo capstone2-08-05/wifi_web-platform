@@ -28,6 +28,7 @@ from app.models import (
     User,
 )
 from app.schemas.scene_draft import (
+    AnalyzeFromAssetResponse,
     SaveSceneDraftRequestDTO,
     SaveSceneDraftResultDTO,
     SceneDraftDetailResponse,
@@ -247,7 +248,7 @@ async def analyze_from_asset(
     asset_id: UUID,
     real_width_m: float,
     current_user: User,
-) -> dict[str, Any]:
+) -> AnalyzeFromAssetResponse:
     """이미 등록된 Asset 도면을 분석해서 비동기 Job 등록.
 
     /upload/floorplan/analyze 와 동일하게 Job 패턴 사용 → 202 응답 + job_id.
@@ -298,16 +299,15 @@ async def analyze_from_asset(
         created_by=current_user.email,
     )
 
-    return {
-        "status": "submitted",
-        "job_id": job.id,
-        "asset_id": asset.id,
-        "project_id": job.project_id,
-        "floor_id": job.floor_id,
-        "job_status": job.status,
-        "sagemaker_inference_id": (job.input_json or {}).get("sagemaker", {}).get("inference_id"),
-        "poll_url": f"/floorplan-jobs/{job.id}",
-    }
+    return AnalyzeFromAssetResponse(
+        job_id=str(job.id),
+        asset_id=str(asset.id),
+        project_id=str(job.project_id) if job.project_id else None,
+        floor_id=str(job.floor_id) if job.floor_id else None,
+        job_status=job.status,
+        sagemaker_inference_id=(job.input_json or {}).get("sagemaker", {}).get("inference_id"),
+        poll_url=f"/floorplan-jobs/{job.id}",
+    )
 
 
 def get_scene_draft(

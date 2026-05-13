@@ -9,7 +9,10 @@ from app.core.errors import AppError, ErrorCode
 from app.core.settings import UPLOAD_DIR
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.scene_draft import UploadStorageMetadataDTO
+from app.schemas.scene_draft import (
+    UploadAndAnalyzeFloorplanResponse,
+    UploadStorageMetadataDTO,
+)
 from app.services.floorplan_job_service import submit_floorplan_analysis
 
 router = APIRouter(prefix="/upload", tags=["upload"])
@@ -60,6 +63,7 @@ async def upload_floorplan(file: UploadFile = File(...)) -> dict:
 @router.post(
     "/floorplan/analyze",
     status_code=status.HTTP_202_ACCEPTED,
+    response_model=UploadAndAnalyzeFloorplanResponse,
     summary="도면 분석 Job 등록 (비동기). job_id 받아서 GET /floorplan-jobs/{job_id} 로 폴링.",
 )
 async def upload_and_analyze_floorplan(
@@ -70,7 +74,7 @@ async def upload_and_analyze_floorplan(
     created_by: str | None = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> dict:
+) -> UploadAndAnalyzeFloorplanResponse:
     content = await file.read()
     file_id, save_path = _validate_and_save_file(file, content)
 
@@ -95,14 +99,13 @@ async def upload_and_analyze_floorplan(
         created_by=created_by,
     )
 
-    return {
-        "status": "submitted",
-        "job_id": job.id,
-        "project_id": job.project_id,
-        "floor_id": job.floor_id,
-        "job_status": job.status,
-        "sagemaker_inference_id": (job.input_json or {}).get("sagemaker", {}).get("inference_id"),
-        "fileId": file_id,
-        "savedPath": str(save_path),
-        "poll_url": f"/floorplan-jobs/{job.id}",
-    }
+    return UploadAndAnalyzeFloorplanResponse(
+        job_id=str(job.id),
+        project_id=str(job.project_id) if job.project_id else None,
+        floor_id=str(job.floor_id) if job.floor_id else None,
+        job_status=job.status,
+        sagemaker_inference_id=(job.input_json or {}).get("sagemaker", {}).get("inference_id"),
+        fileId=file_id,
+        savedPath=str(save_path),
+        poll_url=f"/floorplan-jobs/{job.id}",
+    )
