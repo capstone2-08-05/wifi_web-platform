@@ -1,12 +1,12 @@
-"""raw AI outputs → SceneDraft (SceneSchema) 변환.
+"""raw AI outputs → SceneSchema 변환 (순수 후처리, SageMaker 호출 없음).
 
-데이터 획득은 [sagemaker_inference_service.py] 에 위임:
-  - 호출자는 image_bytes + project_id/floor_id 만 넘기면 됨
-  - 이 서비스는 SageMaker invoke 결과 (raw outputs in temp dir + detections list) 를 받아
-    기존 wall_extraction / geometry / topology 파이프라인으로 SceneSchema 빌드
-  - temp 파일은 처리 후 cleanup
+흐름:
+  - 호출자가 SageMaker invocation 결과 (`InferenceResult`) 를 미리 받아옴
+  - 이 서비스는 그 raw outputs 를 wall_extraction/geometry/topology 파이프라인으로
+    SceneSchema 로 변환만 함
+  - SageMaker 통신과 DB 영속화는 floorplan_job_service 의 책임
 
-기존 동기 HTTP 흐름은 제거됨 (ai_client.py 삭제, 2026-05-13). 로컬 AI 서버 띄울 필요 없음.
+기존 동기 HTTP 흐름은 제거됨 (ai_client.py 삭제, 2026-05-13). Job 비동기 패턴으로 전환됨.
 """
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from typing import Any
 
 from starlette.concurrency import run_in_threadpool
 
+from app.geometry import assign_wall_refs
 from app.schemas.ai_response import (
     DetectionDTO,
     MetaDTO,
@@ -23,12 +24,7 @@ from app.schemas.ai_response import (
 )
 from app.schemas.scene import Opening, Room, SceneSchema, Wall
 from app.services.geometry_service import GeometryService
-from app.services.sagemaker_inference_service import (
-    InferenceResult,
-    SageMakerInferenceFailure,
-    map_failure_to_app_error,
-    sagemaker_inference_service,
-)
+from app.services.sagemaker_inference_service import InferenceResult
 from app.services.topology_service import TopologyService
 from app.services.wall_extraction import wall_extractor
 
@@ -36,57 +32,35 @@ logger = logging.getLogger(__name__)
 
 
 class FusionService:
-    def __init__(self) -> None:
-        self.inference_service = sagemaker_inference_service
-
-    async def process_image_to_scene_async(
+    async def build_scene_from_inference(
         self,
         *,
-        image_bytes: bytes,
+        result: InferenceResult,
         filename: str,
         real_width_m: float,
-        project_id: str,
-        floor_id: str,
-        content_type: str = "application/octet-stream",
     ) -> SceneSchema:
-        """end-to-end: SageMaker invoke → 변환 → SceneSchema 반환.
+        """SageMaker raw outputs (download 완료된 상태) → SceneSchema.
 
-        예외:
-            - SageMakerInferenceFailure → AppError 로 매핑
-            - 기타 예외는 원본 그대로 raise (router 가 INTERNAL_SERVER_ERROR 로 감쌈)
+        CPU 후처리가 무거우므로 thread pool 에서 실행.
+        호출자가 `result.cleanup()` 책임.
         """
-        try:
-            result = await self.inference_service.invoke_and_wait(
-                image_bytes=image_bytes,
-                filename=filename,
-                project_id=project_id,
-                floor_id=floor_id,
-                content_type=content_type,
-            )
-        except SageMakerInferenceFailure as failure:
-            logger.warning(
-                "SageMaker inference failed code=%s stage=%s message=%s",
-                failure.code,
-                failure.stage,
-                failure.message,
-            )
-            raise map_failure_to_app_error(failure) from failure
-
-        try:
-            ml_output = _build_ml_output_from_inference(result, filename)
-            scene = await run_in_threadpool(
-                self._run_wi_twin_pipeline, ml_output, real_width_m, result.prob_map_local_path
-            )
-            scene.inference_metadata = _build_inference_metadata(result, real_width_m)
-            return scene
-        finally:
-            result.cleanup()
+        ml_output = _build_ml_output_from_inference(result, filename)
+        sagemaker_meta = _build_sagemaker_meta(result)
+        scene = await run_in_threadpool(
+            self._run_wi_twin_pipeline,
+            ml_output,
+            real_width_m,
+            result.prob_map_local_path,
+            sagemaker_meta,
+        )
+        return scene
 
     def _run_wi_twin_pipeline(
         self,
         ml_output: MlOutputDTO,
         real_width_m: float,
         prob_map_local_path,
+        sagemaker_meta: dict[str, Any] | None = None,
     ) -> SceneSchema:
         geo_service = GeometryService(
             pixel_width=ml_output.meta.original_width,
@@ -94,6 +68,7 @@ class FusionService:
             real_width_m=real_width_m,
         )
         topo_service = TopologyService()
+        scale_ratio = geo_service.scale_ratio
 
         # wall_extraction 은 .npy 파일 경로를 받아 prob_map 로딩
         raw_coords = wall_extractor.execute_from_prob_map(
@@ -131,45 +106,51 @@ class FusionService:
                         y1=float(by1),
                         x2=float(bx2),
                         y2=float(by2),
+                        width_m=abs(bx2 - bx1) * scale_ratio,
+                        height_m=abs(by2 - by1) * scale_ratio,
+                        score=float(det.score),
                     )
                 )
             else:
                 det.id = f"furniture_{len(furniture_objects)}"
                 furniture_objects.append(det)
 
+        # Phase 2.5: 각 opening 의 bbox 방향과 일치하는 가장 가까운 wall 의 id 를 wall_ref 로.
+        matched_count = assign_wall_refs(openings, calibrated_walls)
+        if openings:
+            logger.info(
+                "wall-opening match: %d/%d openings linked", matched_count, len(openings)
+            )
+
         return SceneSchema(
-            scale_ratio=geo_service.scale_ratio,
+            scale_ratio=scale_ratio,
             walls=[w.model_dump() for w in calibrated_walls],
             openings=[o.model_dump() for o in openings],
             rooms=[r.model_dump() for r in extracted_rooms],
             topology=topology_result.model_dump(),
             objects=[obj.model_dump() for obj in furniture_objects],
+            sagemaker_meta=sagemaker_meta,
         )
 
 
-def _build_inference_metadata(result: InferenceResult, real_width_m: float) -> dict:
-    """summary_json 으로 영속될 SageMaker 실행 메타데이터."""
-    runtime = (result.result_payload.get("runtime") or {}) if result.result_payload else {}
-    outputs = (result.result_payload.get("outputs") or {}) if result.result_payload else {}
-    stages = (result.result_payload.get("stages") or {}) if result.result_payload else {}
+def _build_sagemaker_meta(result: InferenceResult) -> dict[str, Any]:
+    """InferenceResult 에서 감사/디버깅용 메타만 추려서 dict 로.
 
-    width_px = result.image_width_px or 1
-    scale_ratio_m_per_px = real_width_m / width_px if width_px else 0.0
-
+    summary_json.sagemaker 에 저장될 형태.
+    """
+    payload = result.result_payload or {}
     return {
-        "provider": "sagemaker_async",
         "job_id": result.job_id,
-        "image": {
+        "inference_id": payload.get("inference_id"),
+        "endpoint_name": payload.get("endpoint_name"),
+        "started_at": payload.get("started_at"),
+        "completed_at": payload.get("completed_at"),
+        "stages": payload.get("stages") or {},
+        "runtime": payload.get("runtime") or {},
+        "outputs": payload.get("outputs") or {},
+        "image": payload.get("image") or {
             "width_px": result.image_width_px,
             "height_px": result.image_height_px,
-            "real_width_m": real_width_m,
-            "scale_ratio_m_per_px": scale_ratio_m_per_px,
-        },
-        "runtime": runtime,
-        "outputs": outputs,
-        "stages": stages,
-        "counts": {
-            "raw_detections": len(result.detections),
         },
     }
 

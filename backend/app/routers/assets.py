@@ -13,10 +13,7 @@ from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.asset import AssetResponse
-from app.schemas.scene_draft import (
-    AnalyzeFromAssetRequest,
-    AnalyzeFromAssetResponse,
-)
+from app.schemas.scene_draft import AnalyzeFromAssetRequest
 from app.services import asset_service, scene_draft_service
 
 
@@ -96,15 +93,15 @@ def delete_asset(
 
 @assets_router.post(
     "/{asset_id}/analyze",
-    response_model=AnalyzeFromAssetResponse,
-    summary="Asset 도면 분석 → Scene Draft 생성 (source_asset_id 채워짐)",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Asset 도면 분석 Job 등록 (비동기). job_id 받아서 GET /floorplan-jobs/{job_id} 폴링.",
 )
 async def analyze_asset(
     payload: AnalyzeFromAssetRequest,
     asset_id: UUID = Path(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> AnalyzeFromAssetResponse:
+) -> dict:
     return await scene_draft_service.analyze_from_asset(
         db=db,
         asset_id=asset_id,

@@ -1,17 +1,18 @@
 """백엔드 ↔ SageMaker Async Inference 컨테이너 클라이언트.
 
-흐름:
-  1. S3 에 source 이미지 업로드 (`projects/{project_id}/floors/{floor_id}/sources/{file_id}.{ext}`)
-  2. input.json 생성 (계약 v1.0) + S3 업로드
-  3. `invoke_endpoint_async` 호출
-  4. output_prefix 의 result.json / failure.json 폴링
-  5. 성공 시 raw outputs (wall_prob_map.npy, detections.json, ...) 를 로컬 temp 디렉토리로 다운로드
-  6. `InferenceResult` 로 반환 — `fusion_service` 가 받아 변환 후 DB 저장
+Job 비동기 패턴용 4-단계 API:
+  1. `submit(...)` — S3 source/input.json 업로드 + invoke_endpoint_async + SubmitResult 반환 (블록 X)
+  2. `check_status(output_prefix)` — S3 head_object 로 result/failure 존재 확인 → "running"/"completed"/"failed"
+  3. `download_result(job_id, output_prefix)` — result.json + raw outputs (npy/png/detections) 다운로드
+  4. `download_failure(output_prefix)` — failure.json 파싱
+
+기존 `invoke_and_wait(...)` 는 호출자가 폴링을 의식하지 않아도 되지만, HTTP 요청을 5-15분 블록함.
+새 API 는 폴링 책임을 호출자(`floorplan_job_service`)에게 위임.
 
 실패 케이스:
   - 컨테이너 측 application-level 실패 → output_prefix/failure.json → SageMakerInferenceFailure (code 보유)
   - SageMaker 인프라 실패 → S3FailurePath/{id}.out → INTERNAL_SERVER_ERROR 로 raise
-  - 폴링 timeout → EXTERNAL_SERVICE_REQUEST_FAILED 로 raise
+  - 폴링 timeout 은 호출자 정책 (Job.created_at 으로부터 N 분 경과 시 cleanup 등)
 
 계약 문서: docs/contracts/ai-inference/
 """
@@ -21,11 +22,10 @@ import asyncio
 import json
 import logging
 import tempfile
-import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import boto3
 from botocore.exceptions import ClientError
@@ -35,18 +35,35 @@ from app.core.settings import (
     AWS_REGION,
     AWS_S3_BUCKET,
     SAGEMAKER_ENDPOINT_NAME,
-    SAGEMAKER_POLL_INTERVAL_SECONDS,
-    SAGEMAKER_POLL_TIMEOUT_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
 
 CONTRACT_SCHEMA_VERSION = "1.0"
 
+InferenceStatus = Literal["running", "completed", "failed", "infra_failed"]
+
 
 # ============================================================
 # 결과 / 실패 표현
 # ============================================================
+@dataclass
+class SubmitResult:
+    """SageMaker invoke_endpoint_async 직후 반환.
+
+    Job row 의 input_json 에 그대로 직렬화해 저장. 폴링 단계에서 output_prefix 기반으로
+    결과 확인.
+    """
+
+    job_id: str
+    sagemaker_inference_id: str
+    source_s3_uri: str
+    input_s3_uri: str
+    output_prefix: str
+    sagemaker_output_location: str
+    sagemaker_failure_location: str
+
+
 @dataclass
 class InferenceResult:
     """SageMaker invocation 성공 결과를 fusion_service 에 전달하는 형태.
@@ -135,14 +152,10 @@ class SageMakerInferenceService:
         region: str = AWS_REGION,
         bucket: str = AWS_S3_BUCKET,
         endpoint_name: str = SAGEMAKER_ENDPOINT_NAME,
-        poll_interval_seconds: float = SAGEMAKER_POLL_INTERVAL_SECONDS,
-        poll_timeout_seconds: float = SAGEMAKER_POLL_TIMEOUT_SECONDS,
     ) -> None:
         self.region = region
         self.bucket = bucket
         self.endpoint_name = endpoint_name
-        self.poll_interval_seconds = poll_interval_seconds
-        self.poll_timeout_seconds = poll_timeout_seconds
         self._s3 = None
         self._smrt = None
 
@@ -171,8 +184,8 @@ class SageMakerInferenceService:
                 503,
             )
 
-    # ----- main entry -----
-    async def invoke_and_wait(
+    # ----- 1. submit -----
+    async def submit(
         self,
         *,
         image_bytes: bytes,
@@ -180,8 +193,11 @@ class SageMakerInferenceService:
         project_id: str,
         floor_id: str,
         content_type: str = "application/octet-stream",
-    ) -> InferenceResult:
-        """전체 흐름. blocking I/O 는 thread executor 로 우회."""
+    ) -> SubmitResult:
+        """source/input.json S3 업로드 + invoke_endpoint_async. **블록 안 함**.
+
+        blocking I/O (boto3) 는 thread executor 로 우회.
+        """
         self._check_configured()
 
         job_id = uuid.uuid4().hex
@@ -192,11 +208,10 @@ class SageMakerInferenceService:
         input_s3_uri = f"s3://{self.bucket}/{input_key}"
         source_s3_uri = f"s3://{self.bucket}/{source_key}"
 
-        logger.info("SageMaker job_id=%s source=%s", job_id, source_s3_uri)
+        logger.info("SageMaker submit start job_id=%s source=%s", job_id, source_s3_uri)
 
-        # blocking 부분을 default executor 에서
         return await asyncio.to_thread(
-            self._run_pipeline_blocking,
+            self._submit_blocking,
             job_id=job_id,
             image_bytes=image_bytes,
             content_type=content_type,
@@ -209,7 +224,7 @@ class SageMakerInferenceService:
             floor_id=floor_id,
         )
 
-    def _run_pipeline_blocking(
+    def _submit_blocking(
         self,
         *,
         job_id: str,
@@ -222,13 +237,15 @@ class SageMakerInferenceService:
         output_prefix_uri: str,
         project_id: str,
         floor_id: str,
-    ) -> InferenceResult:
+    ) -> SubmitResult:
         s3 = self._get_s3()
         smrt = self._get_smrt()
 
         # 1) source 이미지 업로드
         try:
-            s3.put_object(Bucket=self.bucket, Key=source_key, Body=image_bytes, ContentType=content_type)
+            s3.put_object(
+                Bucket=self.bucket, Key=source_key, Body=image_bytes, ContentType=content_type
+            )
         except ClientError as exc:
             raise AppError(
                 ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
@@ -236,7 +253,7 @@ class SageMakerInferenceService:
                 502,
             ) from exc
 
-        # 2) input.json 업로드 (계약 v1.0)
+        # 2) input.json 업로드
         input_payload = {
             "schema_version": CONTRACT_SCHEMA_VERSION,
             "job_id": job_id,
@@ -275,57 +292,73 @@ class SageMakerInferenceService:
             ) from exc
 
         inference_id = response.get("InferenceId", "")
+        sagemaker_output_location = response.get("OutputLocation", "")
         sagemaker_failure_location = response.get("FailureLocation", "")
         logger.info(
-            "SageMaker async invoke OK job_id=%s inference_id=%s",
+            "SageMaker submit OK job_id=%s inference_id=%s",
             job_id,
             inference_id,
         )
 
-        # 4) result.json / failure.json 폴링
-        result_key = f"ai-jobs/{job_id}/output/result.json"
-        failure_key = f"ai-jobs/{job_id}/output/failure.json"
+        return SubmitResult(
+            job_id=job_id,
+            sagemaker_inference_id=inference_id,
+            source_s3_uri=source_s3_uri,
+            input_s3_uri=input_s3_uri,
+            output_prefix=output_prefix_uri,
+            sagemaker_output_location=sagemaker_output_location,
+            sagemaker_failure_location=sagemaker_failure_location,
+        )
 
-        deadline = time.time() + self.poll_timeout_seconds
-        result_payload: dict[str, Any] | None = None
-        while time.time() < deadline:
-            if _s3_exists(s3, self.bucket, result_key):
-                result_payload = json.loads(_s3_get_bytes(s3, self.bucket, result_key))
-                break
-            if _s3_exists(s3, self.bucket, failure_key):
-                failure_payload = json.loads(_s3_get_bytes(s3, self.bucket, failure_key))
-                raise self._parse_failure(failure_payload, job_id)
-            # SageMaker 인프라 실패도 함께 확인 — FailureLocation 에 SageMaker 가 직접 쓰는 객체
-            if sagemaker_failure_location and _s3_uri_exists(s3, sagemaker_failure_location):
-                logger.error(
-                    "SageMaker FailureLocation populated job_id=%s loc=%s",
-                    job_id,
-                    sagemaker_failure_location,
-                )
-                raise AppError(
-                    ErrorCode.INTERNAL_SERVER_ERROR,
-                    f"SageMaker infrastructure error (see {sagemaker_failure_location})",
-                    502,
-                )
-            time.sleep(self.poll_interval_seconds)
+    # ----- 2. check_status -----
+    def check_status(
+        self,
+        output_prefix: str,
+        sagemaker_failure_location: str = "",
+    ) -> InferenceStatus:
+        """S3 head_object 로 결과 존재 확인 (cheap call).
 
-        if result_payload is None:
+        - result.json 보이면 → "completed"
+        - failure.json 보이면 → "failed" (컨테이너 측 application-level 실패)
+        - SageMaker FailureLocation 보이면 → "infra_failed" (인프라 실패)
+        - 둘 다 없으면 → "running"
+        """
+        bucket, prefix_key = _split_s3_uri(output_prefix)
+        s3 = self._get_s3()
+
+        if _s3_exists(s3, bucket, prefix_key + "result.json"):
+            return "completed"
+        if _s3_exists(s3, bucket, prefix_key + "failure.json"):
+            return "failed"
+        if sagemaker_failure_location and _s3_uri_exists(s3, sagemaker_failure_location):
+            return "infra_failed"
+        return "running"
+
+    # ----- 3. download_result -----
+    def download_result(self, job_id: str, output_prefix: str) -> InferenceResult:
+        """result.json + raw outputs 를 temp 디렉토리로 다운로드.
+
+        호출 후 반드시 InferenceResult.cleanup() 으로 정리할 것.
+        """
+        bucket, prefix_key = _split_s3_uri(output_prefix)
+        s3 = self._get_s3()
+
+        try:
+            result_payload = json.loads(_s3_get_bytes(s3, bucket, prefix_key + "result.json"))
+        except ClientError as exc:
             raise AppError(
                 ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
-                f"SageMaker inference timed out after {self.poll_timeout_seconds}s (job_id={job_id})",
-                504,
-            )
+                f"S3 result.json read failed: {exc}",
+                502,
+            ) from exc
 
-        # 5) raw outputs 다운로드 (필요한 것만)
         temp_dir = Path(tempfile.mkdtemp(prefix=f"sm-{job_id}-"))
         prob_map_path = temp_dir / "wall_prob_map.npy"
         mask_path = temp_dir / "wall_mask.png"
         try:
-            _s3_download(s3, self.bucket, f"ai-jobs/{job_id}/output/wall_prob_map.npy", prob_map_path)
-            _s3_download(s3, self.bucket, f"ai-jobs/{job_id}/output/wall_mask.png", mask_path)
-            detections_bytes = _s3_get_bytes(
-                s3, self.bucket, f"ai-jobs/{job_id}/output/detections.json"
-            )
+            _s3_download(s3, bucket, prefix_key + "wall_prob_map.npy", prob_map_path)
+            _s3_download(s3, bucket, prefix_key + "wall_mask.png", mask_path)
+            detections_bytes = _s3_get_bytes(s3, bucket, prefix_key + "detections.json")
         except ClientError as exc:
             raise AppError(
                 ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
@@ -348,6 +381,14 @@ class SageMakerInferenceService:
             result_payload=result_payload,
         )
 
+    # ----- 4. download_failure -----
+    def download_failure(self, output_prefix: str) -> SageMakerInferenceFailure:
+        """failure.json 파싱."""
+        bucket, prefix_key = _split_s3_uri(output_prefix)
+        s3 = self._get_s3()
+        failure_payload = json.loads(_s3_get_bytes(s3, bucket, prefix_key + "failure.json"))
+        return self._parse_failure(failure_payload, str(failure_payload.get("job_id") or ""))
+
     @staticmethod
     def _parse_failure(payload: dict[str, Any], job_id: str) -> SageMakerInferenceFailure:
         error = payload.get("error") or {}
@@ -362,8 +403,17 @@ class SageMakerInferenceService:
 
 
 # ============================================================
-# S3 helpers (단일 client 받아서 동작)
+# S3 helpers
 # ============================================================
+def _split_s3_uri(uri: str) -> tuple[str, str]:
+    """s3://bucket/key/path/ → (bucket, 'key/path/')."""
+    if not uri.startswith("s3://"):
+        raise ValueError(f"Not an s3:// URI: {uri!r}")
+    rest = uri[len("s3://"):]
+    bucket, _, key = rest.partition("/")
+    return bucket, key
+
+
 def _s3_exists(s3, bucket: str, key: str) -> bool:
     try:
         s3.head_object(Bucket=bucket, Key=key)
@@ -377,8 +427,7 @@ def _s3_exists(s3, bucket: str, key: str) -> bool:
 def _s3_uri_exists(s3, uri: str) -> bool:
     if not uri.startswith("s3://"):
         return False
-    _, _, rest = uri.partition("s3://")
-    bucket, _, key = rest.partition("/")
+    bucket, key = _split_s3_uri(uri)
     if not key:
         return False
     return _s3_exists(s3, bucket, key)
