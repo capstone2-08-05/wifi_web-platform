@@ -1,23 +1,35 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronRight, Map as MapIcon, Play, RotateCcw, Save } from 'lucide-react';
+import {
+  CheckCircle2,
+  ChevronRight,
+  Loader2,
+  Map as MapIcon,
+  Play,
+  RotateCcw,
+  Sparkles,
+  Trash2,
+  Wifi,
+} from 'lucide-react';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions } from '@/hooks/use-scene-version';
 import { useCreateRfRun, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
-import { HelpFab } from '@/components/HelpFab';
 import {
-  SimulationCanvas,
-  type SimulationState,
-} from '@/features/simulation/SimulationCanvas';
+  useApCandidates,
+  useApLayouts,
+  useCreateApLayout,
+  useDeleteApLayout,
+  useGenerateApCandidates,
+} from '@/hooks/use-ap-layouts';
+import { HelpFab } from '@/components/HelpFab';
 import { SimulationResultCard } from '@/features/simulation/SimulationResultCard';
 import {
   SimulationHistory,
   type SimulationHistoryItem,
 } from '@/features/simulation/SimulationHistory';
-import {
-  MOCK_SIMULATION_FLOOR_SCENE,
-  MOCK_SIMULATION_HEATMAP,
-} from '@/features/simulation/mocks';
+import type { ApCandidate, ApLayout } from '@/types/ap-layout';
+
+type SimulationState = 'idle' | 'running' | 'complete';
 
 export default function SimulationPage() {
   const floorId = useAppStore((s) => s.selectedFloorId);
@@ -27,7 +39,6 @@ export default function SimulationPage() {
     versionsQuery.data?.find((v) => v.is_current) ?? versionsQuery.data?.[0] ?? null;
 
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState(false);
 
   const createRfRun = useCreateRfRun();
   const rfRunPoll = useRfRun(activeRunId);
@@ -105,37 +116,26 @@ export default function SimulationPage() {
           ctaTo="/editor"
         />
       ) : (
-        <div
-          className={
-            expanded
-              ? 'mt-5 grid min-h-0 flex-1 grid-cols-1 gap-6'
-              : 'mt-5 grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]'
-          }
-        >
-          <div className="min-h-0">
-            <SimulationCanvas
+        <div className="mt-5 grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
+          <div className="min-h-0 rounded-2xl border bg-background p-6 shadow-sm">
+            <SimulationVisualization
               state={state}
-              scene={MOCK_SIMULATION_FLOOR_SCENE}
-              heatmap={MOCK_SIMULATION_HEATMAP}
-              expanded={expanded}
-              onToggleExpand={() => setExpanded((v) => !v)}
+              mapUrl={rfMapsQuery.data?.[0]?.storage_url}
             />
           </div>
 
-          {!expanded && (
-            <aside className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1">
-              {state === 'complete' && (
-                <SimulationResultCard
-                  avgRssiDbm={metrics.avgRssiDbm ?? -65}
-                  coveragePercent={metrics.coveragePercent ?? 0}
-                />
-              )}
-              <SimulationHistory
-                items={history}
-                showCompareButton={false}
+          <aside className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1">
+            {state === 'complete' && (
+              <SimulationResultCard
+                avgRssiDbm={metrics.avgRssiDbm ?? -65}
+                coveragePercent={metrics.coveragePercent ?? 0}
               />
-            </aside>
-          )}
+            )}
+            {state === 'complete' && activeRunId && (
+              <ApPlacementPanel rfRunId={activeRunId} />
+            )}
+            <SimulationHistory items={history} showCompareButton={false} />
+          </aside>
         </div>
       )}
 
@@ -178,27 +178,70 @@ function PageHeader({
             {isStarting ? '요청 중...' : '시뮬레이션 실행'}
           </button>
         ) : (
-          <>
-            <button
-              type="button"
-              onClick={onReset}
-              className="inline-flex items-center gap-2 rounded-lg border bg-background px-3.5 py-2 text-sm font-medium text-foreground/80 shadow-sm hover:bg-accent"
-            >
-              <RotateCcw className="h-4 w-4" />
-              배치 다시하기
-            </button>
-            <button
-              type="button"
-              disabled={state === 'running'}
-              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-60"
-            >
-              <Save className="h-4 w-4" />
-              시뮬레이션 저장하기
-            </button>
-          </>
+          <button
+            type="button"
+            onClick={onReset}
+            className="inline-flex items-center gap-2 rounded-lg border bg-background px-3.5 py-2 text-sm font-medium text-foreground/80 shadow-sm hover:bg-accent"
+          >
+            <RotateCcw className="h-4 w-4" />
+            다시 실행
+          </button>
         )}
       </div>
     </header>
+  );
+}
+
+function SimulationVisualization({
+  state,
+  mapUrl,
+}: {
+  state: SimulationState;
+  mapUrl?: string;
+}) {
+  if (state === 'idle') {
+    return (
+      <div className="flex h-full min-h-80 flex-col items-center justify-center gap-2 text-center">
+        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
+          <Play className="h-5 w-5 text-primary" />
+        </div>
+        <p className="text-sm font-medium">시뮬레이션 실행 대기 중</p>
+        <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
+          상단의 시뮬레이션 실행 버튼을 누르면 확정된 도면 기준으로 RF 시뮬레이션이 시작됩니다.
+        </p>
+      </div>
+    );
+  }
+  if (state === 'running') {
+    return (
+      <div className="flex h-full min-h-80 flex-col items-center justify-center gap-2 text-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <p className="text-sm font-medium">RF 시뮬레이션 진행 중</p>
+        <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
+          서버에서 결과를 계산하는 동안 잠시만 기다려주세요. 최대 약 15분이 소요될 수 있습니다.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="flex h-full flex-col gap-3">
+      {mapUrl ? (
+        <img
+          src={mapUrl}
+          alt="RF 시뮬레이션 결과 맵"
+          className="w-full flex-1 rounded-md object-contain"
+          loading="lazy"
+        />
+      ) : (
+        <div className="flex h-full min-h-80 flex-col items-center justify-center gap-2 text-center">
+          <MapIcon className="h-8 w-8 text-muted-foreground" />
+          <p className="text-sm font-medium">결과 맵을 불러오는 중입니다</p>
+          <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
+            잠시 후 자동으로 표시됩니다.
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -235,6 +278,170 @@ function EmptyState({
       </div>
     </div>
   );
+}
+
+/**
+ * §14 AP 후보/배치 패널.
+ * RF Run 이 succeeded 된 후에만 표시되고, 후보 생성 + 후보 선택 → 배치 저장 흐름.
+ */
+function ApPlacementPanel({ rfRunId }: { rfRunId: string }) {
+  const generate = useGenerateApCandidates();
+  const candidatesQuery = useApCandidates(rfRunId);
+  const layoutsQuery = useApLayouts(rfRunId);
+  const createLayout = useCreateApLayout();
+  const deleteLayout = useDeleteApLayout(rfRunId);
+
+  const candidates = candidatesQuery.data ?? [];
+  const layouts = layoutsQuery.data ?? [];
+
+  const handleGenerate = () => generate.mutate({ rf_run_id: rfRunId, candidate_type: 'auto' });
+
+  const handleConfirmCandidate = (c: ApCandidate) => {
+    if (!c.point_geom) return;
+    const seq = layouts.length + 1;
+    createLayout.mutate({
+      rf_run_id: rfRunId,
+      ap_name: `AP-${String(seq).padStart(2, '0')}`,
+      point_geom: c.point_geom,
+      z_m: c.z_m ?? 2.5,
+    });
+  };
+
+  return (
+    <div className="rounded-xl border bg-card p-4 shadow-sm">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+          <Wifi className="h-4 w-4 text-primary" />
+          AP 배치 (§14)
+        </h3>
+        <button
+          type="button"
+          onClick={handleGenerate}
+          disabled={generate.isPending}
+          className="inline-flex items-center gap-1 rounded-md border bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {generate.isPending ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Sparkles className="h-3 w-3" />
+          )}
+          {candidates.length > 0 ? '재생성' : '후보 생성'}
+        </button>
+      </div>
+
+      <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+        시뮬레이션 결과 기반 추천 위치를 확인하고, 마음에 드는 후보를 확정해 배치를 저장하세요.
+      </p>
+
+      <section className="mt-3">
+        <p className="mb-1.5 text-[11px] font-semibold text-muted-foreground">후보 ({candidates.length})</p>
+        {candidatesQuery.isLoading ? (
+          <p className="py-2 text-[11px] text-muted-foreground">불러오는 중...</p>
+        ) : candidates.length === 0 ? (
+          <p className="py-2 text-[11px] text-muted-foreground">
+            아직 생성된 후보가 없습니다. 위 버튼으로 생성하세요.
+          </p>
+        ) : (
+          <ul className="space-y-1.5">
+            {candidates.map((c) => (
+              <li
+                key={c.id}
+                className="flex items-center justify-between gap-2 rounded-md border bg-background px-2.5 py-1.5 text-xs"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium">
+                      {c.score != null ? `점수 ${c.score.toFixed(2)}` : '점수 N/A'}
+                    </span>
+                    <span className="rounded bg-muted px-1.5 text-[10px] uppercase text-muted-foreground">
+                      {c.candidate_type}
+                    </span>
+                  </div>
+                  <p className="truncate text-[10px] text-muted-foreground">
+                    {formatPoint(c.point_geom)} · z={c.z_m ?? '?'} m
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleConfirmCandidate(c)}
+                  disabled={createLayout.isPending}
+                  className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+                >
+                  <CheckCircle2 className="h-3 w-3" />
+                  배치
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="mt-3">
+        <p className="mb-1.5 text-[11px] font-semibold text-muted-foreground">확정된 배치 ({layouts.length})</p>
+        {layoutsQuery.isLoading ? (
+          <p className="py-2 text-[11px] text-muted-foreground">불러오는 중...</p>
+        ) : layouts.length === 0 ? (
+          <p className="py-2 text-[11px] text-muted-foreground">
+            아직 확정된 AP 배치가 없습니다.
+          </p>
+        ) : (
+          <ul className="space-y-1.5">
+            {layouts.map((l) => (
+              <ApLayoutRow
+                key={l.id}
+                layout={l}
+                onDelete={() => deleteLayout.mutate(l.id)}
+                disabled={deleteLayout.isPending}
+              />
+            ))}
+          </ul>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function ApLayoutRow({
+  layout,
+  onDelete,
+  disabled,
+}: {
+  layout: ApLayout;
+  onDelete: () => void;
+  disabled: boolean;
+}) {
+  return (
+    <li className="flex items-center justify-between gap-2 rounded-md border bg-background px-2.5 py-1.5 text-xs">
+      <div className="min-w-0">
+        <div className="font-medium">{layout.ap_name}</div>
+        <p className="truncate text-[10px] text-muted-foreground">
+          {formatPoint(layout.point_geom)} · z={layout.z_m ?? '?'} m
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={onDelete}
+        disabled={disabled}
+        aria-label="삭제"
+        className="rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+    </li>
+  );
+}
+
+function formatPoint(geom: Record<string, unknown> | null): string {
+  if (!geom) return '좌표 없음';
+  const coords = (geom as { coordinates?: unknown }).coordinates;
+  if (Array.isArray(coords) && coords.length >= 2) {
+    const x = Number(coords[0]);
+    const y = Number(coords[1]);
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      return `(${x.toFixed(2)}, ${y.toFixed(2)})`;
+    }
+  }
+  return '좌표 형식 오류';
 }
 
 /**

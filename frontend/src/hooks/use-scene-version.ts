@@ -22,6 +22,44 @@ export function useSceneVersion(versionId: UUID | null) {
   });
 }
 
+/** DELETE /scene-versions/{id} — 버전 삭제 (백엔드 §7 명세에 없지만 관례적으로 시도). */
+export function useDeleteSceneVersion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (versionId: UUID) => sceneVersionApi.remove(versionId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['scene-versions'] });
+      qc.invalidateQueries({ queryKey: ['scene-version'] });
+      toast.info('버전 삭제됨');
+    },
+    onError: (err) => {
+      const e = err as HttpError | null;
+      const message =
+        e?.status === 404 || e?.status === 405
+          ? '백엔드가 버전 삭제를 지원하지 않습니다.'
+          : e?.message ?? '잠시 후 다시 시도해주세요.';
+      toast.error('버전 삭제 실패', message);
+    },
+  });
+}
+
+/** §7.3 PATCH /scene-versions/{id}/set-current — 활성 버전 전환. */
+export function useSetCurrentVersion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (versionId: UUID) => sceneVersionApi.setCurrent(versionId),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['scene-versions'] });
+      qc.invalidateQueries({ queryKey: ['scene-version', data.id] });
+      toast.success(`버전 #${data.version_no} 으로 전환됨`, '이 버전을 기준으로 작업합니다.');
+    },
+    onError: (err) => {
+      const e = err as HttpError | null;
+      toast.error('버전 전환 실패', e?.message ?? '잠시 후 다시 시도해주세요.');
+    },
+  });
+}
+
 export function usePromoteDraft() {
   const qc = useQueryClient();
   return useMutation({
@@ -35,9 +73,14 @@ export function usePromoteDraft() {
     },
     onError: (err) => {
       const e = err as HttpError | null;
+      // 이미 확정된 draft 인데 프론트 캐시가 stale 인 케이스 — 캐시 강제 갱신.
+      if (e?.code === 'DRAFT_ALREADY_PROMOTED') {
+        qc.invalidateQueries({ queryKey: ['scene-drafts'] });
+        qc.invalidateQueries({ queryKey: ['scene-versions'] });
+      }
       const message =
         e?.code === 'DRAFT_ALREADY_PROMOTED'
-          ? '이미 확정된 Draft 입니다.'
+          ? '이미 확정된 Draft 입니다. 잠시 후 화면이 갱신됩니다.'
           : e?.code === 'SCENE_VERSION_CONFLICT'
           ? '같은 층에 동일한 버전 번호가 이미 존재합니다.'
           : e?.message ?? '확정에 실패했습니다.';

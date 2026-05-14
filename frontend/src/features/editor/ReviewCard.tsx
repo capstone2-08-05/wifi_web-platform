@@ -1,4 +1,5 @@
-import { CheckCircle2, RotateCcw, Save } from 'lucide-react';
+import { useState } from 'react';
+import { CheckCircle2, ChevronUp, Minimize2, RotateCcw, Save } from 'lucide-react';
 import type { SceneDraft } from '@/types/scene';
 
 interface ReviewCardProps {
@@ -20,12 +21,34 @@ export function ReviewCard({
   onReset,
   errorMessage,
 }: ReviewCardProps) {
+  const [minimized, setMinimized] = useState(false);
+
   const counts = {
     rooms: draft.rooms?.length ?? 0,
     walls: draft.walls?.length ?? 0,
     openings: draft.openings?.length ?? 0,
     objects: draft.objects?.length ?? 0,
   };
+
+  if (minimized) {
+    return (
+      <div className="pointer-events-auto absolute right-6 top-6 flex items-center gap-2 rounded-full border bg-card px-3 py-2 text-xs shadow-md">
+        <CheckCircle2 className="h-4 w-4 text-primary" />
+        <span className="font-medium">분석 완료</span>
+        <span className="text-muted-foreground">
+          방 {counts.rooms} · 벽 {counts.walls} · 객체 {counts.objects}
+        </span>
+        <button
+          type="button"
+          onClick={() => setMinimized(false)}
+          className="ml-1 inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          <ChevronUp className="h-3 w-3" />
+          확정 패널 열기
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-xl border bg-card p-6 shadow-sm">
@@ -37,6 +60,14 @@ export function ReviewCard({
             확정하면 새 버전 #{nextVersionNo} 으로 저장되고, 그 위에서 이어서 작업할 수 있습니다.
           </p>
         </div>
+        <button
+          type="button"
+          onClick={() => setMinimized(true)}
+          aria-label="패널 최소화"
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <Minimize2 className="h-4 w-4" />
+        </button>
       </div>
 
       <dl className="grid grid-cols-4 gap-3">
@@ -79,7 +110,7 @@ export function ReviewCard({
       </div>
 
       <p className="mt-3 text-[11px] text-muted-foreground">
-        ※ 캔버스 편집은 다음 단계 (Phase B) 에서 추가됩니다. 지금은 분석 결과를 바로 확정하거나 다시 업로드할 수 있습니다.
+        ※ 우측 상단 아이콘으로 패널을 최소화하면 캔버스에서 도형을 자유롭게 편집할 수 있어요.
       </p>
     </div>
   );

@@ -7,8 +7,25 @@ export type JobStatus =
   | 'pending'
   | 'running'
   | 'succeeded'
+  | 'done'
   | 'failed'
   | string;
+
+/** 백엔드 응답의 상태값 중 "완료" 로 간주되는 것들 (명세는 succeeded, 실제 응답은 done). */
+const TERMINAL_SUCCESS = new Set(['succeeded', 'done']);
+const TERMINAL_FAILURE = new Set(['failed', 'error']);
+
+export function isJobSucceeded(status: string | null | undefined): boolean {
+  return !!status && TERMINAL_SUCCESS.has(status);
+}
+
+export function isJobFailed(status: string | null | undefined): boolean {
+  return !!status && TERMINAL_FAILURE.has(status);
+}
+
+export function isJobTerminal(status: string | null | undefined): boolean {
+  return isJobSucceeded(status) || isJobFailed(status);
+}
 
 export interface Job {
   id: UUID;
