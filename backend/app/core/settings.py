@@ -60,6 +60,15 @@ SAGEMAKER_ENDPOINT_NAME = os.getenv("SAGEMAKER_ENDPOINT_NAME", "ai-inference-end
 SAGEMAKER_POLL_INTERVAL_SECONDS = float(os.getenv("SAGEMAKER_POLL_INTERVAL_SECONDS", "5"))
 SAGEMAKER_POLL_TIMEOUT_SECONDS = float(os.getenv("SAGEMAKER_POLL_TIMEOUT_SECONDS", "900"))
 
+# RF 시뮬 inference 는 별도 endpoint. bucket/region 은 AI 와 공유.
+SAGEMAKER_RF_ENDPOINT_NAME = os.getenv(
+    "SAGEMAKER_RF_ENDPOINT_NAME", "rf-inference-async-endpoint-v1"
+).strip()
+# 결과 presigned URL 만료 (초). 기본 1시간.
+RF_PRESIGNED_URL_EXPIRES_SECONDS = int(
+    os.getenv("RF_PRESIGNED_URL_EXPIRES_SECONDS", "3600")
+)
+
 
 # ============================================
 # CORS

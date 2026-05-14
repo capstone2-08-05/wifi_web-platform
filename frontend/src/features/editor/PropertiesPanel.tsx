@@ -1,5 +1,6 @@
 import { Check, ChevronDown, RotateCcw, ScanLine, Sparkles, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { openingTypeLabel } from '@/lib/labels';
 import type {
   DraftObject,
   DraftOpening,
@@ -157,7 +158,11 @@ function SelectedBody({
 }
 
 function TypeHeader({ selected }: { selected: SelectedEntityResolved }) {
-  const label = KIND_LABELS[selected.kind];
+  // 개구부는 generic '개구부' 대신 실제 종류('문'/'창문')를 메인 라벨로.
+  const label =
+    selected.kind === 'opening'
+      ? openingTypeLabel(selected.data.opening_type)
+      : KIND_LABELS[selected.kind];
   const subLabel = getEntitySubLabel(selected);
   return (
     <div className="flex items-center gap-3 rounded-lg border bg-background p-3">
@@ -204,7 +209,7 @@ function RoomFields({ room }: { room: DraftRoom }) {
 function OpeningFields({ opening }: { opening: DraftOpening }) {
   return (
     <Grid>
-      <Row label="종류" value={opening.opening_type} />
+      <Row label="종류" value={openingTypeLabel(opening.opening_type)} />
       <Row label="너비" value={fmtDecimal(opening.width_m, 'm')} />
       <Row label="높이" value={fmtDecimal(opening.height_m, 'm')} />
       <Row label="턱 높이" value={fmtDecimal(opening.sill_height_m, 'm')} />
@@ -475,7 +480,8 @@ function getEntitySubLabel(selected: SelectedEntityResolved): string | null {
     case 'room':
       return selected.data.room_type || null;
     case 'opening':
-      return selected.data.opening_type;
+      // 메인 라벨이 이미 '문'/'창문' 이라 sub 태그는 생략 (중복).
+      return null;
     case 'object':
       return selected.data.object_type;
   }

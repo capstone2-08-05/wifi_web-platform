@@ -21,6 +21,7 @@ from app.core.settings import (
 from app.geometry import (
     object_point_geom,
     opening_line_geom,
+    opening_physical_dims,
     room_centroid_geom,
     room_polygon_geom,
     wall_centerline_geom,
@@ -215,13 +216,10 @@ def save_scene_draft(
                 wall_id_map[str(wall["id"])] = draft_wall.id
 
         for opening in request_dto.scene.openings:
-            width = _to_float(opening.get("width_m"))
-            if width is None:
-                width = abs(_to_float(opening.get("x2"), 0.0) - _to_float(opening.get("x1"), 0.0))
-
-            height = _to_float(opening.get("height_m"))
-            if height is None:
-                height = abs(_to_float(opening.get("y2"), 0.0) - _to_float(opening.get("y1"), 0.0))
+            # width_m 은 bbox 긴 축 × scale_ratio (line_geom 길이와 동일),
+            # height_m / sill_height_m 은 opening_type 별 표준값.
+            # raw 픽셀 bbox 는 metadata_json.raw 에만 보관 (단위 혼입 방지).
+            width_m, height_m, sill_height_m = opening_physical_dims(opening, scale_ratio)
 
             wall_ref = opening.get("wall_ref")
             db.add(
@@ -229,8 +227,9 @@ def save_scene_draft(
                     scene_draft_id=scene_draft.id,
                     wall_id=wall_id_map.get(str(wall_ref)) if wall_ref is not None else None,
                     opening_type=opening.get("type", "opening"),
-                    width_m=_positive(width, 0.8),
-                    height_m=_positive(height, 1.2),
+                    width_m=_positive(width_m, 0.8),
+                    height_m=_positive(height_m, 1.2),
+                    sill_height_m=sill_height_m,
                     source_method=DEFAULT_DRAFT_ANALYSIS_METHOD,
                     line_geom=opening_line_geom(opening, scale_ratio),
                     metadata_json={"raw": opening},

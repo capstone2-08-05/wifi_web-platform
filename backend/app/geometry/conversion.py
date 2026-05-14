@@ -8,10 +8,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from geoalchemy2.shape import from_shape
+from geoalchemy2.shape import from_shape, to_shape
 from shapely.geometry import LineString, Point, Polygon
 
 SRID = 0
+
+# Opening 물리 치수 기본값.
+# bbox 픽셀 height 는 실제 문/창 높이를 의미하지 않으므로 (YOLO bbox 는 도면 평면도상의
+# 박스일 뿐) opening_type 별 표준값을 쓴다. width 만 도면 geometry 에서 측정 가능.
+DEFAULT_DOOR_HEIGHT_M = 2.1
+DEFAULT_DOOR_SILL_HEIGHT_M = 0.0
+DEFAULT_WINDOW_HEIGHT_M = 1.2
+DEFAULT_WINDOW_SILL_HEIGHT_M = 0.9
+# geometry 측정 실패 시 width fallback.
+DEFAULT_OPENING_WIDTH_M = 0.8
 
 
 def _to_float(value: Any, default: float | None = None) -> float | None:
@@ -69,6 +79,64 @@ def opening_line_geom(opening: dict[str, Any], scale_ratio: float):
     if line.is_empty:
         return None
     return from_shape(line, srid=SRID)
+
+
+def opening_physical_dims(
+    opening: dict[str, Any], scale_ratio: float
+) -> tuple[float, float, float]:
+    """Opening bbox (픽셀) → (width_m, height_m, sill_height_m) 미터.
+
+    - width_m: bbox 긴 축 × scale_ratio. `opening_line_geom` 이 만드는 선분 길이와 동일.
+    - height_m / sill_height_m: bbox 픽셀 height 는 신뢰하지 않고 opening_type 별 표준값.
+      (door / window 이외 type 은 door 기본값으로 처리.)
+
+    raw 픽셀 bbox 는 호출자가 metadata_json.raw 에만 보관해야 한다.
+    """
+    x1 = _to_float(opening.get("x1"))
+    y1 = _to_float(opening.get("y1"))
+    x2 = _to_float(opening.get("x2"))
+    y2 = _to_float(opening.get("y2"))
+    otype = str(opening.get("type") or opening.get("opening_type") or "").lower()
+
+    if None in (x1, y1, x2, y2):
+        width_m = DEFAULT_OPENING_WIDTH_M
+    else:
+        long_axis_px = max(abs(x2 - x1), abs(y2 - y1))
+        width_m = long_axis_px * float(scale_ratio)
+        if width_m <= 0:
+            width_m = DEFAULT_OPENING_WIDTH_M
+
+    if otype == "window":
+        return width_m, DEFAULT_WINDOW_HEIGHT_M, DEFAULT_WINDOW_SILL_HEIGHT_M
+    # door 또는 미상 → door 기본값
+    return width_m, DEFAULT_DOOR_HEIGHT_M, DEFAULT_DOOR_SILL_HEIGHT_M
+
+
+def opening_type_dims(opening_type: str | None) -> tuple[float, float]:
+    """opening_type → (height_m, sill_height_m) 표준값. width 와 무관 (geometry 필요 없음).
+
+    backfill 등 bbox 없이 type 만 알 때 사용.
+    """
+    if str(opening_type or "").lower() == "window":
+        return DEFAULT_WINDOW_HEIGHT_M, DEFAULT_WINDOW_SILL_HEIGHT_M
+    return DEFAULT_DOOR_HEIGHT_M, DEFAULT_DOOR_SILL_HEIGHT_M
+
+
+def line_geom_length_m(geom: Any) -> float | None:
+    """PostGIS LINESTRING (WKBElement) → 길이(미터). geom 이 없거나 LineString 이 아니면 None.
+
+    line_geom 은 이미 미터 좌표(SRID=0)로 저장돼 있으므로 shapely 길이가 곧 미터.
+    """
+    if geom is None:
+        return None
+    try:
+        shape = to_shape(geom)
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if shape.geom_type != "LineString" or shape.is_empty:
+        return None
+    length = float(shape.length)
+    return length if length > 0 else None
 
 
 def room_polygon_geom(room: dict[str, Any], scale_ratio: float):

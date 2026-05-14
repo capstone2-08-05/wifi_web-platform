@@ -253,9 +253,9 @@ export default function EditorPage() {
               />
             )}
 
-            {showOverlay && (
-              <OverlayLayer>
-                {justPromoted ? (
+            {showOverlay &&
+              (justPromoted ? (
+                <OverlayLayer placement="center">
                   <PromotedCard
                     version={justPromoted}
                     onReupload={() => {
@@ -263,12 +263,17 @@ export default function EditorPage() {
                       setPendingFileName(null);
                     }}
                   />
-                ) : isAnalyzing ? (
+                </OverlayLayer>
+              ) : isAnalyzing ? (
+                <OverlayLayer placement="center">
                   <BusyOverlay
                     title={analyzingTitle(jobPoll.job?.status)}
                     subtitle={analyzingSubtitle(jobPoll.job?.status)}
                   />
-                ) : activeDraft ? (
+                </OverlayLayer>
+              ) : activeDraft ? (
+                // 분석 완료 후엔 캔버스가 보여야 하므로 카드를 우측 상단 코너로.
+                <OverlayLayer placement="top-right">
                   <ReviewCard
                     draft={activeDraft}
                     nextVersionNo={nextVersionNo}
@@ -280,11 +285,12 @@ export default function EditorPage() {
                       readError(promote.error) ?? readError(removeDraft.error) ?? undefined
                     }
                   />
-                ) : activeDraftSummary ? (
+                </OverlayLayer>
+              ) : activeDraftSummary ? (
+                <OverlayLayer placement="center">
                   <BusyOverlay title="Draft 불러오는 중..." />
-                ) : null}
-              </OverlayLayer>
-            )}
+                </OverlayLayer>
+              ) : null)}
           </>
         ) : (
           <NoFloorScreen hasProject={!!projectId} />
@@ -303,10 +309,33 @@ export default function EditorPage() {
   );
 }
 
-function OverlayLayer({ children }: { children: React.ReactNode }) {
+/**
+ * 캔버스 위 떠 있는 카드 컨테이너.
+ * - center: 로딩 / 확정 완료 — 화면 정중앙, 넓게.
+ * - top-right: 분석 결과 리뷰 — 우측 상단 코너, 좁게. 뒤의 도면 캔버스가 보이도록.
+ */
+function OverlayLayer({
+  children,
+  placement = 'center',
+}: {
+  children: React.ReactNode;
+  placement?: 'center' | 'top-right';
+}) {
+  const isCorner = placement === 'top-right';
   return (
-    <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-10">
-      <div className="pointer-events-auto w-full max-w-xl">{children}</div>
+    <div
+      className={
+        'pointer-events-none absolute inset-0 flex ' +
+        (isCorner ? 'items-start justify-end p-3' : 'items-center justify-center p-10')
+      }
+    >
+      <div
+        className={
+          'pointer-events-auto ' + (isCorner ? 'w-auto max-w-sm' : 'w-full max-w-xl')
+        }
+      >
+        {children}
+      </div>
     </div>
   );
 }

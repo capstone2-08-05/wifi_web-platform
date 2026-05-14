@@ -15,7 +15,13 @@ from typing import Any
 
 from starlette.concurrency import run_in_threadpool
 
-from app.geometry import assign_wall_refs
+from app.geometry import (
+    assign_wall_refs,
+    bridge_collinear_walls,
+    nms_filter_indices,
+    project_openings_onto_walls,
+    snap_wall_endpoints,
+)
 from app.schemas.ai_response import (
     DetectionDTO,
     MetaDTO,
@@ -90,36 +96,67 @@ class FusionService:
             )
 
         calibrated_walls = geo_service.calibrate_walls(raw_walls, ml_output.detections)
+
+        # 후-후처리: wall_extraction 결과를 다시 보고 정합성 보정.
+        #   collinear 끊김 잇기 → 코너 끝점 스냅 → 닫힌 루프 형성 가능성 ↑ (방 추출 살아남).
+        n_walls_before = len(calibrated_walls)
+        calibrated_walls = bridge_collinear_walls(calibrated_walls)
+        calibrated_walls = snap_wall_endpoints(calibrated_walls)
+        if len(calibrated_walls) != n_walls_before:
+            logger.info(
+                "wall reconciliation: %d → %d walls (collinear bridged)",
+                n_walls_before, len(calibrated_walls),
+            )
+
         extracted_rooms: list[Room] = geo_service.extract_rooms(calibrated_walls)
         topology_result = topo_service.analyze(extracted_rooms, ml_output.detections)
 
-        openings: list[Opening] = []
+        # door/window 와 가구 detection 분리
+        opening_dets: list[DetectionDTO] = []
         furniture_objects: list[DetectionDTO] = []
-        for i, det in enumerate(ml_output.detections):
+        for det in ml_output.detections:
             if det.class_name in {"door", "window"}:
-                bx1, by1, bx2, by2 = det.bbox_xyxy
-                openings.append(
-                    Opening(
-                        id=f"opening_{i}",
-                        type=det.class_name,
-                        x1=float(bx1),
-                        y1=float(by1),
-                        x2=float(bx2),
-                        y2=float(by2),
-                        width_m=abs(bx2 - bx1) * scale_ratio,
-                        height_m=abs(by2 - by1) * scale_ratio,
-                        score=float(det.score),
-                    )
-                )
+                opening_dets.append(det)
             else:
                 det.id = f"furniture_{len(furniture_objects)}"
                 furniture_objects.append(det)
 
+        # 같은 문/창을 여러 번 탐지한 중복 제거 (NMS). score 높은 박스 유지.
+        if opening_dets:
+            boxes = [tuple(float(v) for v in d.bbox_xyxy) for d in opening_dets]
+            scores = [float(d.score) for d in opening_dets]
+            kept = nms_filter_indices(boxes, scores)
+            if len(kept) < len(opening_dets):
+                logger.info(
+                    "opening NMS: %d → %d (removed %d duplicates)",
+                    len(opening_dets), len(kept), len(opening_dets) - len(kept),
+                )
+            opening_dets = [opening_dets[i] for i in kept]
+
+        # opening 의 물리 치수(width_m/height_m)는 fusion 에서 정하지 않는다.
+        # save_scene_draft 가 line_geom 길이 + type 별 표준값으로 결정론적으로 계산.
+        openings: list[Opening] = []
+        for i, det in enumerate(opening_dets):
+            bx1, by1, bx2, by2 = det.bbox_xyxy
+            openings.append(
+                Opening(
+                    id=f"opening_{i}",
+                    type=det.class_name,
+                    x1=float(bx1),
+                    y1=float(by1),
+                    x2=float(bx2),
+                    y2=float(by2),
+                )
+            )
+
         # Phase 2.5: 각 opening 의 bbox 방향과 일치하는 가장 가까운 wall 의 id 를 wall_ref 로.
         matched_count = assign_wall_refs(openings, calibrated_walls)
+        # 매칭된 opening 을 wall 중심선 위로 투영 → 문/창이 벽에 정확히 박힘.
+        projected = project_openings_onto_walls(openings, calibrated_walls)
         if openings:
             logger.info(
-                "wall-opening match: %d/%d openings linked", matched_count, len(openings)
+                "wall-opening match: %d/%d linked, %d projected onto walls",
+                matched_count, len(openings), projected,
             )
 
         return SceneSchema(
