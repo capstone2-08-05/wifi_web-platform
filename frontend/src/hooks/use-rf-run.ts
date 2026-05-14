@@ -5,6 +5,7 @@ import type { HttpError } from '@/api/client';
 import { toast } from '@/stores/toast-store';
 import type { UUID } from '@/types/common';
 import type { RfRun, RfRunCreate } from '@/types/rf';
+import { isJobFailed, isJobSucceeded, isJobTerminal } from '@/types/job';
 
 const POLL_INTERVAL_MS = 3_000;
 
@@ -38,7 +39,7 @@ export function useRfRun(rfRunId: UUID | null) {
     enabled: !!rfRunId,
     refetchInterval: (q) => {
       const s = q.state.data?.status;
-      if (s === 'succeeded' || s === 'failed') return false;
+      if (isJobTerminal(s)) return false;
       return POLL_INTERVAL_MS;
     },
     refetchIntervalInBackground: false,
@@ -48,10 +49,10 @@ export function useRfRun(rfRunId: UUID | null) {
     const data = query.data;
     if (!data || !rfRunId) return;
     if (settledRef.current === rfRunId) return;
-    if (data.status === 'succeeded') {
+    if (isJobSucceeded(data.status)) {
       settledRef.current = rfRunId;
       toast.success('RF 시뮬레이션 완료', '결과를 확인해주세요.');
-    } else if (data.status === 'failed') {
+    } else if (isJobFailed(data.status)) {
       settledRef.current = rfRunId;
       const err = (data.metrics_json?.['error_message'] as string | undefined) ?? undefined;
       toast.error('RF 시뮬레이션 실패', err ?? '잠시 후 다시 시도해주세요.');
@@ -66,9 +67,9 @@ export function useRfRun(rfRunId: UUID | null) {
   const status = rfRun?.status;
   return {
     rfRun,
-    isPolling: !!rfRunId && status !== 'succeeded' && status !== 'failed',
-    isSucceeded: status === 'succeeded',
-    isFailed: status === 'failed',
+    isPolling: !!rfRunId && !isJobTerminal(status),
+    isSucceeded: isJobSucceeded(status),
+    isFailed: isJobFailed(status),
   };
 }
 

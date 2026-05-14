@@ -1,15 +1,21 @@
-import { ChevronDown, RotateCcw, ScanLine, Trash2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Check, ChevronDown, RotateCcw, ScanLine, Sparkles, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { objectTypeLabel, OBJECT_TYPE_OPTIONS, openingTypeLabel } from '@/lib/labels';
 import type {
   DraftObject,
   DraftOpening,
   DraftRoom,
   DraftWall,
+  SelectedEntityRef,
   SelectedEntityResolved,
 } from '@/types/scene';
 import type { Material } from '@/types/material';
+import type { MaterialHypothesis } from '@/types/material-hypothesis';
 import { useMaterials } from '@/hooks/use-materials';
+import {
+  useSelectMaterialHypothesis,
+  useWallMaterialHypotheses,
+} from '@/hooks/use-material-hypotheses';
 
 interface PropertiesPanelProps {
   selected: SelectedEntityResolved | null;
@@ -19,8 +25,16 @@ interface PropertiesPanelProps {
   onRotate?: () => void;
   /** 벽의 material_label 변경. 백엔드 PATCH /draft-walls/{id}. */
   onUpdateMaterial?: (next: string) => void;
-  /** 객체의 object_type 변경. 백엔드 PATCH /draft-objects/{id}. */
-  onUpdateObjectType?: (next: string) => void;
+  /** 객체 위치(X/Y) 변경 — 보류 편집에 저장. */
+  onUpdateObjectPosition?: (ref: SelectedEntityRef, x: number, y: number) => void;
+  /** 객체 크기(W/H) 변경 — 보류 편집에 저장. */
+  onUpdateObjectSize?: (ref: SelectedEntityRef, widthM: number, heightM: number) => void;
+  /** 보류 편집이 존재하는지 (저장/취소 버튼 활성화 기준). */
+  hasPendingObjectEdit?: boolean;
+  /** 보류 편집 PATCH 실행. */
+  onSavePendingObject?: () => void;
+  /** 보류 편집 폐기. */
+  onCancelPendingObject?: () => void;
   /** 작업 진행 중 표시 */
   isSaving?: boolean;
   isDeleting?: boolean;
@@ -33,21 +47,16 @@ const KIND_LABELS: Record<SelectedEntityResolved['kind'], string> = {
   object: '객체',
 };
 
-/** 백엔드 Materials API 가 비어있을 때 fallback 으로 쓸 mock 목록. */
-const FALLBACK_MATERIAL_NAMES = [
-  '목재',
-  '금속',
-  '유리',
-  '플라스틱',
-  '콘크리트',
-];
-
 export function PropertiesPanel({
   selected,
   onDelete,
   onRotate,
   onUpdateMaterial,
-  onUpdateObjectType,
+  onUpdateObjectPosition,
+  onUpdateObjectSize,
+  hasPendingObjectEdit,
+  onSavePendingObject,
+  onCancelPendingObject,
   isSaving,
   isDeleting,
 }: PropertiesPanelProps) {
@@ -63,7 +72,11 @@ export function PropertiesPanel({
           onDelete={onDelete}
           onRotate={onRotate}
           onUpdateMaterial={onUpdateMaterial}
-          onUpdateObjectType={onUpdateObjectType}
+          onUpdateObjectPosition={onUpdateObjectPosition}
+          onUpdateObjectSize={onUpdateObjectSize}
+          hasPendingObjectEdit={!!hasPendingObjectEdit}
+          onSavePendingObject={onSavePendingObject}
+          onCancelPendingObject={onCancelPendingObject}
           isSaving={!!isSaving}
           isDeleting={!!isDeleting}
         />
@@ -81,7 +94,11 @@ function SelectedBody({
   onDelete,
   onRotate,
   onUpdateMaterial,
-  onUpdateObjectType,
+  onUpdateObjectPosition,
+  onUpdateObjectSize,
+  hasPendingObjectEdit,
+  onSavePendingObject,
+  onCancelPendingObject,
   isSaving,
   isDeleting,
 }: {
@@ -89,7 +106,11 @@ function SelectedBody({
   onDelete?: () => void;
   onRotate?: () => void;
   onUpdateMaterial?: (next: string) => void;
-  onUpdateObjectType?: (next: string) => void;
+  onUpdateObjectPosition?: (ref: SelectedEntityRef, x: number, y: number) => void;
+  onUpdateObjectSize?: (ref: SelectedEntityRef, widthM: number, heightM: number) => void;
+  hasPendingObjectEdit: boolean;
+  onSavePendingObject?: () => void;
+  onCancelPendingObject?: () => void;
   isSaving: boolean;
   isDeleting: boolean;
 }) {
@@ -99,12 +120,33 @@ function SelectedBody({
         <TypeHeader selected={selected} />
       </Section>
 
-      <Section label="속성">
-        {selected.kind === 'wall' && <WallFields wall={selected.data} />}
-        {selected.kind === 'room' && <RoomFields room={selected.data} />}
-        {selected.kind === 'opening' && <OpeningFields opening={selected.data} />}
-        {selected.kind === 'object' && <ObjectFields object={selected.data} />}
-      </Section>
+      {selected.kind !== 'object' && (
+        <Section label="속성">
+          {selected.kind === 'wall' && <WallFields wall={selected.data} />}
+          {selected.kind === 'room' && <RoomFields room={selected.data} />}
+          {selected.kind === 'opening' && <OpeningFields opening={selected.data} />}
+        </Section>
+      )}
+
+      {selected.kind === 'object' && (
+        <ObjectSizePositionSection
+          object={selected.data}
+          onUpdatePosition={
+            onUpdateObjectPosition
+              ? (x, y) => onUpdateObjectPosition({ kind: 'object', id: selected.data.id }, x, y)
+              : undefined
+          }
+          onUpdateSize={
+            onUpdateObjectSize
+              ? (w, h) => onUpdateObjectSize({ kind: 'object', id: selected.data.id }, w, h)
+              : undefined
+          }
+          hasPending={hasPendingObjectEdit}
+          onSave={onSavePendingObject}
+          onCancel={onCancelPendingObject}
+          disabled={isSaving}
+        />
+      )}
 
       {selected.kind === 'wall' && (
         <Section label="장애물 재질 설정">
@@ -120,18 +162,8 @@ function SelectedBody({
         </Section>
       )}
 
-      {selected.kind === 'object' && (
-        <Section label="객체 종류 변경">
-          <ObjectTypeSelect
-            value={selected.data.object_type}
-            onChange={onUpdateObjectType}
-            disabled={isSaving}
-          />
-          <p className="mt-2 rounded-md bg-primary/5 px-3 py-2 text-[11px] leading-relaxed text-primary/90">
-            AI 가 추정한 종류가 틀렸으면 직접 바꿔주세요.
-            {isSaving && ' 저장 중…'}
-          </p>
-        </Section>
+      {selected.kind === 'wall' && (
+        <WallHypothesesSection wallId={selected.data.id} />
       )}
 
       <div className="flex gap-2">
@@ -169,10 +201,7 @@ function SelectedBody({
 }
 
 function TypeHeader({ selected }: { selected: SelectedEntityResolved }) {
-  // 개구부·객체는 generic 라벨 대신 실제 종류를 메인 라벨로.
-  let label = KIND_LABELS[selected.kind];
-  if (selected.kind === 'opening') label = openingTypeLabel(selected.data.opening_type);
-  else if (selected.kind === 'object') label = objectTypeLabel(selected.data.object_type);
+  const label = KIND_LABELS[selected.kind];
   const subLabel = getEntitySubLabel(selected);
   return (
     <div className="flex items-center gap-3 rounded-lg border bg-background p-3">
@@ -219,7 +248,7 @@ function RoomFields({ room }: { room: DraftRoom }) {
 function OpeningFields({ opening }: { opening: DraftOpening }) {
   return (
     <Grid>
-      <Row label="종류" value={openingTypeLabel(opening.opening_type)} />
+      <Row label="종류" value={opening.opening_type} />
       <Row label="너비" value={fmtDecimal(opening.width_m, 'm')} />
       <Row label="높이" value={fmtDecimal(opening.height_m, 'm')} />
       <Row label="턱 높이" value={fmtDecimal(opening.sill_height_m, 'm')} />
@@ -228,47 +257,175 @@ function OpeningFields({ opening }: { opening: DraftOpening }) {
   );
 }
 
-function ObjectFields({ object }: { object: DraftObject }) {
+/**
+ * 객체 위치(X/Y) + 크기(W/H) 입력 섹션.
+ * 입력 또는 캔버스 드래그가 부모(EditorPage)의 보류 편집 상태를 업데이트하고,
+ * "저장" 버튼을 눌러야 백엔드에 PATCH. "취소"로 폐기.
+ * 표시되는 값은 항상 보류 편집이 반영된 object props.
+ */
+function ObjectSizePositionSection({
+  object,
+  onUpdatePosition,
+  onUpdateSize,
+  hasPending,
+  onSave,
+  onCancel,
+  disabled,
+}: {
+  object: DraftObject;
+  onUpdatePosition?: (x: number, y: number) => void;
+  onUpdateSize?: (widthM: number, heightM: number) => void;
+  hasPending: boolean;
+  onSave?: () => void;
+  onCancel?: () => void;
+  disabled?: boolean;
+}) {
+  const point = extractPoint(object.point_geom);
+  const meta = (object.metadata_json ?? {}) as Record<string, unknown>;
+  const widthM = typeof meta.width_m === 'number' ? meta.width_m : null;
+  const heightM = typeof meta.height_m === 'number' ? meta.height_m : null;
+
   return (
-    <Grid>
-      <Row label="종류" value={objectTypeLabel(object.object_type)} />
-      <Row label="높이" value={fmtDecimal(object.z_m, 'm')} />
-      <Row label="신뢰도" value={fmtConfidence(object.confidence)} />
-    </Grid>
+    <Section label="크기 및 위치">
+      <div className="grid grid-cols-2 gap-2">
+        <NumberInputBound
+          label="가로 (W)"
+          value={widthM}
+          unit="m"
+          step={0.1}
+          min={0.2}
+          disabled={disabled || !onUpdateSize}
+          onCommit={(next) => onUpdateSize?.(next, heightM ?? next)}
+          onEnterSave={onSave}
+        />
+        <NumberInputBound
+          label="세로 (H)"
+          value={heightM}
+          unit="m"
+          step={0.1}
+          min={0.2}
+          disabled={disabled || !onUpdateSize}
+          onCommit={(next) => onUpdateSize?.(widthM ?? next, next)}
+          onEnterSave={onSave}
+        />
+        <NumberInputBound
+          label="X 좌표"
+          value={point?.[0] ?? null}
+          unit="m"
+          step={0.1}
+          disabled={disabled || !onUpdatePosition || !point}
+          onCommit={(next) => point && onUpdatePosition?.(next, point[1])}
+          onEnterSave={onSave}
+        />
+        <NumberInputBound
+          label="Y 좌표"
+          value={point?.[1] ?? null}
+          unit="m"
+          step={0.1}
+          disabled={disabled || !onUpdatePosition || !point}
+          onCommit={(next) => point && onUpdatePosition?.(point[0], next)}
+          onEnterSave={onSave}
+        />
+      </div>
+
+      <div className="mt-3 flex gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={disabled || !hasPending}
+          className="flex-1 rounded-md border bg-background px-3 py-1.5 text-xs font-medium text-foreground/80 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          취소
+        </button>
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={disabled || !hasPending}
+          className="flex-1 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {disabled ? '저장 중…' : '저장'}
+        </button>
+      </div>
+      {hasPending && (
+        <p className="mt-2 text-[10px] text-amber-600">변경사항이 저장되지 않았습니다.</p>
+      )}
+    </Section>
   );
 }
 
-/** 객체 종류 변경 select. 백엔드 enum 값으로 onChange, 표시는 한국어 라벨. */
-function ObjectTypeSelect({
+/** 외부 값에 묶이는 숫자 입력 — 외부 값 변경 시 자동 동기화, blur/Enter 시 commit. */
+function NumberInputBound({
+  label,
   value,
-  onChange,
+  unit,
+  step,
+  min,
   disabled,
+  onCommit,
+  onEnterSave,
 }: {
-  value: string;
-  onChange?: (next: string) => void;
+  label: string;
+  value: number | null;
+  unit?: string;
+  step?: number;
+  min?: number;
   disabled?: boolean;
+  onCommit?: (next: number) => void;
+  onEnterSave?: () => void;
 }) {
+  const [draft, setDraft] = useState<string>(value != null ? value.toFixed(2) : '');
+
+  useEffect(() => {
+    setDraft(value != null ? value.toFixed(2) : '');
+  }, [value]);
+
+  const commit = () => {
+    const n = Number(draft);
+    if (!Number.isFinite(n)) {
+      setDraft(value != null ? value.toFixed(2) : '');
+      return;
+    }
+    const clamped = min != null && n < min ? min : n;
+    if (value != null && Math.abs(clamped - value) < 1e-6) return;
+    onCommit?.(clamped);
+  };
+
   return (
-    <div className="relative">
-      <select
-        value={value}
-        onChange={(e) => onChange?.(e.target.value)}
-        disabled={disabled || !onChange}
-        className="w-full appearance-none rounded-md border bg-background px-3 py-2.5 pr-9 text-sm text-foreground shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-70"
-      >
-        {/* 옵션에 없는 현재값(AI 가 낸 미상 종류)도 유지 */}
-        {value && !OBJECT_TYPE_OPTIONS.includes(value) && (
-          <option value={value}>{objectTypeLabel(value)}</option>
-        )}
-        {OBJECT_TYPE_OPTIONS.map((t) => (
-          <option key={t} value={t}>
-            {objectTypeLabel(t)}
-          </option>
-        ))}
-      </select>
-      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-    </div>
+    <label className="block rounded-md border bg-background px-2.5 py-1.5">
+      <span className="text-[10px] text-muted-foreground">{label}</span>
+      <div className="mt-0.5 flex items-baseline gap-1">
+        <input
+          type="number"
+          inputMode="decimal"
+          step={step ?? 0.01}
+          value={draft}
+          disabled={disabled}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              commit();
+              onEnterSave?.();
+            }
+          }}
+          className="w-full bg-transparent text-base font-semibold tabular-nums outline-none disabled:cursor-not-allowed disabled:opacity-50"
+        />
+        {unit && <span className="text-[11px] text-muted-foreground">{unit}</span>}
+      </div>
+    </label>
   );
+}
+
+function extractPoint(geom: Record<string, unknown> | null | undefined): [number, number] | null {
+  if (!geom) return null;
+  const coords = (geom as { coordinates?: unknown }).coordinates;
+  if (Array.isArray(coords) && coords.length >= 2) {
+    const x = Number(coords[0]);
+    const y = Number(coords[1]);
+    if (Number.isFinite(x) && Number.isFinite(y)) return [x, y];
+  }
+  return null;
 }
 
 /**
@@ -285,13 +442,12 @@ function MaterialSelectWired({
   disabled?: boolean;
 }) {
   const { data: materials, isLoading } = useMaterials();
-  const options = materialNamesFrom(materials);
   return (
     <MaterialSelect
       value={value}
       onChange={onChange}
       disabled={disabled || isLoading || !onChange}
-      options={options}
+      materials={materials ?? []}
       sourceLabel={
         materials && materials.length > 0
           ? '백엔드 재질 DB'
@@ -303,41 +459,49 @@ function MaterialSelectWired({
   );
 }
 
-function materialNamesFrom(materials: Material[] | undefined): string[] {
-  if (!materials || materials.length === 0) return FALLBACK_MATERIAL_NAMES;
-  return materials.map((m) => m.material_name);
+/** 현재 값(예: AI 가 넣은 "concrete") 이 material_code 와 매칭되면 material_name 으로 정규화. */
+function normalizeMaterialValue(value: string, materials: Material[]): string {
+  if (!value) return value;
+  // 이미 material_name 과 일치하면 그대로
+  if (materials.some((m) => m.material_name === value)) return value;
+  // material_code 매칭 → 한글 이름으로 변환
+  const matched = materials.find(
+    (m) => m.material_code?.toLowerCase() === value.toLowerCase(),
+  );
+  return matched ? matched.material_name : value;
 }
 
 function MaterialSelect({
   value,
   onChange,
   disabled,
-  options,
+  materials,
   sourceLabel,
 }: {
   value: string;
   onChange?: (next: string) => void;
   disabled?: boolean;
-  options: string[];
+  materials: Material[];
   sourceLabel?: string;
 }) {
+  const normalizedValue = normalizeMaterialValue(value, materials);
+  const optionNames = materials.map((m) => m.material_name);
+  const showRawValue = !!normalizedValue && !optionNames.includes(normalizedValue);
   return (
     <div className="relative">
       <select
-        value={value}
+        value={normalizedValue}
         onChange={(e) => onChange?.(e.target.value)}
         disabled={disabled || !onChange}
         className="w-full appearance-none rounded-md border bg-background px-3 py-2.5 pr-9 text-sm text-foreground shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-70"
       >
-        {!options.includes(value) && value && (
-          <option value={value}>{value}</option>
-        )}
-        {options.map((m) => (
+        {showRawValue && <option value={normalizedValue}>{normalizedValue}</option>}
+        {optionNames.map((m) => (
           <option key={m} value={m}>
             {m}
           </option>
         ))}
-        {!value && <option value="">재질 미지정</option>}
+        {!normalizedValue && <option value="">재질 미지정</option>}
       </select>
       <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
       {sourceLabel && (
@@ -345,6 +509,83 @@ function MaterialSelect({
       )}
     </div>
   );
+}
+
+/**
+ * §12.3 — 벽의 자동 추출된 재질 후보 목록.
+ * 백엔드는 *확정본 Wall* 기준이라 Draft 단계에선 빈 응답 가능.
+ * 비어있거나 에러면 섹션 자체를 안 보임 (조용히 graceful 처리).
+ */
+function WallHypothesesSection({ wallId }: { wallId: string }) {
+  const { data, isError } = useWallMaterialHypotheses(wallId);
+  const select = useSelectMaterialHypothesis();
+
+  if (isError || !data || data.length === 0) return null;
+
+  return (
+    <Section label="추출된 재질 후보">
+      <ul className="space-y-1.5">
+        {data.map((h) => (
+          <HypothesisRow
+            key={h.id}
+            hypothesis={h}
+            onSelect={() => select.mutate(h.id)}
+            disabled={select.isPending}
+          />
+        ))}
+      </ul>
+      <p className="mt-2 text-[10px] text-muted-foreground/80">
+        AI 가 추출한 후보. 클릭하면 해당 후보로 확정됩니다.
+      </p>
+    </Section>
+  );
+}
+
+function HypothesisRow({
+  hypothesis,
+  onSelect,
+  disabled,
+}: {
+  hypothesis: MaterialHypothesis;
+  onSelect: () => void;
+  disabled: boolean;
+}) {
+  const confidence = parseConfidencePercent(hypothesis.confidence);
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onSelect}
+        disabled={disabled || hypothesis.is_selected}
+        className={cn(
+          'flex w-full items-center justify-between gap-2 rounded-md border bg-background px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent disabled:cursor-not-allowed',
+          hypothesis.is_selected && 'border-primary/40 bg-primary/5 disabled:opacity-100',
+        )}
+      >
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium">{hypothesis.material_name}</p>
+          {confidence != null && (
+            <p className="text-[11px] text-muted-foreground">신뢰도 {confidence}%</p>
+          )}
+        </div>
+        {hypothesis.is_selected ? (
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+            <Check className="h-3 w-3" />
+            적용됨
+          </span>
+        ) : (
+          <Sparkles className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        )}
+      </button>
+    </li>
+  );
+}
+
+function parseConfidencePercent(value: string | null): number | null {
+  if (value == null) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n * 100);
 }
 
 function EmptyBody() {
@@ -446,10 +687,8 @@ function getEntitySubLabel(selected: SelectedEntityResolved): string | null {
     case 'room':
       return selected.data.room_type || null;
     case 'opening':
-      // 메인 라벨이 이미 '문'/'창문' 이라 sub 태그는 생략 (중복).
-      return null;
+      return selected.data.opening_type;
     case 'object':
-      // 메인 라벨이 이미 종류('가구'/'욕실' 등) 라 sub 태그 생략.
-      return null;
+      return selected.data.object_type;
   }
 }

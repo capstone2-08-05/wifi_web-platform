@@ -17,6 +17,7 @@
     "clsx": "^2.1.1",
     "konva": "^10.3.0",
     "lucide-react": "^1.14.0",
+    "qrcode.react": "^4.2.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-hook-form": "^7.75.0",

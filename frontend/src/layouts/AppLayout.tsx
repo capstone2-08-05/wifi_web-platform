@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import {
   LayoutGrid,
@@ -15,7 +16,7 @@ import { useEditorStore } from '@/stores/editor-store';
 import { ProjectSelector } from '@/features/header/ProjectSelector';
 import { FloorSelector } from '@/features/header/FloorSelector';
 import { ProfileMenu } from '@/features/header/ProfileMenu';
-import { NotificationsMenu } from '@/features/header/NotificationsMenu';
+import { MobileConnectModal } from '@/features/mobile/MobileConnectModal';
 
 const NAV = [
   { to: '/dashboard', label: '대시보드', icon: LayoutGrid },
@@ -29,6 +30,7 @@ export function AppLayout() {
   const location = useLocation();
   const editorActions = useEditorStore((s) => s.actions);
   const isEditor = location.pathname.startsWith('/editor');
+  const [mobileConnectOpen, setMobileConnectOpen] = useState(false);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background">
@@ -109,11 +111,14 @@ export function AppLayout() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            <button className="inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-sm font-medium text-foreground/80 shadow-sm transition-colors hover:bg-accent">
+            <button
+              type="button"
+              onClick={() => setMobileConnectOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-sm font-medium text-foreground/80 shadow-sm transition-colors hover:bg-accent"
+            >
               <Smartphone className="h-4 w-4" />
               모바일 앱 연결
             </button>
-            <NotificationsMenu />
             <ProfileMenu />
           </div>
         </header>
@@ -122,6 +127,8 @@ export function AppLayout() {
           <Outlet />
         </main>
       </div>
+
+      <MobileConnectModal open={mobileConnectOpen} onClose={() => setMobileConnectOpen(false)} />
     </div>
   );
 }

@@ -18,4 +18,7 @@ export const sceneVersionApi = {
     api
       .patch<SceneVersion>(`/scene-versions/${versionId}/set-current`)
       .then((r) => r.data),
+
+  remove: (versionId: UUID) =>
+    api.delete<void>(`/scene-versions/${versionId}`).then((r) => r.data),
 };

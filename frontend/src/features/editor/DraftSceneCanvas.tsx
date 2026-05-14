@@ -81,6 +81,13 @@ type DragState =
       vertexIndex: number;
       startSvg: Coord;
       delta: Coord;
+    }
+  | {
+      mode: 'resize';
+      ref: SelectedEntityRef;
+      cornerSign: [-1 | 1, -1 | 1];
+      startSvg: Coord;
+      delta: Coord;
     };
 
 /** 생성 진행 중 임시 상태. */
@@ -309,6 +316,8 @@ interface Props {
   onSelect?: (ref: SelectedEntityRef | null) => void;
   /** 드래그 종료 시 새 geometry. 호출 측이 적절한 *_geom 필드로 PATCH 한다. */
   onDragEnd?: (ref: SelectedEntityRef, geometry: GeoJsonGeometry) => void;
+  /** 공간성 객체 박스 리사이즈 종료. metadata_json 의 width_m/height_m 업데이트용. */
+  onResizeObject?: (ref: SelectedEntityRef, widthM: number, heightM: number) => void;
   /** 현재 도구 (좌측 도구바). 'select' 이외 모드면 그리기 흐름으로 전환. */
   tool?: EditorTool;
   /** 새 도형 생성. body 는 *_geom + 필수 메타 포함. */
@@ -320,6 +329,7 @@ export function DraftSceneCanvas({
   selectedRef,
   onSelect,
   onDragEnd,
+  onResizeObject,
   tool = 'select',
   onCreate,
 }: Props) {
@@ -404,6 +414,20 @@ export function DraftSceneCanvas({
     onSelect?.(ref);
   };
 
+  const startResizeDrag = (
+    e: React.PointerEvent,
+    ref: SelectedEntityRef,
+    cornerSign: [-1 | 1, -1 | 1],
+  ) => {
+    if (tool !== 'select') return;
+    e.stopPropagation();
+    const pt = getSvgPoint(e);
+    if (!pt) return;
+    svgRef.current?.setPointerCapture(e.pointerId);
+    setDrag({ mode: 'resize', ref, cornerSign, startSvg: pt, delta: [0, 0] });
+    onSelect?.(ref);
+  };
+
   const handleSvgPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
     const raw = getSvgPoint(e);
     if (!raw) return;
@@ -471,6 +495,17 @@ export function DraftSceneCanvas({
 
     const [dx, dy] = captured.delta;
     if (Math.abs(dx) < DRAG_THRESHOLD_M && Math.abs(dy) < DRAG_THRESHOLD_M) return;
+
+    if (captured.mode === 'resize') {
+      // 객체의 현재 크기 + delta 로 새 사이즈 계산 (대칭, 최소 0.2m).
+      const obj = draft.objects.find((o) => o.id === captured.ref.id);
+      if (!obj || captured.ref.kind !== 'object') return;
+      const cur = readObjectSize(obj);
+      const newW = Math.max(0.2, cur.width + captured.delta[0] * captured.cornerSign[0] * 2);
+      const newH = Math.max(0.2, cur.height + captured.delta[1] * captured.cornerSign[1] * 2);
+      onResizeObject?.(captured.ref, newW, newH);
+      return;
+    }
 
     const newGeom = buildDraggedGeometry(captured, draft);
     if (newGeom) onDragEnd?.(captured.ref, newGeom);
@@ -635,6 +670,9 @@ export function DraftSceneCanvas({
             selected={isSelected('object', obj.id)}
             drag={matchDrag(drag, 'object', obj.id)}
             onShapePointerDown={(e) => startShapeDrag(e, { kind: 'object', id: obj.id })}
+            onResizePointerDown={(e, sign) =>
+              startResizeDrag(e, { kind: 'object', id: obj.id }, sign)
+            }
           />
         ))}
 
@@ -850,7 +888,10 @@ function effectiveLineCoords(coords: Coord[], drag: DragState | null): Coord[] {
   if (drag.mode === 'shape') {
     return coords.map(([x, y]) => [x + dx, y + dy] as Coord);
   }
-  return moveLineStringVertex(coords, drag.vertexIndex, dx, dy);
+  if (drag.mode === 'vertex') {
+    return moveLineStringVertex(coords, drag.vertexIndex, dx, dy);
+  }
+  return coords;
 }
 
 function effectivePolygonRings(rings: Coord[][], drag: DragState | null): Coord[][] {
@@ -859,7 +900,10 @@ function effectivePolygonRings(rings: Coord[][], drag: DragState | null): Coord[
   if (drag.mode === 'shape') {
     return rings.map((r) => r.map(([x, y]) => [x + dx, y + dy] as Coord));
   }
-  return movePolygonVertex(rings, drag.vertexIndex, dx, dy);
+  if (drag.mode === 'vertex') {
+    return movePolygonVertex(rings, drag.vertexIndex, dx, dy);
+  }
+  return rings;
 }
 
 function effectivePoint(p: Coord, drag: DragState | null): Coord {
@@ -869,8 +913,9 @@ function effectivePoint(p: Coord, drag: DragState | null): Coord {
   return [p[0] + dx, p[1] + dy];
 }
 
-/** drag 종료 시 적용할 새 GeoJSON 생성. */
+/** drag 종료 시 적용할 새 GeoJSON 생성. resize 모드는 geometry 변경 없음(metadata 갱신). */
 function buildDraggedGeometry(drag: DragState, draft: SceneDraft): GeoJsonGeometry | null {
+  if (drag.mode === 'resize') return null;
   const { ref } = drag;
   if (ref.kind === 'wall') {
     const w = draft.walls.find((x) => x.id === ref.id);
@@ -941,6 +986,8 @@ function RoomShape({
     ring[0][1] === ring[ring.length - 1][1];
   const handlePts = isClosed ? ring.slice(0, -1) : ring;
   const points = ring.map(([x, y]) => `${x},${y}`).join(' ');
+  const label = roomLabel(room);
+  const center = polygonCentroid(handlePts);
   return (
     <g>
       <polygon
@@ -952,6 +999,21 @@ function RoomShape({
         className="cursor-pointer"
         onPointerDown={onShapePointerDown}
       />
+      {label && (
+        <text
+          x={center[0]}
+          y={center[1]}
+          textAnchor="middle"
+          dominantBaseline="middle"
+          fontSize="0.45"
+          fontWeight="600"
+          fill="oklch(0.35 0.02 256)"
+          pointerEvents="none"
+          style={{ userSelect: 'none' }}
+        >
+          {label}
+        </text>
+      )}
       {selected &&
         handlePts.map((pt, i) => (
           <VertexHandle
@@ -964,6 +1026,27 @@ function RoomShape({
     </g>
   );
 }
+
+/** 방 표시용 라벨 — room_name 우선, 없으면 room_type 한글 변환. */
+function roomLabel(room: DraftRoom): string | null {
+  if (room.room_name && room.room_name.trim()) return room.room_name;
+  if (room.room_type) return ROOM_TYPE_LABEL[room.room_type] ?? room.room_type;
+  return null;
+}
+
+const ROOM_TYPE_LABEL: Record<string, string> = {
+  kitchen: '주방',
+  storage: '창고',
+  office: '사무실',
+  meeting: '회의실',
+  bathroom: '화장실',
+  lobby: '로비',
+  hall: '홀',
+  corridor: '복도',
+  dining: '식당',
+  bedroom: '침실',
+  livingroom: '거실',
+};
 
 function WallShape({
   wall,
@@ -1065,10 +1148,69 @@ function ObjectShape({
   selected,
   drag,
   onShapePointerDown,
-}: { object: DraftObject } & ShapeBaseProps) {
+  onResizePointerDown,
+}: { object: DraftObject } & ShapeBaseProps & {
+  onResizePointerDown?: (e: React.PointerEvent, sign: [-1 | 1, -1 | 1]) => void;
+}) {
   const g = parseGeometry(object.point_geom);
   if (g?.type !== 'Point') return null;
   const [x, y] = effectivePoint(g.coordinates, drag);
+  const label = objectLabel(object);
+  const spaceLike = isSpaceLikeObject(object);
+
+  if (spaceLike) {
+    // 공간성 객체 (bathroom/stairs/kitchen ...) — metadata_json 의 width/height 사용.
+    const size = readObjectSize(object);
+    let w = size.width;
+    let h = size.height;
+    // 리사이즈 중이면 시각적으로 즉시 반영 (delta * sign * 2 = 대칭 크기 변화).
+    if (drag?.mode === 'resize') {
+      w = Math.max(0.2, w + drag.delta[0] * drag.cornerSign[0] * 2);
+      h = Math.max(0.2, h + drag.delta[1] * drag.cornerSign[1] * 2);
+    }
+    return (
+      <g className="cursor-pointer">
+        <rect
+          x={x - w / 2}
+          y={y - h / 2}
+          width={w}
+          height={h}
+          rx="0.15"
+          fill={selected ? 'oklch(0.92 0.05 264)' : 'oklch(0.95 0.03 230)'}
+          stroke={selected ? 'oklch(0.55 0.22 264)' : 'oklch(0.78 0.06 230)'}
+          strokeWidth={selected ? 3 : 1.5}
+          strokeDasharray={selected ? undefined : '0.15 0.1'}
+          vectorEffect="non-scaling-stroke"
+          onPointerDown={onShapePointerDown}
+        />
+        {label && (
+          <text
+            x={x}
+            y={y}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            fontSize="0.4"
+            fontWeight="500"
+            fill="oklch(0.4 0.04 230)"
+            pointerEvents="none"
+            style={{ userSelect: 'none' }}
+          >
+            {label}
+          </text>
+        )}
+        {selected && onResizePointerDown && (
+          <>
+            <ResizeCorner x={x - w / 2} y={y - h / 2} sign={[-1, -1]} onPointerDown={onResizePointerDown} />
+            <ResizeCorner x={x + w / 2} y={y - h / 2} sign={[1, -1]} onPointerDown={onResizePointerDown} />
+            <ResizeCorner x={x - w / 2} y={y + h / 2} sign={[-1, 1]} onPointerDown={onResizePointerDown} />
+            <ResizeCorner x={x + w / 2} y={y + h / 2} sign={[1, 1]} onPointerDown={onResizePointerDown} />
+          </>
+        )}
+      </g>
+    );
+  }
+
+  // 일반 객체 (table/chair/AP ...) — 원형 마커.
   return (
     <g onPointerDown={onShapePointerDown} className="cursor-pointer">
       <circle cx={x} cy={y} r="0.4" fill="transparent" />
@@ -1081,9 +1223,116 @@ function ObjectShape({
         strokeWidth={selected ? 3 : 1.5}
         vectorEffect="non-scaling-stroke"
       />
+      {label && (
+        <text
+          x={x}
+          y={y + 0.45}
+          textAnchor="middle"
+          dominantBaseline="hanging"
+          fontSize="0.32"
+          fontWeight="500"
+          fill="oklch(0.45 0.02 256)"
+          pointerEvents="none"
+          style={{ userSelect: 'none' }}
+        >
+          {label}
+        </text>
+      )}
     </g>
   );
 }
+
+function objectLabel(object: DraftObject): string | null {
+  if (!object.object_type) return null;
+  return OBJECT_TYPE_LABEL[object.object_type] ?? object.object_type;
+}
+
+/** 점이 아닌 "공간"으로 인식되어야 자연스러운 object_type 들. */
+const SPACE_LIKE_TYPES = new Set([
+  'bathroom',
+  'restroom',
+  'toilet_room',
+  'kitchen',
+  'stairs',
+  'staircase',
+  'elevator',
+  'closet',
+  'storage',
+  'pantry',
+  'utility',
+  'lobby',
+]);
+
+function isSpaceLikeObject(o: DraftObject): boolean {
+  return !!o.object_type && SPACE_LIKE_TYPES.has(o.object_type);
+}
+
+const SPACE_DEFAULT_SIZE_M = 1.6;
+
+/** metadata_json 에 저장된 width_m / height_m 읽기. 없으면 기본값. */
+function readObjectSize(o: DraftObject): { width: number; height: number } {
+  const meta = o.metadata_json ?? {};
+  const w = typeof meta.width_m === 'number' ? meta.width_m : SPACE_DEFAULT_SIZE_M;
+  const h = typeof meta.height_m === 'number' ? meta.height_m : SPACE_DEFAULT_SIZE_M;
+  return { width: w, height: h };
+}
+
+/** 객체 박스 4모서리 리사이즈 핸들. */
+function ResizeCorner({
+  x,
+  y,
+  sign,
+  onPointerDown,
+}: {
+  x: number;
+  y: number;
+  sign: [-1 | 1, -1 | 1];
+  onPointerDown: (e: React.PointerEvent, sign: [-1 | 1, -1 | 1]) => void;
+}) {
+  return (
+    <g onPointerDown={(e) => onPointerDown(e, sign)} className="cursor-nwse-resize">
+      <circle cx={x} cy={y} r="0.3" fill="transparent" />
+      <circle
+        cx={x}
+        cy={y}
+        r="0.14"
+        fill="white"
+        stroke="oklch(0.55 0.22 264)"
+        strokeWidth="3"
+        vectorEffect="non-scaling-stroke"
+      />
+    </g>
+  );
+}
+
+const OBJECT_TYPE_LABEL: Record<string, string> = {
+  table: '테이블',
+  chair: '의자',
+  desk: '책상',
+  sofa: '소파',
+  bed: '침대',
+  ap: 'AP',
+  furniture: '가구',
+  counter: '카운터',
+  refrigerator: '냉장고',
+  toilet: '변기',
+  sink: '세면대',
+  bathtub: '욕조',
+  door: '문',
+  window: '창문',
+  bathroom: '화장실',
+  restroom: '화장실',
+  toilet_room: '화장실',
+  kitchen: '주방',
+  stairs: '계단',
+  staircase: '계단',
+  elevator: '엘리베이터',
+  closet: '벽장',
+  storage: '창고',
+  pantry: '팬트리',
+  utility: '다용도실',
+  lobby: '로비',
+};
 
 function VertexHandle({
   x,
