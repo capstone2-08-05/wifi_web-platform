@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Activity,
@@ -13,12 +12,7 @@ import { Card } from '@/components/ui/Card';
 import { HelpFab } from '@/components/HelpFab';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/stores/app-store';
-import { FloorPreview } from '@/features/dashboard/FloorPreview';
-import { DiagnosticsList } from '@/features/dashboard/DiagnosticsList';
-import {
-  MOCK_DASHBOARD_FLOOR_SCENE,
-  MOCK_DIAGNOSTICS,
-} from '@/features/dashboard/mocks';
+import { useFloorVersions } from '@/hooks/use-scene-version';
 
 type Tone = 'blue' | 'purple' | 'green';
 
@@ -80,8 +74,8 @@ export default function DashboardPage() {
   const projectId = useAppStore((s) => s.selectedProjectId);
   const floorId = useAppStore((s) => s.selectedFloorId);
   const hasFloorSelected = !!projectId && !!floorId;
-  const [expanded, setExpanded] = useState(false);
-  const toggleExpand = () => setExpanded((v) => !v);
+  const versionsQuery = useFloorVersions(floorId);
+  const hasConfirmedVersion = (versionsQuery.data?.length ?? 0) > 0;
 
   return (
     <div className="relative h-full overflow-auto p-6">
@@ -93,46 +87,32 @@ export default function DashboardPage() {
           </p>
         </header>
 
-        <div
-          className={
-            expanded
-              ? 'grid grid-cols-1 gap-6'
-              : 'grid grid-cols-1 gap-6 lg:grid-cols-[2fr_minmax(320px,1fr)]'
-          }
-        >
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[2fr_minmax(320px,1fr)]">
           <Card title="현재 작업 중인 도면" className="min-h-140">
-            <div className={expanded ? 'h-180' : 'h-120'}>
-              {hasFloorSelected ? (
-                <FloorPreview
-                  scene={MOCK_DASHBOARD_FLOOR_SCENE}
-                  expanded={expanded}
-                  onToggleExpand={toggleExpand}
-                />
-              ) : (
+            <div className="h-120">
+              {!hasFloorSelected ? (
                 <FloorEmptyState hasProject={!!projectId} />
+              ) : !hasConfirmedVersion ? (
+                <FloorNotConfirmedState />
+              ) : (
+                <FloorConfirmedState />
               )}
             </div>
           </Card>
 
-          {!expanded && (
-            <div className="space-y-6">
-              <Card title="빠른 실행">
-                <ul className="space-y-3">
-                  {QUICK_ACTIONS.map((a) => (
-                    <QuickAction key={a.to} {...a} />
-                  ))}
-                </ul>
-              </Card>
+          <div className="space-y-6">
+            <Card title="빠른 실행">
+              <ul className="space-y-3">
+                {QUICK_ACTIONS.map((a) => (
+                  <QuickAction key={a.to} {...a} />
+                ))}
+              </ul>
+            </Card>
 
-              <Card title="현장 앱 최근 진단">
-                {hasFloorSelected ? (
-                <DiagnosticsList items={MOCK_DIAGNOSTICS} />
-              ) : (
-                <DiagnosticsEmptyState />
-              )}
-              </Card>
-            </div>
-          )}
+            <Card title="현장 앱 최근 진단">
+              <DiagnosticsEmptyState />
+            </Card>
+          </div>
         </div>
       </div>
 
@@ -196,6 +176,20 @@ function FloorEmptyState({ hasProject }: { hasProject: boolean }) {
       <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
         상단 셀렉터에서 작업할 도면(층)을 선택하면 현재 작업 중인 도면 미리보기가 표시됩니다.
       </p>
+    </div>
+  );
+}
+
+function FloorNotConfirmedState() {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 rounded-md border border-dashed bg-muted/20 p-8 text-center">
+      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+        <Map className="h-5 w-5 text-muted-foreground" />
+      </div>
+      <p className="text-sm font-medium">아직 확정된 도면이 없습니다</p>
+      <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
+        공간 편집에서 도면을 업로드하고 AI 분석 후 저장하면 이곳에 미리보기가 표시됩니다.
+      </p>
       <Link
         to="/editor"
         className="mt-2 inline-flex items-center gap-1 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-accent"
@@ -203,6 +197,36 @@ function FloorEmptyState({ hasProject }: { hasProject: boolean }) {
         공간 편집으로 이동
         <ChevronRight className="h-3.5 w-3.5" />
       </Link>
+    </div>
+  );
+}
+
+function FloorConfirmedState() {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 rounded-md border border-dashed bg-muted/20 p-8 text-center">
+      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100">
+        <Map className="h-5 w-5 text-emerald-600" />
+      </div>
+      <p className="text-sm font-medium">도면이 확정되어 있습니다</p>
+      <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
+        공간 편집에서 도형을 수정하거나 시뮬레이션을 실행해 품질을 확인하세요.
+      </p>
+      <div className="mt-2 flex gap-2">
+        <Link
+          to="/editor"
+          className="inline-flex items-center gap-1 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-accent"
+        >
+          공간 편집
+          <ChevronRight className="h-3.5 w-3.5" />
+        </Link>
+        <Link
+          to="/simulation"
+          className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          시뮬레이션
+          <ChevronRight className="h-3.5 w-3.5" />
+        </Link>
+      </div>
     </div>
   );
 }

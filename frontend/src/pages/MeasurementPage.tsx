@@ -1,109 +1,53 @@
-import { useState } from 'react';
-import { Clock, Smartphone } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { Activity, Smartphone } from 'lucide-react';
 import { HelpFab } from '@/components/HelpFab';
-import {
-  MeasurementCanvas,
-  type MeasurementView,
-} from '@/features/measurement/MeasurementCanvas';
-import { DiagnosticPanel } from '@/features/measurement/DiagnosticPanel';
-import {
-  MOCK_MEASUREMENT_FLOOR_SCENE,
-  MOCK_MEASUREMENT_HEATMAP,
-  MOCK_MEASUREMENT_POINTS,
-  MOCK_POINT_DIAGNOSIS,
-} from '@/features/measurement/mocks';
-
-const TABS: { id: MeasurementView; label: string }[] = [
-  { id: 'path', label: '측정 경로 보기' },
-  { id: 'heatmap', label: '실측 히트맵' },
-  { id: 'combined', label: '예측·실측 통합 분석' },
-];
+import { useAppStore } from '@/stores/app-store';
+import { useFloorVersions } from '@/hooks/use-scene-version';
 
 export default function MeasurementPage() {
-  const [view, setView] = useState<MeasurementView>('path');
+  const floorId = useAppStore((s) => s.selectedFloorId);
+  const versionsQuery = useFloorVersions(floorId);
+  const hasVersion = (versionsQuery.data?.length ?? 0) > 0;
 
   return (
     <div className="relative flex h-full flex-col p-6">
-      <PageHeader />
-      <div className="mt-5">
-        <Tabs view={view} onChange={setView} />
-      </div>
+      <header className="space-y-1.5">
+        <h1 className="text-2xl font-semibold tracking-tight">실측 및 진단</h1>
+        <p className="text-sm text-muted-foreground">
+          모바일 기기로 측정한 실제 와이파이 품질 데이터와 시뮬레이션을 통합하여 분석합니다.
+        </p>
+      </header>
 
-      <div className="mt-5 grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
-        <div className="min-h-0 rounded-2xl border bg-background p-4 shadow-sm">
-          <MeasurementCanvas
-            view={view}
-            scene={MOCK_MEASUREMENT_FLOOR_SCENE}
-            points={MOCK_MEASUREMENT_POINTS}
-            heatmap={MOCK_MEASUREMENT_HEATMAP}
-          />
+      <div className="mt-5 flex flex-1 items-center justify-center">
+        <div className="flex max-w-lg flex-col items-center gap-3 rounded-2xl border border-dashed bg-background p-10 text-center shadow-sm">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
+            <Activity className="h-6 w-6 text-primary" strokeWidth={1.8} />
+          </div>
+          {!floorId ? (
+            <>
+              <p className="text-base font-semibold">층을 먼저 선택해주세요</p>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                상단 셀렉터에서 작업할 도면(층)을 선택하면 측정 시작 흐름이 표시됩니다.
+              </p>
+            </>
+          ) : !hasVersion ? (
+            <>
+              <p className="text-base font-semibold">확정된 도면이 필요합니다</p>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                공간 편집에서 도면을 분석·확정한 후 모바일 앱으로 실측을 진행할 수 있습니다.
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-base font-semibold">측정 데이터가 없습니다</p>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                상단 헤더의 <span className="inline-flex items-center gap-1 align-middle font-medium text-foreground"><Smartphone className="h-3.5 w-3.5" /> 모바일 앱 연결</span> 버튼으로 QR을 발급해 측정을 시작하세요. 측정이 완료되면 결과 시각화가 이곳에 표시됩니다.
+              </p>
+            </>
+          )}
         </div>
-        <aside className="flex min-h-0 flex-col overflow-y-auto pr-1">
-          <DiagnosticPanel diagnosis={MOCK_POINT_DIAGNOSIS} />
-        </aside>
       </div>
 
       <HelpFab />
     </div>
   );
 }
-
-function PageHeader() {
-  return (
-    <header className="flex items-start justify-between gap-4">
-      <div className="space-y-1.5">
-        <h1 className="text-2xl font-semibold tracking-tight">실측 및 진단</h1>
-        <p className="text-sm text-muted-foreground">
-          모바일 기기로 측정한 실제 와이파이 품질 데이터와 시뮬레이션을 통합하여 분석합니다.
-        </p>
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <button
-          type="button"
-          className="inline-flex items-center gap-2 rounded-lg border bg-background px-3.5 py-2 text-sm font-medium text-foreground/80 shadow-sm hover:bg-accent"
-        >
-          <Clock className="h-4 w-4 text-muted-foreground" />
-          이력 보기 <span className="text-muted-foreground">(어제 오후 3:15)</span>
-        </button>
-        <button
-          type="button"
-          className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-sm hover:bg-primary/90"
-        >
-          <Smartphone className="h-4 w-4" />
-          새로운 측정 시작
-        </button>
-      </div>
-    </header>
-  );
-}
-
-function Tabs({
-  view,
-  onChange,
-}: {
-  view: MeasurementView;
-  onChange: (next: MeasurementView) => void;
-}) {
-  return (
-    <nav className="flex items-center gap-6 border-b" role="tablist">
-      {TABS.map((t) => (
-        <button
-          key={t.id}
-          role="tab"
-          aria-selected={view === t.id}
-          onClick={() => onChange(t.id)}
-          className={cn(
-            '-mb-px border-b-2 pb-3 text-sm font-semibold transition-colors',
-            view === t.id
-              ? 'border-primary text-primary'
-              : 'border-transparent text-muted-foreground hover:text-foreground',
-          )}
-        >
-          {t.label}
-        </button>
-      ))}
-    </nav>
-  );
-}
-

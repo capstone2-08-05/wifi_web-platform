@@ -35,15 +35,6 @@ const KIND_LABELS: Record<SelectedEntityResolved['kind'], string> = {
   object: '객체',
 };
 
-/** 백엔드 Materials API 가 비어있을 때 fallback 으로 쓸 mock 목록. */
-const FALLBACK_MATERIAL_NAMES = [
-  '목재',
-  '금속',
-  '유리',
-  '플라스틱',
-  '콘크리트',
-];
-
 export function PropertiesPanel({
   selected,
   onDelete,
@@ -256,7 +247,7 @@ function MaterialSelectWired({
 }
 
 function materialNamesFrom(materials: Material[] | undefined): string[] {
-  if (!materials || materials.length === 0) return FALLBACK_MATERIAL_NAMES;
+  if (!materials || materials.length === 0) return [];
   return materials.map((m) => m.material_name);
 }
 
