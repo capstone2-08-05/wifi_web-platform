@@ -19,9 +19,10 @@ from app.core.settings import (
     DEFAULT_DRAFT_SOURCE_MODE,
 )
 from app.geometry import (
+    line_geom_length_m,
     object_point_geom,
     opening_line_geom,
-    opening_physical_dims,
+    opening_type_dims,
     room_centroid_geom,
     room_polygon_geom,
     wall_centerline_geom,
@@ -216,10 +217,15 @@ def save_scene_draft(
                 wall_id_map[str(wall["id"])] = draft_wall.id
 
         for opening in request_dto.scene.openings:
-            # width_m 은 bbox 긴 축 × scale_ratio (line_geom 길이와 동일),
-            # height_m / sill_height_m 은 opening_type 별 표준값.
-            # raw 픽셀 bbox 는 metadata_json.raw 에만 보관 (단위 혼입 방지).
-            width_m, height_m, sill_height_m = opening_physical_dims(opening, scale_ratio)
+            # line_geom 을 먼저 만들고 width_m 은 그 길이에서 파생 — 단일 source of truth.
+            # (project_openings_onto_walls 등으로 bbox 가 재배치돼도 line_geom 과 항상 일치.)
+            # height_m / sill_height_m 은 opening_type 별 표준값. raw 픽셀 bbox 는
+            # metadata_json.raw 에만 보관 (단위 혼입 방지).
+            line_geom = opening_line_geom(opening, scale_ratio)
+            width_m = line_geom_length_m(line_geom)
+            height_m, sill_height_m = opening_type_dims(
+                opening.get("type") or opening.get("opening_type")
+            )
 
             wall_ref = opening.get("wall_ref")
             db.add(
@@ -231,7 +237,7 @@ def save_scene_draft(
                     height_m=_positive(height_m, 1.2),
                     sill_height_m=sill_height_m,
                     source_method=DEFAULT_DRAFT_ANALYSIS_METHOD,
-                    line_geom=opening_line_geom(opening, scale_ratio),
+                    line_geom=line_geom,
                     metadata_json={"raw": opening},
                 )
             )

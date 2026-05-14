@@ -122,16 +122,26 @@ class FusionService:
                 furniture_objects.append(det)
 
         # 같은 문/창을 여러 번 탐지한 중복 제거 (NMS). score 높은 박스 유지.
+        # type 별로 따로 NMS — 가까이 겹친 door 와 window 가 서로를 제거하지 않도록.
         if opening_dets:
-            boxes = [tuple(float(v) for v in d.bbox_xyxy) for d in opening_dets]
-            scores = [float(d.score) for d in opening_dets]
-            kept = nms_filter_indices(boxes, scores)
-            if len(kept) < len(opening_dets):
+            before = len(opening_dets)
+            kept_set: set[int] = set()
+            for cls in ("door", "window"):
+                group = [i for i, d in enumerate(opening_dets) if d.class_name == cls]
+                if not group:
+                    continue
+                g_boxes = [
+                    tuple(float(v) for v in opening_dets[i].bbox_xyxy) for i in group
+                ]
+                g_scores = [float(opening_dets[i].score) for i in group]
+                for k in nms_filter_indices(g_boxes, g_scores):
+                    kept_set.add(group[k])
+            opening_dets = [d for i, d in enumerate(opening_dets) if i in kept_set]
+            if len(opening_dets) < before:
                 logger.info(
-                    "opening NMS: %d → %d (removed %d duplicates)",
-                    len(opening_dets), len(kept), len(opening_dets) - len(kept),
+                    "opening NMS (per-type): %d → %d (removed %d duplicates)",
+                    before, len(opening_dets), before - len(opening_dets),
                 )
-            opening_dets = [opening_dets[i] for i in kept]
 
         # opening 의 물리 치수(width_m/height_m)는 fusion 에서 정하지 않는다.
         # save_scene_draft 가 line_geom 길이 + type 별 표준값으로 결정론적으로 계산.

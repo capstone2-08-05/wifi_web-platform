@@ -112,26 +112,20 @@ function distance(a: Coord, b: Coord): number {
 // ============================================
 // 스냅 (벽 잇기 보조)
 // ============================================
-/** draft 내 모든 끝점/꼭짓점을 스냅 anchor 로 수집. exclude 한 엔티티는 제외. */
-function collectSnapAnchors(
+// 스냅 타겟은 "벽" 으로 한정한다. 창문/문(opening) 끝점에는 안 붙도록 —
+// 벽을 이으려는데 자꾸 가까운 창문에 붙는 문제 방지. 벽은 끝점뿐 아니라
+// 선분 위 어디든 붙는다 (벽 중간에 다른 벽/개구부를 잇는 경우).
+
+/** draft 의 모든 벽 끝점을 스냅 anchor 로 수집. exclude 한 벽은 제외. */
+function collectWallAnchors(
   draft: SceneDraft,
-  exclude?: SelectedEntityRef | null,
+  excludeWallId?: string | null,
 ): Coord[] {
   const anchors: Coord[] = [];
   for (const wall of draft.walls) {
-    if (exclude?.kind === 'wall' && exclude.id === wall.id) continue;
+    if (excludeWallId && wall.id === excludeWallId) continue;
     const g = parseGeometry(wall.centerline_geom);
     if (g?.type === 'LineString') for (const c of g.coordinates) anchors.push(c);
-  }
-  for (const op of draft.openings) {
-    if (exclude?.kind === 'opening' && exclude.id === op.id) continue;
-    const g = parseGeometry(op.line_geom);
-    if (g?.type === 'LineString') for (const c of g.coordinates) anchors.push(c);
-  }
-  for (const room of draft.rooms) {
-    if (exclude?.kind === 'room' && exclude.id === room.id) continue;
-    const g = parseGeometry(room.polygon_geom);
-    if (g?.type === 'Polygon') for (const ring of g.coordinates) for (const c of ring) anchors.push(c);
   }
   return anchors;
 }
@@ -164,14 +158,24 @@ interface SnapResult {
   snapped: boolean;
 }
 
-/** 끝점 스냅(1순위) → 축 스냅(2순위, axisFrom 지정 시) 순으로 적용. */
-function snapPoint(
+/**
+ * 벽 우선 스냅: 벽 끝점(1순위) → 벽 선분 위 투영(2순위) → 축 스냅(3순위).
+ * opening(창문/문) 에는 절대 안 붙는다.
+ */
+function snapToWall(
   raw: Coord,
-  anchors: Coord[],
+  draft: SceneDraft,
+  wallAnchors: Coord[],
   axisFrom?: Coord | null,
+  excludeWallId?: string | null,
 ): SnapResult {
-  const anchor = nearestAnchor(raw, anchors, SNAP_RADIUS_M);
+  // 1) 벽 끝점
+  const anchor = nearestAnchor(raw, wallAnchors, SNAP_RADIUS_M);
   if (anchor) return { point: [anchor[0], anchor[1]], snapped: true };
+  // 2) 벽 선분 위 (끝점이 아니어도 벽 라인에 붙음)
+  const proj = nearestWallProjection(raw, draft, SNAP_RADIUS_M, excludeWallId);
+  if (proj) return { point: proj, snapped: true };
+  // 3) 축 스냅 (그리는 중일 때만)
   if (axisFrom) {
     const axed = axisSnap(axisFrom, raw, AXIS_SNAP_TOLERANCE_M);
     if (axed[0] !== raw[0] || axed[1] !== raw[1]) return { point: axed, snapped: true };
@@ -230,15 +234,17 @@ function projectOnSegment(p: Coord, a: Coord, b: Coord): Coord {
   return [a[0] + t * dx, a[1] + t * dy];
 }
 
-/** pt 에서 radius 이내, 가장 가까운 wall 선분 위의 점 (객체를 벽에 붙이기용). */
+/** pt 에서 radius 이내, 가장 가까운 wall 선분 위의 점. excludeWallId 는 제외. */
 function nearestWallProjection(
   pt: Coord,
   draft: SceneDraft,
   radius: number,
+  excludeWallId?: string | null,
 ): Coord | null {
   let best: Coord | null = null;
   let bestD = radius;
   for (const wall of draft.walls) {
+    if (excludeWallId && wall.id === excludeWallId) continue;
     const g = parseGeometry(wall.centerline_geom);
     if (g?.type !== 'LineString') continue;
     for (let i = 0; i + 1 < g.coordinates.length; i++) {
@@ -255,40 +261,39 @@ function nearestWallProjection(
 
 /**
  * shape 드래그(엔티티 통째 이동) 스냅 delta 계산.
- * - 모든 기준점 중 하나라도 기존 anchor 끝점 근처면 거기에 붙임.
- * - object 는 추가로 벽 선분 위에도 투영 (벽에 딱 붙이기).
+ * 모든 기준점에 대해 벽 끝점(1순위) / 벽 선분 위(2순위) 스냅을 시도.
+ * opening 끝점에는 안 붙는다 — 벽에만.
  */
 function computeShapeSnapDelta(
   draft: SceneDraft,
   ref: SelectedEntityRef,
   rawDelta: Coord,
-  anchors: Coord[],
+  wallAnchors: Coord[],
 ): { delta: Coord; snapPoint: Coord | null } {
   const pts = getEntityRefPoints(draft, ref);
+  const excludeWallId = ref.kind === 'wall' ? ref.id : null;
   let best: { from: Coord; to: Coord } | null = null;
   let bestD = SNAP_RADIUS_M;
 
   for (const pt of pts) {
     const moved: Coord = [pt[0] + rawDelta[0], pt[1] + rawDelta[1]];
-    const anchor = nearestAnchor(moved, anchors, SNAP_RADIUS_M);
+    // 1순위: 벽 끝점
+    const anchor = nearestAnchor(moved, wallAnchors, SNAP_RADIUS_M);
     if (anchor) {
       const d = Math.hypot(anchor[0] - moved[0], anchor[1] - moved[1]);
       if (d < bestD) {
         bestD = d;
         best = { from: pt, to: [anchor[0], anchor[1]] };
       }
+      continue;
     }
-  }
-
-  // object: 벽 선분 위로 투영 (끝점 스냅이 없을 때만 시도)
-  if (ref.kind === 'object' && pts.length === 1) {
-    const moved: Coord = [pts[0][0] + rawDelta[0], pts[0][1] + rawDelta[1]];
-    const proj = nearestWallProjection(moved, draft, SNAP_RADIUS_M);
+    // 2순위: 벽 선분 위 투영 (객체/개구부를 벽에 딱 붙이기)
+    const proj = nearestWallProjection(moved, draft, SNAP_RADIUS_M, excludeWallId);
     if (proj) {
       const d = Math.hypot(proj[0] - moved[0], proj[1] - moved[1]);
       if (d < bestD) {
         bestD = d;
-        best = { from: pts[0], to: proj };
+        best = { from: pt, to: proj };
       }
     }
   }
@@ -341,9 +346,13 @@ export function DraftSceneCanvas({
   // 스냅 발생 시 표시할 위치 (초록 링). 스냅 안 되면 null.
   const [snapIndicator, setSnapIndicator] = useState<Coord | null>(null);
 
-  // 스냅 anchor 목록 — 드래그/선택 중인 엔티티는 자기 자신에 안 붙도록 제외.
-  const snapAnchors = useMemo(
-    () => collectSnapAnchors(draft, selectedRef ?? null),
+  // 스냅 anchor = 벽 끝점만. 드래그/선택 중인 벽은 자기 자신에 안 붙도록 제외.
+  const wallAnchors = useMemo(
+    () =>
+      collectWallAnchors(
+        draft,
+        selectedRef?.kind === 'wall' ? selectedRef.id : null,
+      ),
     [draft, selectedRef],
   );
 
@@ -432,14 +441,14 @@ export function DraftSceneCanvas({
     const raw = getSvgPoint(e);
     if (!raw) return;
 
-    // ─ 생성 모드: cursor 를 스냅해서 preview 가 딱 붙도록 ─
+    // ─ 생성 모드: cursor 를 벽에 스냅해서 preview 가 딱 붙도록 ─
     if (isCreationMode) {
       // 벽/문창 그리는 중이면 첫 점 기준 수평/수직 스냅도 적용
       const axisFrom =
         creating && (creating.kind === 'wall' || creating.kind === 'opening')
           ? creating.firstPoint
           : null;
-      const res = snapPoint(raw, snapAnchors, axisFrom);
+      const res = snapToWall(raw, draft, wallAnchors, axisFrom);
       setCursorPos(res.point);
       setSnapIndicator(res.snapped ? res.point : null);
     }
@@ -449,7 +458,7 @@ export function DraftSceneCanvas({
       return;
     }
 
-    // ─ vertex 드래그: 목표 꼭짓점을 스냅 → snapped delta 로 반영 ─
+    // ─ vertex 드래그: 목표 꼭짓점을 벽에 스냅 → snapped delta 로 반영 ─
     if (drag.mode === 'vertex') {
       const orig = getEntityVertex(draft, drag.ref, drag.vertexIndex);
       if (orig) {
@@ -457,7 +466,8 @@ export function DraftSceneCanvas({
           orig[0] + (raw[0] - drag.startSvg[0]),
           orig[1] + (raw[1] - drag.startSvg[1]),
         ];
-        const res = snapPoint(rawTarget, snapAnchors);
+        const excludeWallId = drag.ref.kind === 'wall' ? drag.ref.id : null;
+        const res = snapToWall(rawTarget, draft, wallAnchors, null, excludeWallId);
         setSnapIndicator(res.snapped ? res.point : null);
         setDrag((prev) =>
           prev
@@ -468,14 +478,14 @@ export function DraftSceneCanvas({
       }
     }
 
-    // ─ shape 드래그: object 는 벽/앵커에 스냅, wall/opening/room 은 끝점·꼭짓점 스냅 ─
+    // ─ shape 드래그: 엔티티 통째 이동 — 기준점을 벽 끝점/선분에 스냅 ─
     {
       const rawDelta: Coord = [raw[0] - drag.startSvg[0], raw[1] - drag.startSvg[1]];
       const { delta, snapPoint } = computeShapeSnapDelta(
         draft,
         drag.ref,
         rawDelta,
-        snapAnchors,
+        wallAnchors,
       );
       setSnapIndicator(snapPoint);
       setDrag((prev) => (prev ? { ...prev, delta } : null));
@@ -517,12 +527,12 @@ export function DraftSceneCanvas({
       const raw = getSvgPoint(e);
       if (!raw) return;
       if (!creating || creating.kind !== 'wall') {
-        // 첫 점도 기존 끝점에 스냅 (벽 잇기 시작점 정확히)
-        const start = snapPoint(raw, snapAnchors).point;
+        // 첫 점도 기존 벽에 스냅 (벽 잇기 시작점 정확히)
+        const start = snapToWall(raw, draft, wallAnchors).point;
         setCreating({ kind: 'wall', firstPoint: start });
       } else {
         const start = creating.firstPoint;
-        const pt = snapPoint(raw, snapAnchors, start).point;
+        const pt = snapToWall(raw, draft, wallAnchors, start).point;
         if (Math.abs(pt[0] - start[0]) > DRAG_THRESHOLD_M || Math.abs(pt[1] - start[1]) > DRAG_THRESHOLD_M) {
           onCreate?.('wall', {
             wall_role: 'inner',
@@ -541,11 +551,11 @@ export function DraftSceneCanvas({
       const raw = getSvgPoint(e);
       if (!raw) return;
       if (!creating || creating.kind !== 'opening') {
-        const start = snapPoint(raw, snapAnchors).point;
+        const start = snapToWall(raw, draft, wallAnchors).point;
         setCreating({ kind: 'opening', firstPoint: start });
       } else {
         const start = creating.firstPoint;
-        const pt = snapPoint(raw, snapAnchors, start).point;
+        const pt = snapToWall(raw, draft, wallAnchors, start).point;
         const width = distance(start, pt);
         if (width > DRAG_THRESHOLD_M) {
           onCreate?.('opening', {

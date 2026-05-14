@@ -40,9 +40,8 @@ from app.geometry import line_geom_length_m, opening_type_dims
 from app.models.draft_opening import DraftOpening
 from app.models.opening import Opening
 
-# 픽셀값 오염 판정 임계값.
-# 실제 문/창 폭이 5m 를 넘는 경우는 없다고 봐도 무방 -> 5 초과면 픽셀값으로 간주.
-SUSPICIOUS_WIDTH_M = 5.0
+# 보정 정책: line_geom 이 있으면 기존 width_m 값(픽셀이든 미터든) 무관하게
+# line 길이로 전체 보정. 기존 데이터 신뢰도가 낮아 "의심 값만 선별 보정" 하지 않음.
 
 
 def _round3(value: float) -> Decimal:

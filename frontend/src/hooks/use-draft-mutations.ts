@@ -15,7 +15,7 @@ import type {
 const ENTITY_LABEL: Record<DraftEntityKind, string> = {
   wall: '벽',
   room: '방',
-  opening: '개구부',
+  opening: '문·창',
   object: '객체',
 };
 

@@ -39,7 +39,7 @@ export function ReviewCard({
         <span className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
           <Stat label="방" value={counts.rooms} />
           <Stat label="벽" value={counts.walls} />
-          <Stat label="개구부" value={counts.openings} />
+          <Stat label="문·창" value={counts.openings} />
           <Stat label="객체" value={counts.objects} />
         </span>
       </div>
