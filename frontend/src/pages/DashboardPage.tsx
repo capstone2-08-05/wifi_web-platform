@@ -14,6 +14,8 @@ import { HelpFab } from '@/components/HelpFab';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
+import { useAsset, useFloorAssets } from '@/hooks/use-assets';
+import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
 import { DraftSceneCanvas } from '@/features/editor/DraftSceneCanvas';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
 
@@ -84,6 +86,14 @@ export default function DashboardPage() {
   const versionAsDraft = versionDetailQuery.data
     ? versionToDraftShape(versionDetailQuery.data)
     : null;
+  const bgAssetQuery = useAsset(versionAsDraft?.source_asset_id ?? null);
+  const floorAssetsQuery = useFloorAssets(floorId, 'floorplan');
+  const fallbackAsset = (floorAssetsQuery.data ?? [])
+    .slice()
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+  const localImage = useLocalFloorplanImage(floorId);
+  const backgroundImageUrl =
+    bgAssetQuery.data?.storage_url ?? fallbackAsset?.storage_url ?? localImage ?? null;
 
   return (
     <div className="relative h-full overflow-auto p-6">
@@ -114,6 +124,7 @@ export default function DashboardPage() {
                       onDragEnd={() => {}}
                       tool="select"
                       onCreate={() => {}}
+                      backgroundImageUrl={backgroundImageUrl}
                     />
                   </div>
                   <div className="pointer-events-none absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-md bg-card/90 px-2.5 py-1 text-[11px] font-medium shadow-sm backdrop-blur">

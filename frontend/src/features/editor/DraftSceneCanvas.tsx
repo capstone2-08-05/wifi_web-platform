@@ -315,6 +315,19 @@ function polygonCentroid(points: Coord[]): Coord {
   return [sx / n, sy / n];
 }
 
+/** 다각형 점들의 AABB(축정렬 경계상자) 가로/세로 길이. 라벨 크기 계산용. */
+function polygonBounds(points: Coord[]): { w: number; h: number } {
+  if (points.length === 0) return { w: 0, h: 0 };
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of points) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return { w: Math.max(0, maxX - minX), h: Math.max(0, maxY - minY) };
+}
+
 interface Props {
   draft: SceneDraft;
   selectedRef?: SelectedEntityRef | null;
@@ -327,6 +340,8 @@ interface Props {
   tool?: EditorTool;
   /** 새 도형 생성. body 는 *_geom + 필수 메타 포함. */
   onCreate?: (kind: DraftEntityKind, body: Record<string, unknown>) => void;
+  /** 원본 도면 이미지 URL — 벡터 도형 뒤에 연하게 깔아 비교용. */
+  backgroundImageUrl?: string | null;
 }
 
 export function DraftSceneCanvas({
@@ -337,6 +352,7 @@ export function DraftSceneCanvas({
   onResizeObject,
   tool = 'select',
   onCreate,
+  backgroundImageUrl,
 }: Props) {
   const vb = computeViewBox(draft);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -369,7 +385,6 @@ export function DraftSceneCanvas({
   const isCreationMode =
     tool === 'rect' ||
     tool === 'circle' ||
-    tool === 'text' ||
     tool === 'polygon' ||
     tool === 'opening';
 
@@ -634,6 +649,24 @@ export function DraftSceneCanvas({
         onPointerUp={handleSvgPointerUp}
         onPointerCancel={handleSvgPointerUp}
       >
+        {backgroundImageUrl && (
+          <image
+            href={backgroundImageUrl}
+            xlinkHref={backgroundImageUrl}
+            x={vb.x}
+            y={vb.y}
+            width={vb.w}
+            height={vb.h}
+            opacity={0.25}
+            preserveAspectRatio="xMidYMid meet"
+            pointerEvents="none"
+            crossOrigin="anonymous"
+            onError={() => {
+              // 이미지 로드 실패: CORS / private S3 / 잘못된 URL 가능성.
+              console.warn('[Canvas] 배경 도면 이미지 로드 실패:', backgroundImageUrl);
+            }}
+          />
+        )}
         {draft.rooms.map((room) => (
           <RoomShape
             key={room.id}
@@ -871,8 +904,6 @@ function CreationHint({
     }
   } else if (tool === 'circle') {
     text = '캔버스를 클릭해 가구를 배치하세요.';
-  } else if (tool === 'text') {
-    text = '구역 라벨 추가는 현재 미지원입니다.';
   }
   if (!text) return null;
   return (
@@ -998,6 +1029,7 @@ function RoomShape({
   const points = ring.map(([x, y]) => `${x},${y}`).join(' ');
   const label = roomLabel(room);
   const center = polygonCentroid(handlePts);
+  const ringBounds = polygonBounds(handlePts);
   return (
     <g>
       <polygon
@@ -1015,7 +1047,7 @@ function RoomShape({
           y={center[1]}
           textAnchor="middle"
           dominantBaseline="middle"
-          fontSize="0.45"
+          fontSize={computeLabelFontSize(label, ringBounds.w, ringBounds.h)}
           fontWeight="600"
           fill="oklch(0.35 0.02 256)"
           pointerEvents="none"
@@ -1119,6 +1151,19 @@ function OpeningShape({
   if (!start || !end) return null;
   const isDoor = opening.opening_type === 'door';
   const baseColor = isDoor ? 'oklch(0.55 0.22 264)' : 'oklch(0.7 0.18 200)';
+  const label = isDoor ? '문' : '창문';
+  // 라벨은 선의 중점에서 수직 방향으로 살짝 떨어뜨려 배치.
+  const midX = (start[0] + end[0]) / 2;
+  const midY = (start[1] + end[1]) / 2;
+  const dx = end[0] - start[0];
+  const dy = end[1] - start[1];
+  const len = Math.hypot(dx, dy) || 1;
+  // 수직 단위 벡터
+  const nx = -dy / len;
+  const ny = dx / len;
+  const offsetM = 0.22;
+  const labelX = midX + nx * offsetM;
+  const labelY = midY + ny * offsetM;
   return (
     <g>
       <line
@@ -1143,6 +1188,19 @@ function OpeningShape({
         vectorEffect="non-scaling-stroke"
         pointerEvents="none"
       />
+      <text
+        x={labelX}
+        y={labelY}
+        textAnchor="middle"
+        dominantBaseline="middle"
+        fontSize={OPENING_LABEL_FONT_SIZE_M}
+        fontWeight="500"
+        fill={baseColor}
+        pointerEvents="none"
+        style={{ userSelect: 'none' }}
+      >
+        {label}
+      </text>
       {selected && (
         <>
           <VertexHandle x={start[0]} y={start[1]} onPointerDown={(e) => onVertexPointerDown(e, 0)} />
@@ -1199,7 +1257,7 @@ function ObjectShape({
             y={y}
             textAnchor="middle"
             dominantBaseline="middle"
-            fontSize="0.4"
+            fontSize={computeLabelFontSize(label, w, h)}
             fontWeight="500"
             fill="oklch(0.4 0.04 230)"
             pointerEvents="none"
@@ -1280,6 +1338,20 @@ function isSpaceLikeObject(o: DraftObject): boolean {
 const SPACE_DEFAULT_SIZE_M = 1.6;
 
 /** metadata_json 에 저장된 width_m / height_m 읽기. 없으면 기본값. */
+/** 문/창문 라벨의 고정 폰트 크기 (미터 단위). 개구부 길이와 무관하게 일정. */
+const OPENING_LABEL_FONT_SIZE_M = 0.13;
+
+/** 방/공간성 객체 라벨이 박스 안에 들어가도록 폰트 크기 계산 (미터 단위).
+ *  최대 크기는 개구부 라벨과 동일 (OPENING_LABEL_FONT_SIZE_M). */
+function computeLabelFontSize(label: string, w: number, h: number): number {
+  const charCount = Math.max(1, label.length);
+  // 한글 기준 글자당 폭 ≈ fontSize. 안전한 여백을 위해 박스 너비의 50% 만 사용.
+  const widthFit = (w * 0.5) / charCount;
+  const heightFit = h * 0.35;
+  const size = Math.min(widthFit, heightFit, OPENING_LABEL_FONT_SIZE_M);
+  return Math.max(0.08, size);
+}
+
 function readObjectSize(o: DraftObject): { width: number; height: number } {
   const meta = o.metadata_json ?? {};
   const w = typeof meta.width_m === 'number' ? meta.width_m : SPACE_DEFAULT_SIZE_M;
@@ -1301,14 +1373,14 @@ function ResizeCorner({
 }) {
   return (
     <g onPointerDown={(e) => onPointerDown(e, sign)} className="cursor-nwse-resize">
-      <circle cx={x} cy={y} r="0.3" fill="transparent" />
+      <circle cx={x} cy={y} r="0.2" fill="transparent" />
       <circle
         cx={x}
         cy={y}
-        r="0.14"
+        r="0.05"
         fill="white"
         stroke="oklch(0.55 0.22 264)"
-        strokeWidth="3"
+        strokeWidth="1.5"
         vectorEffect="non-scaling-stroke"
       />
     </g>
@@ -1355,15 +1427,15 @@ function VertexHandle({
 }) {
   return (
     <g onPointerDown={onPointerDown} className="cursor-grab">
-      {/* 클릭 영역 확장 */}
-      <circle cx={x} cy={y} r="0.35" fill="transparent" />
+      {/* 클릭 영역 확장 — 시각 크기보다 크게 잡아 클릭 편의성 유지 */}
+      <circle cx={x} cy={y} r="0.22" fill="transparent" />
       <circle
         cx={x}
         cy={y}
-        r="0.16"
+        r="0.06"
         fill="white"
         stroke="oklch(0.55 0.22 264)"
-        strokeWidth="3"
+        strokeWidth="1.5"
         vectorEffect="non-scaling-stroke"
       />
     </g>

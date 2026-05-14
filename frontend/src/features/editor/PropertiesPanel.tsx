@@ -1,11 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Check, ChevronDown, RotateCcw, ScanLine, Sparkles, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { objectTypeLabel, OBJECT_TYPE_OPTIONS, openingTypeLabel } from '@/lib/labels';
 import type {
   DraftObject,
   DraftOpening,
-  DraftRoom,
   DraftWall,
   SelectedEntityRef,
   SelectedEntityResolved,
@@ -30,14 +29,8 @@ interface PropertiesPanelProps {
   onUpdateObjectType?: (next: string) => void;
   /** 객체 위치(X/Y) 변경 — 보류 편집에 저장. */
   onUpdateObjectPosition?: (ref: SelectedEntityRef, x: number, y: number) => void;
-  /** 객체 크기(W/H) 변경 — 보류 편집에 저장. */
+  /** 객체 크기(W/H) 변경 — 즉시 PATCH. */
   onUpdateObjectSize?: (ref: SelectedEntityRef, widthM: number, heightM: number) => void;
-  /** 보류 편집이 존재하는지 (저장/취소 버튼 활성화 기준). */
-  hasPendingObjectEdit?: boolean;
-  /** 보류 편집 PATCH 실행. */
-  onSavePendingObject?: () => void;
-  /** 보류 편집 폐기. */
-  onCancelPendingObject?: () => void;
   /** 작업 진행 중 표시 */
   isSaving?: boolean;
   isDeleting?: boolean;
@@ -58,9 +51,6 @@ export function PropertiesPanel({
   onUpdateObjectType,
   onUpdateObjectPosition,
   onUpdateObjectSize,
-  hasPendingObjectEdit,
-  onSavePendingObject,
-  onCancelPendingObject,
   isSaving,
   isDeleting,
 }: PropertiesPanelProps) {
@@ -79,9 +69,6 @@ export function PropertiesPanel({
           onUpdateObjectType={onUpdateObjectType}
           onUpdateObjectPosition={onUpdateObjectPosition}
           onUpdateObjectSize={onUpdateObjectSize}
-          hasPendingObjectEdit={!!hasPendingObjectEdit}
-          onSavePendingObject={onSavePendingObject}
-          onCancelPendingObject={onCancelPendingObject}
           isSaving={!!isSaving}
           isDeleting={!!isDeleting}
         />
@@ -102,9 +89,6 @@ function SelectedBody({
   onUpdateObjectType,
   onUpdateObjectPosition,
   onUpdateObjectSize,
-  hasPendingObjectEdit,
-  onSavePendingObject,
-  onCancelPendingObject,
   isSaving,
   isDeleting,
 }: {
@@ -115,9 +99,6 @@ function SelectedBody({
   onUpdateObjectType?: (next: string) => void;
   onUpdateObjectPosition?: (ref: SelectedEntityRef, x: number, y: number) => void;
   onUpdateObjectSize?: (ref: SelectedEntityRef, widthM: number, heightM: number) => void;
-  hasPendingObjectEdit: boolean;
-  onSavePendingObject?: () => void;
-  onCancelPendingObject?: () => void;
   isSaving: boolean;
   isDeleting: boolean;
 }) {
@@ -127,10 +108,9 @@ function SelectedBody({
         <TypeHeader selected={selected} />
       </Section>
 
-      {selected.kind !== 'object' && (
+      {selected.kind !== 'object' && selected.kind !== 'room' && (
         <Section label="속성">
           {selected.kind === 'wall' && <WallFields wall={selected.data} />}
-          {selected.kind === 'room' && <RoomFields room={selected.data} />}
           {selected.kind === 'opening' && <OpeningFields opening={selected.data} />}
         </Section>
       )}
@@ -161,9 +141,6 @@ function SelectedBody({
                 ? (w, h) => onUpdateObjectSize({ kind: 'object', id: selected.data.id }, w, h)
                 : undefined
             }
-            hasPending={hasPendingObjectEdit}
-            onSave={onSavePendingObject}
-            onCancel={onCancelPendingObject}
             disabled={isSaving}
           />
         </>
@@ -259,16 +236,6 @@ function WallFields({ wall }: { wall: DraftWall }) {
   );
 }
 
-function RoomFields({ room }: { room: DraftRoom }) {
-  return (
-    <Grid>
-      <Row label="이름" value={room.room_name ?? '-'} />
-      <Row label="용도" value={room.room_type ?? '-'} />
-      <Row label="신뢰도" value={fmtConfidence(room.confidence)} />
-    </Grid>
-  );
-}
-
 function OpeningFields({ opening }: { opening: DraftOpening }) {
   return (
     <Grid>
@@ -324,23 +291,19 @@ function ObjectSizePositionSection({
   object,
   onUpdatePosition,
   onUpdateSize,
-  hasPending,
-  onSave,
-  onCancel,
   disabled,
 }: {
   object: DraftObject;
   onUpdatePosition?: (x: number, y: number) => void;
   onUpdateSize?: (widthM: number, heightM: number) => void;
-  hasPending: boolean;
-  onSave?: () => void;
-  onCancel?: () => void;
   disabled?: boolean;
 }) {
   const point = extractPoint(object.point_geom);
   const meta = (object.metadata_json ?? {}) as Record<string, unknown>;
-  const widthM = typeof meta.width_m === 'number' ? meta.width_m : null;
-  const heightM = typeof meta.height_m === 'number' ? meta.height_m : null;
+  // metadata 에 저장된 값이 없으면 캔버스 기본 박스 크기(1.6m)를 표시 — 캔버스와 일관성 유지.
+  const SPACE_DEFAULT_SIZE_M = 1.6;
+  const widthM = typeof meta.width_m === 'number' ? meta.width_m : SPACE_DEFAULT_SIZE_M;
+  const heightM = typeof meta.height_m === 'number' ? meta.height_m : SPACE_DEFAULT_SIZE_M;
 
   return (
     <Section label="크기 및 위치">
@@ -353,7 +316,6 @@ function ObjectSizePositionSection({
           min={0.2}
           disabled={disabled || !onUpdateSize}
           onCommit={(next) => onUpdateSize?.(next, heightM ?? next)}
-          onEnterSave={onSave}
         />
         <NumberInputBound
           label="세로 (H)"
@@ -363,7 +325,6 @@ function ObjectSizePositionSection({
           min={0.2}
           disabled={disabled || !onUpdateSize}
           onCommit={(next) => onUpdateSize?.(widthM ?? next, next)}
-          onEnterSave={onSave}
         />
         <NumberInputBound
           label="X 좌표"
@@ -372,7 +333,6 @@ function ObjectSizePositionSection({
           step={0.1}
           disabled={disabled || !onUpdatePosition || !point}
           onCommit={(next) => point && onUpdatePosition?.(next, point[1])}
-          onEnterSave={onSave}
         />
         <NumberInputBound
           label="Y 좌표"
@@ -381,31 +341,9 @@ function ObjectSizePositionSection({
           step={0.1}
           disabled={disabled || !onUpdatePosition || !point}
           onCommit={(next) => point && onUpdatePosition?.(point[0], next)}
-          onEnterSave={onSave}
         />
       </div>
 
-      <div className="mt-3 flex gap-2">
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={disabled || !hasPending}
-          className="flex-1 rounded-md border bg-background px-3 py-1.5 text-xs font-medium text-foreground/80 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          취소
-        </button>
-        <button
-          type="button"
-          onClick={onSave}
-          disabled={disabled || !hasPending}
-          className="flex-1 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {disabled ? '저장 중…' : '저장'}
-        </button>
-      </div>
-      {hasPending && (
-        <p className="mt-2 text-[10px] text-amber-600">변경사항이 저장되지 않았습니다.</p>
-      )}
     </Section>
   );
 }
@@ -419,7 +357,6 @@ function NumberInputBound({
   min,
   disabled,
   onCommit,
-  onEnterSave,
 }: {
   label: string;
   value: number | null;
@@ -428,13 +365,14 @@ function NumberInputBound({
   min?: number;
   disabled?: boolean;
   onCommit?: (next: number) => void;
-  onEnterSave?: () => void;
 }) {
   const [draft, setDraft] = useState<string>(value != null ? value.toFixed(2) : '');
-
-  useEffect(() => {
+  // 외부 value 가 바뀌면 draft 동기화 — useEffect 대신 render-time 비교 (cascading render 회피).
+  const [prevValue, setPrevValue] = useState(value);
+  if (prevValue !== value) {
+    setPrevValue(value);
     setDraft(value != null ? value.toFixed(2) : '');
-  }, [value]);
+  }
 
   const commit = () => {
     const n = Number(draft);
@@ -442,6 +380,17 @@ function NumberInputBound({
       setDraft(value != null ? value.toFixed(2) : '');
       return;
     }
+    const clamped = min != null && n < min ? min : n;
+    if (value != null && Math.abs(clamped - value) < 1e-6) return;
+    onCommit?.(clamped);
+  };
+
+  const handleChange = (next: string) => {
+    setDraft(next);
+    // 유효 숫자면 즉시 commit (캔버스에서 실시간 반영). 빈 문자열·NaN 은 무시.
+    if (next.trim() === '') return;
+    const n = Number(next);
+    if (!Number.isFinite(n)) return;
     const clamped = min != null && n < min ? min : n;
     if (value != null && Math.abs(clamped - value) < 1e-6) return;
     onCommit?.(clamped);
@@ -457,13 +406,12 @@ function NumberInputBound({
           step={step ?? 0.01}
           value={draft}
           disabled={disabled}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => handleChange(e.target.value)}
           onBlur={commit}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();
               commit();
-              onEnterSave?.();
             }
           }}
           className="w-full bg-transparent text-base font-semibold tabular-nums outline-none disabled:cursor-not-allowed disabled:opacity-50"

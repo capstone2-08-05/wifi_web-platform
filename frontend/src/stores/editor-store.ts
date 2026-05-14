@@ -5,7 +5,6 @@ export type EditorTool =
   | 'upload'
   | 'rect'      // 벽/구조물 (LineString — 2 클릭)
   | 'circle'    // 가구 (Point — 1 클릭)
-  | 'text'      // 구역 라벨 (백엔드 미지원, placeholder)
   | 'polygon'   // 방 (Polygon — 다중 클릭 + 시작점 클릭으로 닫기)
   | 'opening';  // 문/창 (LineString — 2 클릭)
 
