@@ -17,6 +17,11 @@ def database_url() -> str:
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://appuser:apppass@localhost:5432/appdb")
+# DB 커넥션 풀 — 기본(5+10)은 background poller + HTTP 동시 요청에 빠듯해 늘림.
+DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))
+DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "20"))
+# 세션이 풀에서 커넥션을 못 얻을 때 무한 대기 대신 N초 후 에러 (hang 가시화).
+DB_POOL_TIMEOUT_SECONDS = float(os.getenv("DB_POOL_TIMEOUT_SECONDS", "10"))
 DEFAULT_DRAFT_PROJECT_NAME = os.getenv("DEFAULT_DRAFT_PROJECT_NAME", "local-upload-project").strip()
 DEFAULT_DRAFT_FLOOR_NAME = os.getenv("DEFAULT_DRAFT_FLOOR_NAME", "default-floor").strip()
 DEFAULT_DRAFT_SOURCE = os.getenv("DEFAULT_DRAFT_SOURCE", "local_upload").strip()
@@ -59,6 +64,21 @@ AWS_S3_BUCKET = os.getenv("AWS_S3_BUCKET", "").strip()
 SAGEMAKER_ENDPOINT_NAME = os.getenv("SAGEMAKER_ENDPOINT_NAME", "ai-inference-endpoint").strip()
 SAGEMAKER_POLL_INTERVAL_SECONDS = float(os.getenv("SAGEMAKER_POLL_INTERVAL_SECONDS", "5"))
 SAGEMAKER_POLL_TIMEOUT_SECONDS = float(os.getenv("SAGEMAKER_POLL_TIMEOUT_SECONDS", "900"))
+
+# RF 시뮬 inference 는 별도 endpoint. bucket/region 은 AI 와 공유.
+SAGEMAKER_RF_ENDPOINT_NAME = os.getenv(
+    "SAGEMAKER_RF_ENDPOINT_NAME", "rf-inference-async-endpoint-v1"
+).strip()
+# 결과 presigned URL 만료 (초). 기본 1시간.
+RF_PRESIGNED_URL_EXPIRES_SECONDS = int(
+    os.getenv("RF_PRESIGNED_URL_EXPIRES_SECONDS", "3600")
+)
+
+# boto3 client 타임아웃 — AWS 호출이 무한정 hang 해서 DB 세션/스레드를 잡고 있는 것 방지.
+# connect 는 짧게, read 는 S3 업로드/다운로드 고려해 넉넉히. 재시도는 2회.
+AWS_CONNECT_TIMEOUT_SECONDS = float(os.getenv("AWS_CONNECT_TIMEOUT_SECONDS", "5"))
+AWS_READ_TIMEOUT_SECONDS = float(os.getenv("AWS_READ_TIMEOUT_SECONDS", "30"))
+AWS_MAX_RETRY_ATTEMPTS = int(os.getenv("AWS_MAX_RETRY_ATTEMPTS", "2"))
 
 
 # ============================================

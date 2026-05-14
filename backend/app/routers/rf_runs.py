@@ -26,14 +26,14 @@ router = APIRouter(prefix="/rf-runs", tags=["rf-runs"])
     "",
     response_model=RfRunCreatedResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    summary="RF 시뮬레이션 큐 등록",
+    summary="RF 시뮬레이션 Job 등록 (access_points + simulation 주면 SageMaker async invoke). job_id 받아서 GET /rf-jobs/{job_id} 로 폴링.",
 )
-def create_rf_run(
+async def create_rf_run(
     payload: RfRunCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> RfRunCreatedResponse:
-    return rf_run_service.create_rf_run(db, payload=payload, user=current_user)
+    return await rf_run_service.create_rf_run(db, payload=payload, user=current_user)
 
 
 @router.get(

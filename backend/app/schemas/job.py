@@ -5,7 +5,9 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.core.enums import normalize_job_status
 
 
 class JobResponse(BaseModel):
@@ -20,3 +22,15 @@ class JobResponse(BaseModel):
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     created_at: datetime
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _normalize_status(cls, v: Any) -> Any:
+        """내부 status(running/done/failed/queued/completed) → API 표기로 통일.
+
+        floorplan/rf/legacy 잡이 제각각 쓰는 종료 상태를 API 경계에서
+        pending/running/succeeded/failed 로 normalize. DB 값은 그대로 둠.
+        """
+        if isinstance(v, str):
+            return normalize_job_status(v)
+        return v

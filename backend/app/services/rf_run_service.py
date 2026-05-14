@@ -80,11 +80,33 @@ def _to_response(rr: RfRun) -> RfRunResponse:
     )
 
 
-def create_rf_run(
+async def create_rf_run(
     db: Session, payload: RfRunCreate, user: User
 ) -> RfRunCreatedResponse:
+    """RF 시뮬레이션 Job 등록.
+
+    - payload.access_points + payload.simulation 둘 다 있으면 → SageMaker async invoke 흐름
+    - 둘 다 없으면 → legacy queue 등록 (deprecated, 외부 worker 가 처리하는 옛 흐름)
+    """
     sv = _get_owned_scene_version(db, payload.scene_version_id, user)
 
+    # 새 흐름: SageMaker async 호출
+    if payload.access_points and payload.simulation:
+        from app.services.rf_job_service import submit_rf_simulation
+
+        rf_run, job = await submit_rf_simulation(
+            db,
+            scene_version_id=sv.id,
+            access_points=[ap.model_dump() for ap in payload.access_points],
+            simulation=payload.simulation.model_dump(),
+            current_user=user,
+            run_type=payload.run_type or "rf_simulate",
+            metadata=payload.metadata,
+        )
+        summary = _to_response(rf_run)
+        return RfRunCreatedResponse(**summary.model_dump(), job_id=job.id)
+
+    # Legacy 흐름 (외부 worker 가 폴링하는 큐 모델)
     rf_run = RfRun(
         project_id=sv.project_id,
         floor_id=sv.floor_id,
