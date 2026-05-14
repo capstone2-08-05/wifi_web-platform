@@ -23,6 +23,11 @@ from typing import Iterable, Literal, Protocol
 DEFAULT_SEGMENT_AXIS_DOMINANCE = 3.0
 DEFAULT_BBOX_ASPECT_THRESHOLD = 1.3
 
+# Opening 중복 제거 (NMS) IoU 임계값. 같은 문/창을 두 번 탐지한 경우 제거.
+DEFAULT_OPENING_NMS_IOU = 0.5
+
+Bbox = tuple[float, float, float, float]  # (x1, y1, x2, y2)
+
 Orientation = Literal["horizontal", "vertical", "diagonal", "ambiguous", "degenerate"]
 
 
@@ -224,3 +229,53 @@ def assign_wall_refs(
             opening.wall_ref = matched_id
             matched += 1
     return matched
+
+
+# ============================================================
+# Opening NMS (중복 탐지 제거)
+# ============================================================
+def bbox_iou(a: Bbox, b: Bbox) -> float:
+    """두 bbox 의 IoU (Intersection over Union). 좌표 순서 무관 (자동 정규화)."""
+    ax1, ax2 = sorted((a[0], a[2]))
+    ay1, ay2 = sorted((a[1], a[3]))
+    bx1, bx2 = sorted((b[0], b[2]))
+    by1, by2 = sorted((b[1], b[3]))
+
+    inter_w = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+    inter_h = max(0.0, min(ay2, by2) - max(ay1, by1))
+    inter = inter_w * inter_h
+    if inter <= 0.0:
+        return 0.0
+
+    area_a = (ax2 - ax1) * (ay2 - ay1)
+    area_b = (bx2 - bx1) * (by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0.0 else 0.0
+
+
+def nms_filter_indices(
+    boxes: list[Bbox],
+    scores: list[float],
+    iou_threshold: float = DEFAULT_OPENING_NMS_IOU,
+) -> list[int]:
+    """표준 NMS. 겹치는 bbox 중 score 높은 것만 남긴 index 리스트를 **원래 순서**로 반환.
+
+    boxes 와 scores 는 같은 길이. score 가 없으면 0.0 으로 넘겨도 동작 (이 경우
+    먼저 등장한 box 가 우선 유지됨).
+    """
+    if len(boxes) != len(scores):
+        raise ValueError("boxes and scores must have the same length")
+
+    # score 내림차순 (동점이면 원래 순서 유지) 으로 후보 정렬
+    order = sorted(range(len(boxes)), key=lambda i: (-scores[i], i))
+
+    kept: list[int] = []
+    kept_boxes: list[Bbox] = []
+    for idx in order:
+        box = boxes[idx]
+        if any(bbox_iou(box, kb) > iou_threshold for kb in kept_boxes):
+            continue
+        kept.append(idx)
+        kept_boxes.append(box)
+
+    return sorted(kept)

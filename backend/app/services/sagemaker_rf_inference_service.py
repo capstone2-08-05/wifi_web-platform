@@ -1,30 +1,29 @@
-"""백엔드 ↔ SageMaker Async Inference 컨테이너 클라이언트.
+"""백엔드 ↔ SageMaker Async RF Inference 컨테이너 클라이언트.
 
-Job 비동기 패턴용 4-단계 API:
-  1. `submit(...)` — S3 source/input.json 업로드 + invoke_endpoint_async + SubmitResult 반환 (블록 X)
-  2. `check_status(output_prefix)` — S3 head_object 로 result/failure 존재 확인 → "running"/"completed"/"failed"
-  3. `download_result(job_id, output_prefix)` — result.json + raw outputs (npy/png/detections) 다운로드
-  4. `download_failure(output_prefix)` — failure.json 파싱
+`sagemaker_inference_service` 의 RF 버전. AI 와 동일한 4-method API:
+  1. submit(...) — scene.json/input.json S3 업로드 + invoke_endpoint_async
+  2. check_status(output_prefix) — S3 head_object 로 result/failure 존재 확인
+  3. download_result(...) — result.json 파싱 (heatmap/radio_map URI 만 사용; raw 다운로드 X)
+  4. download_failure(...) — failure.json 파싱
 
-기존 `invoke_and_wait(...)` 는 호출자가 폴링을 의식하지 않아도 되지만, HTTP 요청을 5-15분 블록함.
-새 API 는 폴링 책임을 호출자(`floorplan_job_service`)에게 위임.
+AI 와 차이:
+  - 입력 페이로드가 다름 (scene_s3_uri + simulation + access_points)
+  - 출력 raw 파일 (radio_map.npy, heatmap.png) 은 백엔드가 직접 다운받지 않고 S3 URI 만 보관
+  - presigned URL 생성 헬퍼 추가
 
 실패 케이스:
-  - 컨테이너 측 application-level 실패 → output_prefix/failure.json → SageMakerInferenceFailure (code 보유)
-  - SageMaker 인프라 실패 → S3FailurePath/{id}.out → INTERNAL_SERVER_ERROR 로 raise
-  - 폴링 timeout 은 호출자 정책 (Job.created_at 으로부터 N 분 경과 시 cleanup 등)
+  - 컨테이너 측 application-level 실패 → failure.json → SageMakerRfInferenceFailure
+  - SageMaker 인프라 실패 → S3FailurePath/{id}.out → INTERNAL_SERVER_ERROR
 
-계약 문서: docs/contracts/ai-inference/
+계약 문서: docs/contracts/rf-inference/
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import tempfile
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Literal
 
 import boto3
@@ -35,30 +34,27 @@ from app.core.errors import AppError, ErrorCode
 from app.core.settings import (
     AWS_REGION,
     AWS_S3_BUCKET,
-    SAGEMAKER_ENDPOINT_NAME,
+    RF_PRESIGNED_URL_EXPIRES_SECONDS,
+    SAGEMAKER_RF_ENDPOINT_NAME,
 )
 
 logger = logging.getLogger(__name__)
 
 CONTRACT_SCHEMA_VERSION = "1.0"
 
-InferenceStatus = Literal["running", "completed", "failed", "infra_failed"]
+RfInferenceStatus = Literal["running", "completed", "failed", "infra_failed"]
 
 
 # ============================================================
 # 결과 / 실패 표현
 # ============================================================
 @dataclass
-class SubmitResult:
-    """SageMaker invoke_endpoint_async 직후 반환.
-
-    Job row 의 input_json 에 그대로 직렬화해 저장. 폴링 단계에서 output_prefix 기반으로
-    결과 확인.
-    """
+class RfSubmitResult:
+    """SageMaker invoke_endpoint_async 직후 반환. Job.input_json 으로 영속화 가능."""
 
     job_id: str
     sagemaker_inference_id: str
-    source_s3_uri: str
+    scene_s3_uri: str
     input_s3_uri: str
     output_prefix: str
     sagemaker_output_location: str
@@ -66,56 +62,41 @@ class SubmitResult:
 
 
 @dataclass
-class InferenceResult:
-    """SageMaker invocation 성공 결과를 fusion_service 에 전달하는 형태.
-
-    raw outputs 는 로컬 temp 파일로 다운받아진 상태. 사용 후 temp_dir 를 cleanup 해야 함.
-    """
+class RfInferenceResult:
+    """RF 시뮬 성공 결과. raw 파일은 다운받지 않고 URI 만 보관."""
 
     job_id: str
-    temp_dir: Path
-    prob_map_local_path: Path
-    mask_local_path: Path
-    detections: list[dict[str, Any]]   # detections.json 의 detections 배열
-    image_width_px: int
-    image_height_px: int
-    result_payload: dict[str, Any]      # 원본 result.json (디버깅/메트릭)
-
-    def cleanup(self) -> None:
-        try:
-            for child in self.temp_dir.glob("*"):
-                child.unlink(missing_ok=True)
-            self.temp_dir.rmdir()
-        except OSError:
-            logger.warning("temp dir cleanup failed: %s", self.temp_dir, exc_info=True)
+    result_payload: dict[str, Any]   # 원본 result.json
+    result_s3_uri: str
+    heatmap_s3_uri: str
+    radio_map_s3_uri: str
 
 
 @dataclass
-class SageMakerInferenceFailure(Exception):
+class SageMakerRfInferenceFailure(Exception):
     """컨테이너가 명시적으로 쓴 failure.json 정보."""
 
-    code: str            # ErrorCode (계약의 8종)
+    code: str            # ErrorCode (계약의 7종)
     stage: str
     message: str
     retryable: bool = False
     details: dict[str, Any] = field(default_factory=dict)
     job_id: str | None = None
 
-    def __post_init__(self) -> None:  # dataclass + Exception 호환
+    def __post_init__(self) -> None:
         Exception.__init__(self, self.message)
 
 
 # ============================================================
 # 컨테이너 error.code → 백엔드 ErrorCode 매핑
-# error_codes.md 의 "백엔드 매핑 (제안)" 표 기준
+# docs/contracts/rf-inference/error_codes.md 기준
 # ============================================================
 _CONTAINER_TO_BACKEND_CODE: dict[str, ErrorCode] = {
-    "INVALID_INPUT": ErrorCode.INTERNAL_SERVER_ERROR,             # 백엔드가 잘못된 input.json 만든 경우
+    "INVALID_INPUT": ErrorCode.INTERNAL_SERVER_ERROR,
     "UNSUPPORTED_SCHEMA_VERSION": ErrorCode.INTERNAL_SERVER_ERROR,
-    "SOURCE_IMAGE_DOWNLOAD_FAILED": ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
-    "SOURCE_IMAGE_DECODE_FAILED": ErrorCode.INVALID_FILE_EXTENSION,
-    "UNET_INFERENCE_FAILED": ErrorCode.ANALYSIS_FAILED,
-    "YOLO_INFERENCE_FAILED": ErrorCode.ANALYSIS_FAILED,
+    "SCENE_DOWNLOAD_FAILED": ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
+    "SCENE_PARSE_FAILED": ErrorCode.INTERNAL_SERVER_ERROR,
+    "SIMULATION_FAILED": ErrorCode.RF_SIMULATION_FAILED,
     "OUTPUT_UPLOAD_FAILED": ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
     "INTERNAL_ERROR": ErrorCode.INTERNAL_SERVER_ERROR,
 }
@@ -123,21 +104,22 @@ _CONTAINER_TO_BACKEND_CODE: dict[str, ErrorCode] = {
 _CONTAINER_TO_HTTP_STATUS: dict[str, int] = {
     "INVALID_INPUT": 500,
     "UNSUPPORTED_SCHEMA_VERSION": 500,
-    "SOURCE_IMAGE_DOWNLOAD_FAILED": 502,
-    "SOURCE_IMAGE_DECODE_FAILED": 400,
-    "UNET_INFERENCE_FAILED": 502,
-    "YOLO_INFERENCE_FAILED": 502,
+    "SCENE_DOWNLOAD_FAILED": 502,
+    "SCENE_PARSE_FAILED": 500,
+    "SIMULATION_FAILED": 502,
     "OUTPUT_UPLOAD_FAILED": 502,
     "INTERNAL_ERROR": 500,
 }
 
 
-def map_failure_to_app_error(failure: SageMakerInferenceFailure) -> AppError:
-    backend_code = _CONTAINER_TO_BACKEND_CODE.get(failure.code, ErrorCode.ANALYSIS_FAILED)
+def map_rf_failure_to_app_error(failure: SageMakerRfInferenceFailure) -> AppError:
+    backend_code = _CONTAINER_TO_BACKEND_CODE.get(
+        failure.code, ErrorCode.RF_SIMULATION_FAILED
+    )
     http_status = _CONTAINER_TO_HTTP_STATUS.get(failure.code, 502)
     return AppError(
         backend_code,
-        f"AI inference failed at stage '{failure.stage}': {failure.message}",
+        f"RF simulation failed at stage '{failure.stage}': {failure.message}",
         http_status,
     )
 
@@ -145,14 +127,14 @@ def map_failure_to_app_error(failure: SageMakerInferenceFailure) -> AppError:
 # ============================================================
 # Service
 # ============================================================
-class SageMakerInferenceService:
+class SageMakerRfInferenceService:
     """boto3 client 들을 lazy 생성하면서 의존성 주입 가능한 형태로."""
 
     def __init__(
         self,
         region: str = AWS_REGION,
         bucket: str = AWS_S3_BUCKET,
-        endpoint_name: str = SAGEMAKER_ENDPOINT_NAME,
+        endpoint_name: str = SAGEMAKER_RF_ENDPOINT_NAME,
     ) -> None:
         self.region = region
         self.bucket = bucket
@@ -177,13 +159,13 @@ class SageMakerInferenceService:
         if not self.bucket:
             raise AppError(
                 ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
-                "AWS_S3_BUCKET not configured for SageMaker inference.",
+                "AWS_S3_BUCKET not configured for RF inference.",
                 503,
             )
         if not self.endpoint_name:
             raise AppError(
                 ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
-                "SAGEMAKER_ENDPOINT_NAME not configured.",
+                "SAGEMAKER_RF_ENDPOINT_NAME not configured.",
                 503,
             )
 
@@ -191,81 +173,89 @@ class SageMakerInferenceService:
     async def submit(
         self,
         *,
-        image_bytes: bytes,
-        filename: str,
+        scene_json: dict[str, Any],
         project_id: str,
         floor_id: str,
-        content_type: str = "application/octet-stream",
-    ) -> SubmitResult:
-        """source/input.json S3 업로드 + invoke_endpoint_async. **블록 안 함**.
+        scene_version_id: str,
+        simulation: dict[str, Any],
+        access_points: list[dict[str, Any]],
+        metadata: dict[str, Any] | None = None,
+    ) -> RfSubmitResult:
+        """scene.json/input.json S3 업로드 + invoke_endpoint_async. **블록 안 함**.
 
-        blocking I/O (boto3) 는 thread executor 로 우회.
+        blocking I/O 는 thread executor 로 우회.
         """
         self._check_configured()
 
         job_id = uuid.uuid4().hex
-        ext = Path(filename).suffix.lower() or ".png"
-        source_key = f"projects/{project_id}/floors/{floor_id}/sources/{job_id}{ext}"
-        input_key = f"ai-jobs/{job_id}/input/input.json"
-        output_prefix_uri = f"s3://{self.bucket}/ai-jobs/{job_id}/output/"
+        scene_key = f"rf-jobs/{job_id}/input/scene.json"
+        input_key = f"rf-jobs/{job_id}/input/input.json"
+        scene_s3_uri = f"s3://{self.bucket}/{scene_key}"
         input_s3_uri = f"s3://{self.bucket}/{input_key}"
-        source_s3_uri = f"s3://{self.bucket}/{source_key}"
+        output_prefix_uri = f"s3://{self.bucket}/rf-jobs/{job_id}/output/"
 
-        logger.info("SageMaker submit start job_id=%s source=%s", job_id, source_s3_uri)
+        logger.info(
+            "RF SageMaker submit start job_id=%s scene_version_id=%s num_aps=%d",
+            job_id, scene_version_id, len(access_points),
+        )
+
+        input_payload: dict[str, Any] = {
+            "schema_version": CONTRACT_SCHEMA_VERSION,
+            "job_id": job_id,
+            "project_id": project_id,
+            "floor_id": floor_id,
+            "scene_version_id": scene_version_id,
+            "scene_s3_uri": scene_s3_uri,
+            "output_prefix": output_prefix_uri,
+            "simulation": simulation,
+            "access_points": access_points,
+        }
+        if metadata:
+            input_payload["metadata"] = metadata
 
         return await asyncio.to_thread(
             self._submit_blocking,
             job_id=job_id,
-            image_bytes=image_bytes,
-            content_type=content_type,
-            source_key=source_key,
+            scene_json=scene_json,
+            input_payload=input_payload,
+            scene_key=scene_key,
             input_key=input_key,
+            scene_s3_uri=scene_s3_uri,
             input_s3_uri=input_s3_uri,
-            source_s3_uri=source_s3_uri,
             output_prefix_uri=output_prefix_uri,
-            project_id=project_id,
-            floor_id=floor_id,
         )
 
     def _submit_blocking(
         self,
         *,
         job_id: str,
-        image_bytes: bytes,
-        content_type: str,
-        source_key: str,
+        scene_json: dict[str, Any],
+        input_payload: dict[str, Any],
+        scene_key: str,
         input_key: str,
+        scene_s3_uri: str,
         input_s3_uri: str,
-        source_s3_uri: str,
         output_prefix_uri: str,
-        project_id: str,
-        floor_id: str,
-    ) -> SubmitResult:
+    ) -> RfSubmitResult:
         s3 = self._get_s3()
         smrt = self._get_smrt()
 
-        # 1) source 이미지 업로드
+        # 1) scene.json 업로드
         try:
             s3.put_object(
-                Bucket=self.bucket, Key=source_key, Body=image_bytes, ContentType=content_type
+                Bucket=self.bucket,
+                Key=scene_key,
+                Body=json.dumps(scene_json).encode("utf-8"),
+                ContentType="application/json",
             )
         except ClientError as exc:
             raise AppError(
                 ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
-                f"S3 source upload failed: {exc}",
+                f"S3 scene.json upload failed: {exc}",
                 502,
             ) from exc
 
         # 2) input.json 업로드
-        input_payload = {
-            "schema_version": CONTRACT_SCHEMA_VERSION,
-            "job_id": job_id,
-            "project_id": project_id,
-            "floor_id": floor_id,
-            "source_image_s3_uri": source_s3_uri,
-            "output_prefix": output_prefix_uri,
-            "tasks": {"wall_segmentation": True, "object_detection": True},
-        }
         try:
             s3.put_object(
                 Bucket=self.bucket,
@@ -290,7 +280,7 @@ class SageMakerInferenceService:
         except ClientError as exc:
             raise AppError(
                 ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
-                f"SageMaker invoke_endpoint_async failed: {exc}",
+                f"SageMaker invoke_endpoint_async (RF) failed: {exc}",
                 502,
             ) from exc
 
@@ -298,15 +288,14 @@ class SageMakerInferenceService:
         sagemaker_output_location = response.get("OutputLocation", "")
         sagemaker_failure_location = response.get("FailureLocation", "")
         logger.info(
-            "SageMaker submit OK job_id=%s inference_id=%s",
-            job_id,
-            inference_id,
+            "RF SageMaker submit OK job_id=%s inference_id=%s",
+            job_id, inference_id,
         )
 
-        return SubmitResult(
+        return RfSubmitResult(
             job_id=job_id,
             sagemaker_inference_id=inference_id,
-            source_s3_uri=source_s3_uri,
+            scene_s3_uri=scene_s3_uri,
             input_s3_uri=input_s3_uri,
             output_prefix=output_prefix_uri,
             sagemaker_output_location=sagemaker_output_location,
@@ -318,12 +307,12 @@ class SageMakerInferenceService:
         self,
         output_prefix: str,
         sagemaker_failure_location: str = "",
-    ) -> InferenceStatus:
+    ) -> RfInferenceStatus:
         """S3 head_object 로 결과 존재 확인 (cheap call).
 
         - result.json 보이면 → "completed"
-        - failure.json 보이면 → "failed" (컨테이너 측 application-level 실패)
-        - SageMaker FailureLocation 보이면 → "infra_failed" (인프라 실패)
+        - failure.json 보이면 → "failed"
+        - SageMaker FailureLocation 보이면 → "infra_failed"
         - 둘 다 없으면 → "running"
         """
         bucket, prefix_key = _split_s3_uri(output_prefix)
@@ -338,11 +327,8 @@ class SageMakerInferenceService:
         return "running"
 
     # ----- 3. download_result -----
-    def download_result(self, job_id: str, output_prefix: str) -> InferenceResult:
-        """result.json + raw outputs 를 temp 디렉토리로 다운로드.
-
-        호출 후 반드시 InferenceResult.cleanup() 으로 정리할 것.
-        """
+    def download_result(self, job_id: str, output_prefix: str) -> RfInferenceResult:
+        """result.json 만 파싱. raw 파일들은 URI 로만 보관."""
         bucket, prefix_key = _split_s3_uri(output_prefix)
         s3 = self._get_s3()
 
@@ -355,58 +341,52 @@ class SageMakerInferenceService:
                 502,
             ) from exc
 
-        temp_dir = Path(tempfile.mkdtemp(prefix=f"sm-{job_id}-"))
-        prob_map_path = temp_dir / "wall_prob_map.npy"
-        mask_path = temp_dir / "wall_mask.png"
-        try:
-            _s3_download(s3, bucket, prefix_key + "wall_prob_map.npy", prob_map_path)
-            _s3_download(s3, bucket, prefix_key + "wall_mask.png", mask_path)
-            detections_bytes = _s3_get_bytes(s3, bucket, prefix_key + "detections.json")
-        except ClientError as exc:
-            raise AppError(
-                ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
-                f"S3 download of raw outputs failed: {exc}",
-                502,
-            ) from exc
-
-        detections_payload = json.loads(detections_bytes)
-        detections = list(detections_payload.get("detections") or [])
-
-        image_info = result_payload.get("image", {})
-        return InferenceResult(
+        outputs = result_payload.get("outputs") or {}
+        return RfInferenceResult(
             job_id=job_id,
-            temp_dir=temp_dir,
-            prob_map_local_path=prob_map_path,
-            mask_local_path=mask_path,
-            detections=detections,
-            image_width_px=int(image_info.get("width_px", 0)),
-            image_height_px=int(image_info.get("height_px", 0)),
             result_payload=result_payload,
+            result_s3_uri=str(outputs.get("result_s3_uri") or ""),
+            heatmap_s3_uri=str(outputs.get("heatmap_s3_uri") or ""),
+            radio_map_s3_uri=str(outputs.get("radio_map_s3_uri") or ""),
         )
 
     # ----- 4. download_failure -----
-    def download_failure(self, output_prefix: str) -> SageMakerInferenceFailure:
-        """failure.json 파싱."""
+    def download_failure(self, output_prefix: str) -> SageMakerRfInferenceFailure:
         bucket, prefix_key = _split_s3_uri(output_prefix)
         s3 = self._get_s3()
         failure_payload = json.loads(_s3_get_bytes(s3, bucket, prefix_key + "failure.json"))
         return self._parse_failure(failure_payload, str(failure_payload.get("job_id") or ""))
 
     @staticmethod
-    def _parse_failure(payload: dict[str, Any], job_id: str) -> SageMakerInferenceFailure:
+    def _parse_failure(payload: dict[str, Any], job_id: str) -> SageMakerRfInferenceFailure:
         error = payload.get("error") or {}
-        return SageMakerInferenceFailure(
+        return SageMakerRfInferenceFailure(
             code=str(error.get("code") or "INTERNAL_ERROR"),
             stage=str(error.get("stage") or "unknown"),
-            message=str(error.get("message") or "AI inference failed"),
+            message=str(error.get("message") or "RF inference failed"),
             retryable=bool(error.get("retryable", False)),
             details=dict(error.get("details") or {}),
             job_id=str(payload.get("job_id") or job_id),
         )
 
+    # ----- 5. presigned URL -----
+    def presigned_url(
+        self, s3_uri: str, expires_seconds: int = RF_PRESIGNED_URL_EXPIRES_SECONDS
+    ) -> str:
+        """프론트가 직접 접근 가능한 presigned GET URL."""
+        if not s3_uri:
+            return ""
+        bucket, key = _split_s3_uri(s3_uri)
+        s3 = self._get_s3()
+        return s3.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={"Bucket": bucket, "Key": key},
+            ExpiresIn=int(expires_seconds),
+        )
+
 
 # ============================================================
-# S3 helpers
+# S3 helpers (sagemaker_inference_service 와 동일 — 시뮬용으로 가벼움)
 # ============================================================
 def _split_s3_uri(uri: str) -> tuple[str, str]:
     """s3://bucket/key/path/ → (bucket, 'key/path/')."""
@@ -441,9 +421,4 @@ def _s3_get_bytes(s3, bucket: str, key: str) -> bytes:
     return response["Body"].read()
 
 
-def _s3_download(s3, bucket: str, key: str, dest: Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    s3.download_file(bucket, key, str(dest))
-
-
-sagemaker_inference_service = SageMakerInferenceService()
+sagemaker_rf_inference_service = SageMakerRfInferenceService()

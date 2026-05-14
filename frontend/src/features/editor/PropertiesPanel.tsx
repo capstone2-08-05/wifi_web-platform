@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Check, ChevronDown, RotateCcw, ScanLine, Sparkles, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { objectTypeLabel, OBJECT_TYPE_OPTIONS, openingTypeLabel } from '@/lib/labels';
 import type {
   DraftObject,
   DraftOpening,
@@ -24,7 +25,9 @@ interface PropertiesPanelProps {
   onRotate?: () => void;
   /** 벽의 material_label 변경. 백엔드 PATCH /draft-walls/{id}. */
   onUpdateMaterial?: (next: string) => void;
-  /** 객체 위치(X/Y) 변경 — 즉시 PATCH. */
+  /** 객체의 object_type 변경. 백엔드 PATCH /draft-objects/{id}. */
+  onUpdateObjectType?: (next: string) => void;
+  /** 객체 위치(X/Y) 변경 — 보류 편집에 저장. */
   onUpdateObjectPosition?: (ref: SelectedEntityRef, x: number, y: number) => void;
   /** 객체 크기(W/H) 변경 — 즉시 PATCH. */
   onUpdateObjectSize?: (ref: SelectedEntityRef, widthM: number, heightM: number) => void;
@@ -45,6 +48,7 @@ export function PropertiesPanel({
   onDelete,
   onRotate,
   onUpdateMaterial,
+  onUpdateObjectType,
   onUpdateObjectPosition,
   onUpdateObjectSize,
   isSaving,
@@ -62,6 +66,7 @@ export function PropertiesPanel({
           onDelete={onDelete}
           onRotate={onRotate}
           onUpdateMaterial={onUpdateMaterial}
+          onUpdateObjectType={onUpdateObjectType}
           onUpdateObjectPosition={onUpdateObjectPosition}
           onUpdateObjectSize={onUpdateObjectSize}
           isSaving={!!isSaving}
@@ -81,6 +86,7 @@ function SelectedBody({
   onDelete,
   onRotate,
   onUpdateMaterial,
+  onUpdateObjectType,
   onUpdateObjectPosition,
   onUpdateObjectSize,
   isSaving,
@@ -90,6 +96,7 @@ function SelectedBody({
   onDelete?: () => void;
   onRotate?: () => void;
   onUpdateMaterial?: (next: string) => void;
+  onUpdateObjectType?: (next: string) => void;
   onUpdateObjectPosition?: (ref: SelectedEntityRef, x: number, y: number) => void;
   onUpdateObjectSize?: (ref: SelectedEntityRef, widthM: number, heightM: number) => void;
   isSaving: boolean;
@@ -109,20 +116,34 @@ function SelectedBody({
       )}
 
       {selected.kind === 'object' && (
-        <ObjectSizePositionSection
-          object={selected.data}
-          onUpdatePosition={
-            onUpdateObjectPosition
-              ? (x, y) => onUpdateObjectPosition({ kind: 'object', id: selected.data.id }, x, y)
-              : undefined
-          }
-          onUpdateSize={
-            onUpdateObjectSize
-              ? (w, h) => onUpdateObjectSize({ kind: 'object', id: selected.data.id }, w, h)
-              : undefined
-          }
-          disabled={isSaving}
-        />
+        <>
+          <Section label="객체 종류 변경">
+            <ObjectTypeSelect
+              value={selected.data.object_type}
+              onChange={onUpdateObjectType}
+              disabled={isSaving}
+            />
+            <p className="mt-2 rounded-md bg-primary/5 px-3 py-2 text-[11px] leading-relaxed text-primary/90">
+              AI 가 추정한 종류가 틀렸으면 직접 바꿔주세요.
+              {isSaving && ' 저장 중…'}
+            </p>
+          </Section>
+
+          <ObjectSizePositionSection
+            object={selected.data}
+            onUpdatePosition={
+              onUpdateObjectPosition
+                ? (x, y) => onUpdateObjectPosition({ kind: 'object', id: selected.data.id }, x, y)
+                : undefined
+            }
+            onUpdateSize={
+              onUpdateObjectSize
+                ? (w, h) => onUpdateObjectSize({ kind: 'object', id: selected.data.id }, w, h)
+                : undefined
+            }
+            disabled={isSaving}
+          />
+        </>
       )}
 
       {selected.kind === 'wall' && (
@@ -178,7 +199,10 @@ function SelectedBody({
 }
 
 function TypeHeader({ selected }: { selected: SelectedEntityResolved }) {
-  const label = KIND_LABELS[selected.kind];
+  // 개구부·객체는 generic 라벨 대신 실제 종류를 메인 라벨로 (사용자 친화).
+  let label = KIND_LABELS[selected.kind];
+  if (selected.kind === 'opening') label = openingTypeLabel(selected.data.opening_type);
+  else if (selected.kind === 'object') label = objectTypeLabel(selected.data.object_type);
   const subLabel = getEntitySubLabel(selected);
   return (
     <div className="flex items-center gap-3 rounded-lg border bg-background p-3">
@@ -215,12 +239,45 @@ function WallFields({ wall }: { wall: DraftWall }) {
 function OpeningFields({ opening }: { opening: DraftOpening }) {
   return (
     <Grid>
-      <Row label="종류" value={opening.opening_type} />
+      <Row label="종류" value={openingTypeLabel(opening.opening_type)} />
       <Row label="너비" value={fmtDecimal(opening.width_m, 'm')} />
       <Row label="높이" value={fmtDecimal(opening.height_m, 'm')} />
       <Row label="턱 높이" value={fmtDecimal(opening.sill_height_m, 'm')} />
       <Row label="신뢰도" value={fmtConfidence(opening.confidence)} />
     </Grid>
+  );
+}
+
+/** 객체 종류 변경 select. value 는 백엔드 enum 값, 표시는 한국어 라벨. */
+function ObjectTypeSelect({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  onChange?: (next: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="relative">
+      <select
+        value={value}
+        onChange={(e) => onChange?.(e.target.value)}
+        disabled={disabled || !onChange}
+        className="w-full appearance-none rounded-md border bg-background px-3 py-2.5 pr-9 text-sm text-foreground shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-70"
+      >
+        {/* 옵션에 없는 현재값(AI 가 낸 미상 종류)도 유지 */}
+        {value && !OBJECT_TYPE_OPTIONS.includes(value) && (
+          <option value={value}>{objectTypeLabel(value)}</option>
+        )}
+        {OBJECT_TYPE_OPTIONS.map((t) => (
+          <option key={t} value={t}>
+            {objectTypeLabel(t)}
+          </option>
+        ))}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+    </div>
   );
 }
 
@@ -310,10 +367,12 @@ function NumberInputBound({
   onCommit?: (next: number) => void;
 }) {
   const [draft, setDraft] = useState<string>(value != null ? value.toFixed(2) : '');
-
-  useEffect(() => {
+  // 외부 value 가 바뀌면 draft 동기화 — useEffect 대신 render-time 비교 (cascading render 회피).
+  const [prevValue, setPrevValue] = useState(value);
+  if (prevValue !== value) {
+    setPrevValue(value);
     setDraft(value != null ? value.toFixed(2) : '');
-  }, [value]);
+  }
 
   const commit = () => {
     const n = Number(draft);
@@ -632,9 +691,10 @@ function getEntitySubLabel(selected: SelectedEntityResolved): string | null {
       return selected.data.wall_role || null;
     case 'room':
       return selected.data.room_type || null;
+    // 개구부·객체는 메인 라벨이 이미 종류('문'/'창문'/'가구'…) 라 sub 태그 생략.
     case 'opening':
-      return selected.data.opening_type;
+      return null;
     case 'object':
-      return selected.data.object_type;
+      return null;
   }
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   DraftEntityKind,
   DraftObject,
@@ -100,8 +100,211 @@ type CreatingState =
 /** 폴리곤 닫기 임계값 (미터). 시작점 근처 클릭으로 인식. */
 const POLYGON_CLOSE_THRESHOLD_M = 0.4;
 
+/** 끝점 스냅 반경 (미터). 이 안에 기존 끝점이 있으면 딱 붙음. */
+const SNAP_RADIUS_M = 0.25;
+/** 수평/수직 스냅 허용 오차 (미터). 그리는 선이 거의 수평/수직이면 정확히 맞춤. */
+const AXIS_SNAP_TOLERANCE_M = 0.2;
+
 function distance(a: Coord, b: Coord): number {
   return Math.hypot(a[0] - b[0], a[1] - b[1]);
+}
+
+// ============================================
+// 스냅 (벽 잇기 보조)
+// ============================================
+// 스냅 타겟은 "벽" 으로 한정한다. 창문/문(opening) 끝점에는 안 붙도록 —
+// 벽을 이으려는데 자꾸 가까운 창문에 붙는 문제 방지. 벽은 끝점뿐 아니라
+// 선분 위 어디든 붙는다 (벽 중간에 다른 벽/개구부를 잇는 경우).
+
+/** draft 의 모든 벽 끝점을 스냅 anchor 로 수집. exclude 한 벽은 제외. */
+function collectWallAnchors(
+  draft: SceneDraft,
+  excludeWallId?: string | null,
+): Coord[] {
+  const anchors: Coord[] = [];
+  for (const wall of draft.walls) {
+    if (excludeWallId && wall.id === excludeWallId) continue;
+    const g = parseGeometry(wall.centerline_geom);
+    if (g?.type === 'LineString') for (const c of g.coordinates) anchors.push(c);
+  }
+  return anchors;
+}
+
+/** pt 에서 radius 이내 가장 가까운 anchor. 없으면 null. */
+function nearestAnchor(pt: Coord, anchors: Coord[], radius: number): Coord | null {
+  let best: Coord | null = null;
+  let bestD = radius;
+  for (const a of anchors) {
+    const d = Math.hypot(a[0] - pt[0], a[1] - pt[1]);
+    if (d < bestD) {
+      bestD = d;
+      best = a;
+    }
+  }
+  return best;
+}
+
+/** from 기준으로 to 가 거의 수평/수직이면 정확히 맞춘 좌표 반환. */
+function axisSnap(from: Coord, to: Coord, tol: number): Coord {
+  const dx = to[0] - from[0];
+  const dy = to[1] - from[1];
+  if (Math.abs(dy) < tol && Math.abs(dx) >= Math.abs(dy)) return [to[0], from[1]];
+  if (Math.abs(dx) < tol && Math.abs(dy) > Math.abs(dx)) return [from[0], to[1]];
+  return to;
+}
+
+interface SnapResult {
+  point: Coord;
+  snapped: boolean;
+}
+
+/**
+ * 벽 우선 스냅: 벽 끝점(1순위) → 벽 선분 위 투영(2순위) → 축 스냅(3순위).
+ * opening(창문/문) 에는 절대 안 붙는다.
+ */
+function snapToWall(
+  raw: Coord,
+  draft: SceneDraft,
+  wallAnchors: Coord[],
+  axisFrom?: Coord | null,
+  excludeWallId?: string | null,
+): SnapResult {
+  // 1) 벽 끝점
+  const anchor = nearestAnchor(raw, wallAnchors, SNAP_RADIUS_M);
+  if (anchor) return { point: [anchor[0], anchor[1]], snapped: true };
+  // 2) 벽 선분 위 (끝점이 아니어도 벽 라인에 붙음)
+  const proj = nearestWallProjection(raw, draft, SNAP_RADIUS_M, excludeWallId);
+  if (proj) return { point: proj, snapped: true };
+  // 3) 축 스냅 (그리는 중일 때만)
+  if (axisFrom) {
+    const axed = axisSnap(axisFrom, raw, AXIS_SNAP_TOLERANCE_M);
+    if (axed[0] !== raw[0] || axed[1] !== raw[1]) return { point: axed, snapped: true };
+  }
+  return { point: raw, snapped: false };
+}
+
+/** 선택된 엔티티의 vertexIndex 번째 꼭짓점 좌표 (스냅 기준점 계산용). */
+function getEntityVertex(
+  draft: SceneDraft,
+  ref: SelectedEntityRef,
+  vertexIndex: number,
+): Coord | null {
+  if (ref.kind === 'wall') {
+    const g = parseGeometry(draft.walls.find((w) => w.id === ref.id)?.centerline_geom);
+    return g?.type === 'LineString' ? g.coordinates[vertexIndex] ?? null : null;
+  }
+  if (ref.kind === 'opening') {
+    const g = parseGeometry(draft.openings.find((o) => o.id === ref.id)?.line_geom);
+    return g?.type === 'LineString' ? g.coordinates[vertexIndex] ?? null : null;
+  }
+  if (ref.kind === 'room') {
+    const g = parseGeometry(draft.rooms.find((r) => r.id === ref.id)?.polygon_geom);
+    return g?.type === 'Polygon' ? g.coordinates[0]?.[vertexIndex] ?? null : null;
+  }
+  return null;
+}
+
+/** 엔티티의 모든 "기준점" — shape 드래그 스냅 시 어떤 점이든 anchor 에 붙도록. */
+function getEntityRefPoints(draft: SceneDraft, ref: SelectedEntityRef): Coord[] {
+  if (ref.kind === 'wall') {
+    const g = parseGeometry(draft.walls.find((w) => w.id === ref.id)?.centerline_geom);
+    return g?.type === 'LineString' ? g.coordinates : [];
+  }
+  if (ref.kind === 'opening') {
+    const g = parseGeometry(draft.openings.find((o) => o.id === ref.id)?.line_geom);
+    return g?.type === 'LineString' ? g.coordinates : [];
+  }
+  if (ref.kind === 'room') {
+    const g = parseGeometry(draft.rooms.find((r) => r.id === ref.id)?.polygon_geom);
+    return g?.type === 'Polygon' ? g.coordinates[0] ?? [] : [];
+  }
+  // object — Point 하나
+  const g = parseGeometry(draft.objects.find((o) => o.id === ref.id)?.point_geom);
+  return g?.type === 'Point' ? [g.coordinates] : [];
+}
+
+/** 점 p 를 선분 a-b 에 수직투영한 좌표. */
+function projectOnSegment(p: Coord, a: Coord, b: Coord): Coord {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-9) return [a[0], a[1]];
+  let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  return [a[0] + t * dx, a[1] + t * dy];
+}
+
+/** pt 에서 radius 이내, 가장 가까운 wall 선분 위의 점. excludeWallId 는 제외. */
+function nearestWallProjection(
+  pt: Coord,
+  draft: SceneDraft,
+  radius: number,
+  excludeWallId?: string | null,
+): Coord | null {
+  let best: Coord | null = null;
+  let bestD = radius;
+  for (const wall of draft.walls) {
+    if (excludeWallId && wall.id === excludeWallId) continue;
+    const g = parseGeometry(wall.centerline_geom);
+    if (g?.type !== 'LineString') continue;
+    for (let i = 0; i + 1 < g.coordinates.length; i++) {
+      const proj = projectOnSegment(pt, g.coordinates[i], g.coordinates[i + 1]);
+      const d = Math.hypot(proj[0] - pt[0], proj[1] - pt[1]);
+      if (d < bestD) {
+        bestD = d;
+        best = proj;
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * shape 드래그(엔티티 통째 이동) 스냅 delta 계산.
+ * 모든 기준점에 대해 벽 끝점(1순위) / 벽 선분 위(2순위) 스냅을 시도.
+ * opening 끝점에는 안 붙는다 — 벽에만.
+ */
+function computeShapeSnapDelta(
+  draft: SceneDraft,
+  ref: SelectedEntityRef,
+  rawDelta: Coord,
+  wallAnchors: Coord[],
+): { delta: Coord; snapPoint: Coord | null } {
+  const pts = getEntityRefPoints(draft, ref);
+  const excludeWallId = ref.kind === 'wall' ? ref.id : null;
+  let best: { from: Coord; to: Coord } | null = null;
+  let bestD = SNAP_RADIUS_M;
+
+  for (const pt of pts) {
+    const moved: Coord = [pt[0] + rawDelta[0], pt[1] + rawDelta[1]];
+    // 1순위: 벽 끝점
+    const anchor = nearestAnchor(moved, wallAnchors, SNAP_RADIUS_M);
+    if (anchor) {
+      const d = Math.hypot(anchor[0] - moved[0], anchor[1] - moved[1]);
+      if (d < bestD) {
+        bestD = d;
+        best = { from: pt, to: [anchor[0], anchor[1]] };
+      }
+      continue;
+    }
+    // 2순위: 벽 선분 위 투영 (객체/개구부를 벽에 딱 붙이기)
+    const proj = nearestWallProjection(moved, draft, SNAP_RADIUS_M, excludeWallId);
+    if (proj) {
+      const d = Math.hypot(proj[0] - moved[0], proj[1] - moved[1]);
+      if (d < bestD) {
+        bestD = d;
+        best = { from: pt, to: proj };
+      }
+    }
+  }
+
+  if (best) {
+    return {
+      delta: [best.to[0] - best.from[0], best.to[1] - best.from[1]],
+      snapPoint: best.to,
+    };
+  }
+  return { delta: rawDelta, snapPoint: null };
 }
 
 function polygonCentroid(points: Coord[]): Coord {
@@ -156,6 +359,18 @@ export function DraftSceneCanvas({
   const [drag, setDrag] = useState<DragState | null>(null);
   const [creating, setCreating] = useState<CreatingState>(null);
   const [cursorPos, setCursorPos] = useState<Coord | null>(null);
+  // 스냅 발생 시 표시할 위치 (초록 링). 스냅 안 되면 null.
+  const [snapIndicator, setSnapIndicator] = useState<Coord | null>(null);
+
+  // 스냅 anchor = 벽 끝점만. 드래그/선택 중인 벽은 자기 자신에 안 붙도록 제외.
+  const wallAnchors = useMemo(
+    () =>
+      collectWallAnchors(
+        draft,
+        selectedRef?.kind === 'wall' ? selectedRef.id : null,
+      ),
+    [draft, selectedRef],
+  );
 
   // 도구 변화에 따른 임시 생성 상태 리셋 (props 변화 시 state 조정 패턴).
   // useEffect 대신 render 중에 비교 → setState 하면 cascading render 없이 즉시 리셋.
@@ -164,6 +379,7 @@ export function DraftSceneCanvas({
     setPrevTool(tool);
     setCreating(null);
     setCursorPos(null);
+    setSnapIndicator(null);
   }
 
   const isCreationMode =
@@ -175,7 +391,10 @@ export function DraftSceneCanvas({
   // Escape 키로 진행 중 생성 취소
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setCreating(null);
+      if (e.key === 'Escape') {
+        setCreating(null);
+        setSnapIndicator(null);
+      }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
@@ -234,14 +453,58 @@ export function DraftSceneCanvas({
   };
 
   const handleSvgPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
-    const pt = getSvgPoint(e);
-    if (!pt) return;
-    // 생성 모드 / 벽 그리기 preview 용으로 항상 cursor 추적
-    if (isCreationMode) setCursorPos(pt);
-    if (!drag) return;
-    setDrag((prev) =>
-      prev ? { ...prev, delta: [pt[0] - prev.startSvg[0], pt[1] - prev.startSvg[1]] } : null,
-    );
+    const raw = getSvgPoint(e);
+    if (!raw) return;
+
+    // ─ 생성 모드: cursor 를 벽에 스냅해서 preview 가 딱 붙도록 ─
+    if (isCreationMode) {
+      // 벽/문창 그리는 중이면 첫 점 기준 수평/수직 스냅도 적용
+      const axisFrom =
+        creating && (creating.kind === 'wall' || creating.kind === 'opening')
+          ? creating.firstPoint
+          : null;
+      const res = snapToWall(raw, draft, wallAnchors, axisFrom);
+      setCursorPos(res.point);
+      setSnapIndicator(res.snapped ? res.point : null);
+    }
+
+    if (!drag) {
+      if (!isCreationMode) setSnapIndicator(null);
+      return;
+    }
+
+    // ─ vertex 드래그: 목표 꼭짓점을 벽에 스냅 → snapped delta 로 반영 ─
+    if (drag.mode === 'vertex') {
+      const orig = getEntityVertex(draft, drag.ref, drag.vertexIndex);
+      if (orig) {
+        const rawTarget: Coord = [
+          orig[0] + (raw[0] - drag.startSvg[0]),
+          orig[1] + (raw[1] - drag.startSvg[1]),
+        ];
+        const excludeWallId = drag.ref.kind === 'wall' ? drag.ref.id : null;
+        const res = snapToWall(rawTarget, draft, wallAnchors, null, excludeWallId);
+        setSnapIndicator(res.snapped ? res.point : null);
+        setDrag((prev) =>
+          prev
+            ? { ...prev, delta: [res.point[0] - orig[0], res.point[1] - orig[1]] }
+            : null,
+        );
+        return;
+      }
+    }
+
+    // ─ shape 드래그: 엔티티 통째 이동 — 기준점을 벽 끝점/선분에 스냅 ─
+    {
+      const rawDelta: Coord = [raw[0] - drag.startSvg[0], raw[1] - drag.startSvg[1]];
+      const { delta, snapPoint } = computeShapeSnapDelta(
+        draft,
+        drag.ref,
+        rawDelta,
+        wallAnchors,
+      );
+      setSnapIndicator(snapPoint);
+      setDrag((prev) => (prev ? { ...prev, delta } : null));
+    }
   };
 
   const handleSvgPointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
@@ -253,6 +516,7 @@ export function DraftSceneCanvas({
     }
     const captured = drag;
     setDrag(null);
+    setSnapIndicator(null);
 
     const [dx, dy] = captured.delta;
     if (Math.abs(dx) < DRAG_THRESHOLD_M && Math.abs(dy) < DRAG_THRESHOLD_M) return;
@@ -275,12 +539,15 @@ export function DraftSceneCanvas({
   const handleSvgPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     // ─ 벽 (2 클릭 LineString) ─
     if (tool === 'rect') {
-      const pt = getSvgPoint(e);
-      if (!pt) return;
+      const raw = getSvgPoint(e);
+      if (!raw) return;
       if (!creating || creating.kind !== 'wall') {
-        setCreating({ kind: 'wall', firstPoint: pt });
+        // 첫 점도 기존 벽에 스냅 (벽 잇기 시작점 정확히)
+        const start = snapToWall(raw, draft, wallAnchors).point;
+        setCreating({ kind: 'wall', firstPoint: start });
       } else {
         const start = creating.firstPoint;
+        const pt = snapToWall(raw, draft, wallAnchors, start).point;
         if (Math.abs(pt[0] - start[0]) > DRAG_THRESHOLD_M || Math.abs(pt[1] - start[1]) > DRAG_THRESHOLD_M) {
           onCreate?.('wall', {
             wall_role: 'inner',
@@ -289,18 +556,21 @@ export function DraftSceneCanvas({
           });
         }
         setCreating(null);
+        setSnapIndicator(null);
       }
       return;
     }
 
     // ─ 문/창 (2 클릭 LineString, opening_type=door 기본) ─
     if (tool === 'opening') {
-      const pt = getSvgPoint(e);
-      if (!pt) return;
+      const raw = getSvgPoint(e);
+      if (!raw) return;
       if (!creating || creating.kind !== 'opening') {
-        setCreating({ kind: 'opening', firstPoint: pt });
+        const start = snapToWall(raw, draft, wallAnchors).point;
+        setCreating({ kind: 'opening', firstPoint: start });
       } else {
         const start = creating.firstPoint;
+        const pt = snapToWall(raw, draft, wallAnchors, start).point;
         const width = distance(start, pt);
         if (width > DRAG_THRESHOLD_M) {
           onCreate?.('opening', {
@@ -312,6 +582,7 @@ export function DraftSceneCanvas({
           });
         }
         setCreating(null);
+        setSnapIndicator(null);
       }
       return;
     }
@@ -576,6 +847,27 @@ export function DraftSceneCanvas({
             pointerEvents="none"
           />
         )}
+
+        {/* 스냅 인디케이터 — 끝점/축에 딱 붙었을 때 초록 링 */}
+        {snapIndicator && (
+          <g pointerEvents="none">
+            <circle
+              cx={snapIndicator[0]}
+              cy={snapIndicator[1]}
+              r="0.28"
+              fill="none"
+              stroke="oklch(0.72 0.19 145)"
+              strokeWidth="2.5"
+              vectorEffect="non-scaling-stroke"
+            />
+            <circle
+              cx={snapIndicator[0]}
+              cy={snapIndicator[1]}
+              r="0.07"
+              fill="oklch(0.72 0.19 145)"
+            />
+          </g>
+        )}
       </svg>
 
       <ScaleHint draft={draft} bounds={vb} dragging={!!drag} />
@@ -595,12 +887,12 @@ function CreationHint({
   if (tool === 'rect') {
     text =
       creating?.kind === 'wall'
-        ? '두 번째 점을 클릭해 벽을 완성하세요. (Esc 취소)'
-        : '첫 번째 점을 클릭해 벽 그리기를 시작하세요.';
+        ? '두 번째 점을 클릭해 벽을 완성하세요. 기존 끝점·수평/수직에 자동으로 붙습니다. (Esc 취소)'
+        : '첫 번째 점을 클릭해 벽 그리기를 시작하세요. 기존 벽 끝점 근처면 딱 붙습니다.';
   } else if (tool === 'opening') {
     text =
       creating?.kind === 'opening'
-        ? '두 번째 점을 클릭해 문/창을 완성하세요. (Esc 취소)'
+        ? '두 번째 점을 클릭해 문/창을 완성하세요. 벽 끝점·수평/수직에 자동으로 붙습니다. (Esc 취소)'
         : '첫 번째 점을 클릭해 문/창 그리기를 시작하세요.';
   } else if (tool === 'polygon') {
     if (!creating || creating.kind !== 'polygon') {

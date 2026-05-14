@@ -301,6 +301,21 @@ export default function EditorPage() {
     runPatch('wall', selectedRef.id, { material_label: material });
   };
 
+  // 객체 종류 변경
+  const handleUpdateObjectType = (objectType: string) => {
+    if (!selectedRef || selectedRef.kind !== 'object') return;
+    const vars = {
+      kind: 'object' as const,
+      id: selectedRef.id,
+      body: { object_type: objectType },
+    };
+    if (isVersionEditing) {
+      patchVersionEntity.mutate(vars);
+    } else {
+      patchEntity.mutate(vars);
+    }
+  };
+
   // 90° 시계방향 회전 (벽 / 개구부 / 방). 객체는 의미 없음.
   const handleRotateSelected = () => {
     if (!editingScene || !selectedRef || selectedRef.kind === 'object') return;
@@ -398,7 +413,14 @@ export default function EditorPage() {
   const handleResetDraft = () => {
     const draftId = activeDraftSummary?.id ?? activeDraft?.id;
     if (!draftId) return;
-    removeDraft.mutate(draftId);
+    // 삭제 성공 후 편집/업로드 UI 상태도 초기화 — 다시 업로드 흐름이 깨끗하게 시작되도록.
+    removeDraft.mutate(draftId, {
+      onSuccess: () => {
+        setSelectedRef(null);
+        setPendingFileName(null);
+        setActiveJobId(null);
+      },
+    });
   };
 
   // 글로벌(헤더/PromotedCard) 업로드용 hidden input — CanvasArea 안 떠있을 때도 동작.
@@ -506,9 +528,9 @@ export default function EditorPage() {
               />
             )}
 
-            {showOverlay && (
-              <OverlayLayer>
-                {justPromoted ? (
+            {showOverlay &&
+              (justPromoted ? (
+                <OverlayLayer placement="center">
                   <PromotedCard
                     version={justPromoted}
                     versions={versions}
@@ -518,12 +540,17 @@ export default function EditorPage() {
                       openFilePicker();
                     }}
                   />
-                ) : isAnalyzing ? (
+                </OverlayLayer>
+              ) : isAnalyzing ? (
+                <OverlayLayer placement="center">
                   <BusyOverlay
                     title={analyzingTitle(jobPoll.job?.status)}
                     subtitle={analyzingSubtitle(jobPoll.job?.status)}
                   />
-                ) : activeDraft ? (
+                </OverlayLayer>
+              ) : activeDraft ? (
+                // 분석 완료 후엔 캔버스가 보여야 하므로 카드를 우측 상단 코너로.
+                <OverlayLayer placement="top-right">
                   <ReviewCard
                     draft={activeDraft}
                     nextVersionNo={nextVersionNo}
@@ -535,9 +562,13 @@ export default function EditorPage() {
                       readError(promote.error) ?? readError(removeDraft.error) ?? undefined
                     }
                   />
-                ) : activeDraftSummary ? (
+                </OverlayLayer>
+              ) : activeDraftSummary ? (
+                <OverlayLayer placement="center">
                   <BusyOverlay title="Draft 불러오는 중..." />
-                ) : showCurrentVersionCard && currentVersion ? (
+                </OverlayLayer>
+              ) : showCurrentVersionCard && currentVersion ? (
+                <OverlayLayer placement="center">
                   <PromotedCard
                     version={currentVersion}
                     versions={versions}
@@ -546,9 +577,8 @@ export default function EditorPage() {
                       openFilePicker();
                     }}
                   />
-                ) : null}
-              </OverlayLayer>
-            )}
+                </OverlayLayer>
+              ) : null)}
           </>
         ) : (
           <NoFloorScreen hasProject={!!projectId} />
@@ -557,6 +587,7 @@ export default function EditorPage() {
 
       <PropertiesPanel
         selected={resolvedSelected}
+        onUpdateObjectType={handleUpdateObjectType}
         onDelete={handleDeleteSelected}
         onRotate={handleRotateSelected}
         onUpdateMaterial={handleUpdateMaterial}
@@ -569,10 +600,33 @@ export default function EditorPage() {
   );
 }
 
-function OverlayLayer({ children }: { children: React.ReactNode }) {
+/**
+ * 캔버스 위 떠 있는 카드 컨테이너.
+ * - center: 로딩 / 확정 완료 — 화면 정중앙, 넓게.
+ * - top-right: 분석 결과 리뷰 — 우측 상단 코너, 좁게 (뒤의 도면이 보이도록).
+ */
+function OverlayLayer({
+  children,
+  placement = 'center',
+}: {
+  children: React.ReactNode;
+  placement?: 'center' | 'top-right';
+}) {
+  const isCorner = placement === 'top-right';
   return (
-    <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-10">
-      <div className="pointer-events-auto w-full max-w-xl">{children}</div>
+    <div
+      className={
+        'pointer-events-none absolute inset-0 flex ' +
+        (isCorner ? 'items-start justify-end p-3' : 'items-center justify-center p-10')
+      }
+    >
+      <div
+        className={
+          'pointer-events-auto ' + (isCorner ? 'w-auto max-w-sm' : 'w-full max-w-xl')
+        }
+      >
+        {children}
+      </div>
     </div>
   );
 }
