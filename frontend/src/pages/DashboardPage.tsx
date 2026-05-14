@@ -3,6 +3,7 @@ import {
   Activity,
   ChevronRight,
   ImageOff,
+  Loader2,
   Map,
   Radio,
   Smartphone,
@@ -12,7 +13,9 @@ import { Card } from '@/components/ui/Card';
 import { HelpFab } from '@/components/HelpFab';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/stores/app-store';
-import { useFloorVersions } from '@/hooks/use-scene-version';
+import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
+import { DraftSceneCanvas } from '@/features/editor/DraftSceneCanvas';
+import { versionToDraftShape } from '@/features/editor/version-as-draft';
 
 type Tone = 'blue' | 'purple' | 'green';
 
@@ -75,7 +78,12 @@ export default function DashboardPage() {
   const floorId = useAppStore((s) => s.selectedFloorId);
   const hasFloorSelected = !!projectId && !!floorId;
   const versionsQuery = useFloorVersions(floorId);
-  const hasConfirmedVersion = (versionsQuery.data?.length ?? 0) > 0;
+  const currentVersion =
+    versionsQuery.data?.find((v) => v.is_current) ?? versionsQuery.data?.[0] ?? null;
+  const versionDetailQuery = useSceneVersion(currentVersion?.id ?? null);
+  const versionAsDraft = versionDetailQuery.data
+    ? versionToDraftShape(versionDetailQuery.data)
+    : null;
 
   return (
     <div className="relative h-full overflow-auto p-6">
@@ -92,8 +100,27 @@ export default function DashboardPage() {
             <div className="h-120">
               {!hasFloorSelected ? (
                 <FloorEmptyState hasProject={!!projectId} />
-              ) : !hasConfirmedVersion ? (
+              ) : !currentVersion ? (
                 <FloorNotConfirmedState />
+              ) : versionDetailQuery.isLoading ? (
+                <FloorLoadingState />
+              ) : versionAsDraft ? (
+                <div className="relative flex h-full overflow-hidden rounded-md border bg-background">
+                  <div className="pointer-events-none flex-1">
+                    <DraftSceneCanvas
+                      draft={versionAsDraft}
+                      selectedRef={null}
+                      onSelect={() => {}}
+                      onDragEnd={() => {}}
+                      tool="select"
+                      onCreate={() => {}}
+                    />
+                  </div>
+                  <div className="pointer-events-none absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-md bg-card/90 px-2.5 py-1 text-[11px] font-medium shadow-sm backdrop-blur">
+                    <Map className="h-3 w-3 text-primary" />
+                    버전 #{currentVersion.version_no} · 미리보기
+                  </div>
+                </div>
               ) : (
                 <FloorConfirmedState />
               )}
@@ -176,6 +203,15 @@ function FloorEmptyState({ hasProject }: { hasProject: boolean }) {
       <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
         상단 셀렉터에서 작업할 도면(층)을 선택하면 현재 작업 중인 도면 미리보기가 표시됩니다.
       </p>
+    </div>
+  );
+}
+
+function FloorLoadingState() {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-2 rounded-md border border-dashed bg-muted/20 p-8 text-center">
+      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      <p className="text-xs text-muted-foreground">도면을 불러오는 중...</p>
     </div>
   );
 }

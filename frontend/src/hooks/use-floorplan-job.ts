@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { floorplanJobApi } from '@/api/floorplan-job';
 import type { UUID } from '@/types/common';
-import type { Job } from '@/types/job';
+import { isJobFailed, isJobSucceeded, isJobTerminal, type Job } from '@/types/job';
 import { toast } from '@/stores/toast-store';
 
 const POLL_INTERVAL_MS = 3_000;
@@ -26,7 +26,7 @@ export function useFloorplanJob(jobId: UUID | null) {
     enabled: !!jobId,
     refetchInterval: (q) => {
       const status = q.state.data?.status;
-      if (status === 'succeeded' || status === 'failed') return false;
+      if (isJobTerminal(status)) return false;
       return POLL_INTERVAL_MS;
     },
     refetchIntervalInBackground: false,
@@ -38,11 +38,11 @@ export function useFloorplanJob(jobId: UUID | null) {
     if (!data || !jobId) return;
     if (settledRef.current === jobId) return;
 
-    if (data.status === 'succeeded') {
+    if (isJobSucceeded(data.status)) {
       settledRef.current = jobId;
       qc.invalidateQueries({ queryKey: ['scene-drafts'] });
       toast.success('도면 분석 완료', '결과를 확인하고 확정해주세요.');
-    } else if (data.status === 'failed') {
+    } else if (isJobFailed(data.status)) {
       settledRef.current = jobId;
       toast.error('도면 분석 실패', data.error_message ?? '잠시 후 다시 시도해주세요.');
     }
@@ -54,19 +54,20 @@ export function useFloorplanJob(jobId: UUID | null) {
   }, [jobId]);
 
   const job: Job | null = query.data ?? null;
-  const isPolling = !!jobId && job?.status !== 'succeeded' && job?.status !== 'failed';
-  const sceneDraftId =
-    job?.status === 'succeeded'
-      ? (job.result_json?.scene_draft_id as string | undefined) ?? null
-      : null;
+  const isSucceeded = isJobSucceeded(job?.status);
+  const isFailed = isJobFailed(job?.status);
+  const isPolling = !!jobId && !isJobTerminal(job?.status);
+  const sceneDraftId = isSucceeded
+    ? (job?.result_json?.scene_draft_id as string | undefined) ?? null
+    : null;
 
   return {
     job,
     isPolling,
     isLoading: query.isLoading,
-    isSucceeded: job?.status === 'succeeded',
-    isFailed: job?.status === 'failed',
+    isSucceeded,
+    isFailed,
     sceneDraftId,
-    errorMessage: job?.status === 'failed' ? job.error_message : null,
+    errorMessage: isFailed ? job?.error_message ?? null : null,
   };
 }

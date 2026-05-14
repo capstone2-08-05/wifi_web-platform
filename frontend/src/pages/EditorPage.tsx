@@ -10,12 +10,20 @@ import {
   useSceneDraft,
 } from '@/hooks/use-scene-draft';
 import { useFloorplanJob } from '@/hooks/use-floorplan-job';
-import { useFloorVersions, usePromoteDraft } from '@/hooks/use-scene-version';
+import {
+  useFloorVersions,
+  usePromoteDraft,
+  useSceneVersion,
+} from '@/hooks/use-scene-version';
 import {
   useCreateDraftEntity,
   useDeleteDraftEntity,
   usePatchDraftEntity,
 } from '@/hooks/use-draft-mutations';
+import {
+  useDeleteVersionEntity,
+  usePatchVersionEntity,
+} from '@/hooks/use-version-mutations';
 import { CanvasToolbar } from '@/features/editor/CanvasToolbar';
 import { CanvasArea } from '@/features/editor/CanvasArea';
 import { DraftSceneCanvas } from '@/features/editor/DraftSceneCanvas';
@@ -27,9 +35,12 @@ import {
   rotateGeometry90Cw,
   type GeoJsonGeometry,
 } from '@/features/editor/geometry-utils';
+import { versionToDraftShape } from '@/features/editor/version-as-draft';
+import { toast } from '@/stores/toast-store';
 import type { DraftEntityKind } from '@/types/scene';
 import type { HttpError } from '@/api/client';
 import type {
+  DraftObject,
   SceneDraft,
   SceneVersion,
   SelectedEntityRef,
@@ -56,6 +67,8 @@ export default function EditorPage() {
   const patchEntity = usePatchDraftEntity();
   const deleteEntity = useDeleteDraftEntity();
   const createEntity = useCreateDraftEntity();
+  const patchVersionEntity = usePatchVersionEntity();
+  const deleteVersionEntity = useDeleteVersionEntity();
 
   const [justPromoted, setJustPromoted] = useState<SceneVersion | null>(null);
   const [pendingFileName, setPendingFileName] = useState<string | null>(null);
@@ -67,33 +80,86 @@ export default function EditorPage() {
   const jobPoll = useFloorplanJob(activeJobId);
 
   // list 응답은 summary (자식 배열 없음). 상세는 별도 GET 으로 가져와야 함.
+  // 백엔드가 promote 후에도 draft 상태로 응답하는 케이스 회피:
+  // 이미 어떤 scene_version 의 source_draft_id 로 사용된 draft 는 제외.
+  const promotedDraftIds = useMemo(
+    () =>
+      new Set((versionsQuery.data ?? []).map((v) => v.source_draft_id).filter(Boolean)),
+    [versionsQuery.data],
+  );
   const activeDraftSummary =
-    draftsQuery.data?.items.find((d) => d.status === 'draft') ?? null;
+    draftsQuery.data?.items.find(
+      (d) => d.status === 'draft' && !promotedDraftIds.has(d.id),
+    ) ?? null;
   const activeDraftQuery = useSceneDraft(activeDraftSummary?.id ?? null);
   const activeDraft = activeDraftQuery.data ?? null;
 
-  // selectedRef → activeDraft 의 실제 엔티티로 해소
+  // 현재 활성 버전 (없으면 가장 최근 버전) — draft 가 없을 때 캔버스에 표시.
+  const versions = versionsQuery.data ?? [];
+  const currentVersion =
+    versions.find((v) => v.is_current) ?? versions[0] ?? null;
+  // 활성 draft 가 없으면 현재 버전의 도형 detail 을 가져와 캔버스에 노출.
+  const versionDetailQuery = useSceneVersion(
+    !activeDraftSummary && currentVersion ? currentVersion.id : null,
+  );
+  const versionAsDraft: SceneDraft | null =
+    !activeDraftSummary && versionDetailQuery.data
+      ? versionToDraftShape(versionDetailQuery.data)
+      : null;
+
+  // 객체 편집(이동/리사이즈) 의 보류 변경 — 저장 버튼을 누를 때까지 백엔드 PATCH 안 함.
+  // 캔버스 드래그/모서리 핸들 / PropertiesPanel 입력 모두 여기로 모이고, 캔버스 시각에 즉시 반영됨.
+  const [pendingObjectEdit, setPendingObjectEdit] = useState<{
+    id: string;
+    x?: number;
+    y?: number;
+    widthM?: number;
+    heightM?: number;
+  } | null>(null);
+
+  // 선택 객체가 바뀌면 보류 변경 폐기.
+  useEffect(() => {
+    if (selectedRef?.kind !== 'object' || selectedRef.id !== pendingObjectEdit?.id) {
+      if (pendingObjectEdit) setPendingObjectEdit(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRef?.kind, selectedRef?.id]);
+
+  // selectedRef → 현재 편집 중인 SceneDraft (draft or version-as-draft) 에서 해소.
+  const baseScene: SceneDraft | null = activeDraft ?? versionAsDraft;
+  // 보류 편집을 합쳐 캔버스/속성 패널에 반영되는 scene.
+  const editingScene: SceneDraft | null = useMemo(() => {
+    if (!baseScene) return null;
+    if (!pendingObjectEdit) return baseScene;
+    return {
+      ...baseScene,
+      objects: baseScene.objects.map((o) =>
+        o.id === pendingObjectEdit.id ? applyPendingToObject(o, pendingObjectEdit) : o,
+      ),
+    };
+  }, [baseScene, pendingObjectEdit]);
   const resolvedSelected = useMemo<SelectedEntityResolved | null>(() => {
-    if (!activeDraft || !selectedRef) return null;
+    const scene = editingScene;
+    if (!scene || !selectedRef) return null;
     switch (selectedRef.kind) {
       case 'wall': {
-        const data = activeDraft.walls.find((w) => w.id === selectedRef.id);
+        const data = scene.walls.find((w) => w.id === selectedRef.id);
         return data ? { kind: 'wall', data } : null;
       }
       case 'room': {
-        const data = activeDraft.rooms.find((r) => r.id === selectedRef.id);
+        const data = scene.rooms.find((r) => r.id === selectedRef.id);
         return data ? { kind: 'room', data } : null;
       }
       case 'opening': {
-        const data = activeDraft.openings.find((o) => o.id === selectedRef.id);
+        const data = scene.openings.find((o) => o.id === selectedRef.id);
         return data ? { kind: 'opening', data } : null;
       }
       case 'object': {
-        const data = activeDraft.objects.find((o) => o.id === selectedRef.id);
+        const data = scene.objects.find((o) => o.id === selectedRef.id);
         return data ? { kind: 'object', data } : null;
       }
     }
-  }, [activeDraft, selectedRef]);
+  }, [editingScene, selectedRef]);
 
   // draft 가 바뀌면 (재분석 / 삭제 / promote) 선택 해제.
   // props 변화에 따른 state 조정 — render 중 비교 → setState 로 cascading render 회피.
@@ -104,54 +170,150 @@ export default function EditorPage() {
     setSelectedRef(null);
   }
 
+  // 현재 편집 모드: draft (활성 draft 존재) 또는 version (확정된 버전만 존재).
+  const isVersionEditing = !activeDraft;
+
   // 드래그 (shape 평행이동 / vertex 개별 이동) 종료 시 새 geometry 로 PATCH.
-  // canvas 가 이미 새 GeoJSON 까지 만들어 넘겨주므로, 여기선 적절한 *_geom 필드로 매핑만.
+  // 객체는 보류 편집 → 저장 버튼으로 확정. 그 외 (벽/방/개구부) 는 즉시 PATCH.
   const handleDragEnd = (
     ref: SelectedEntityRef,
     geometry: GeoJsonGeometry,
   ) => {
+    if (ref.kind === 'object' && geometry.type === 'Point') {
+      const [x, y] = geometry.coordinates;
+      setPendingObjectEdit((prev) => ({
+        ...(prev?.id === ref.id ? prev : {}),
+        id: ref.id,
+        x,
+        y,
+      }));
+      return;
+    }
     const body = geomFieldFor(ref.kind, geometry);
     if (!body) return;
-    patchEntity.mutate({ kind: ref.kind, id: ref.id, body, silent: true });
+    if (isVersionEditing) {
+      patchVersionEntity.mutate({ kind: ref.kind, id: ref.id, body, silent: true });
+    } else {
+      patchEntity.mutate({ kind: ref.kind, id: ref.id, body, silent: true });
+    }
   };
 
   // 선택된 엔티티 삭제
   const handleDeleteSelected = () => {
     if (!selectedRef) return;
-    deleteEntity.mutate(
-      { kind: selectedRef.kind, id: selectedRef.id },
-      { onSuccess: () => setSelectedRef(null) },
-    );
+    const onSuccess = () => setSelectedRef(null);
+    if (isVersionEditing) {
+      deleteVersionEntity.mutate(
+        { kind: selectedRef.kind, id: selectedRef.id },
+        { onSuccess },
+      );
+    } else {
+      deleteEntity.mutate({ kind: selectedRef.kind, id: selectedRef.id }, { onSuccess });
+    }
   };
 
   // 벽 재질 변경
   const handleUpdateMaterial = (material: string) => {
     if (!selectedRef || selectedRef.kind !== 'wall') return;
-    patchEntity.mutate({
-      kind: 'wall',
-      id: selectedRef.id,
-      body: { material_label: material },
-    });
+    const vars = { kind: 'wall' as const, id: selectedRef.id, body: { material_label: material } };
+    if (isVersionEditing) {
+      patchVersionEntity.mutate(vars);
+    } else {
+      patchEntity.mutate(vars);
+    }
   };
 
   // 90° 시계방향 회전 (벽 / 개구부 / 방). 객체는 의미 없음.
   const handleRotateSelected = () => {
-    if (!activeDraft || !selectedRef || selectedRef.kind === 'object') return;
-    const g = readGeometryOf(selectedRef, activeDraft);
+    if (!editingScene || !selectedRef || selectedRef.kind === 'object') return;
+    const g = readGeometryOf(selectedRef, editingScene);
     if (!g) return;
     const rotated = rotateGeometry90Cw(g);
     const body = geomFieldFor(selectedRef.kind, rotated);
     if (!body) return;
-    patchEntity.mutate({ kind: selectedRef.kind, id: selectedRef.id, body });
+    const vars = { kind: selectedRef.kind, id: selectedRef.id, body };
+    if (isVersionEditing) {
+      patchVersionEntity.mutate(vars);
+    } else {
+      patchEntity.mutate(vars);
+    }
   };
 
-  // 좌측 도구바로 새 도형 추가
+  // 좌측 도구바로 새 도형 추가 — Draft 모드에서만 가능 (§8 명세에 POST 없음).
   const handleCreate = (kind: DraftEntityKind, body: Record<string, unknown>) => {
-    if (!activeDraft) return;
+    if (!activeDraft) {
+      toast.info('확정된 버전에는 새 도형을 추가할 수 없습니다', '새 도면 업로드 후 시도해주세요.');
+      return;
+    }
     createEntity.mutate({ draftId: activeDraft.id, kind, body });
   };
 
-  const versions = versionsQuery.data ?? [];
+  // 객체 박스 리사이즈/위치 변경 → 보류 편집에 저장 (저장 버튼 누를 때까지 PATCH 안 함).
+  const handleResizeObject = (
+    ref: SelectedEntityRef,
+    widthM: number,
+    heightM: number,
+  ) => {
+    if (ref.kind !== 'object') return;
+    setPendingObjectEdit((prev) => ({
+      ...(prev?.id === ref.id ? prev : {}),
+      id: ref.id,
+      widthM,
+      heightM,
+    }));
+  };
+
+  const handleUpdateObjectPosition = (
+    ref: SelectedEntityRef,
+    x: number,
+    y: number,
+  ) => {
+    if (ref.kind !== 'object') return;
+    setPendingObjectEdit((prev) => ({
+      ...(prev?.id === ref.id ? prev : {}),
+      id: ref.id,
+      x,
+      y,
+    }));
+  };
+
+  // 보류 변경 저장 — PATCH 실행 후 보류 상태 초기화.
+  const handleSavePendingObject = () => {
+    if (!pendingObjectEdit || !baseScene) return;
+    const obj = baseScene.objects.find((o) => o.id === pendingObjectEdit.id);
+    if (!obj) {
+      setPendingObjectEdit(null);
+      return;
+    }
+    const body: Record<string, unknown> = {};
+    if (pendingObjectEdit.x != null || pendingObjectEdit.y != null) {
+      const cur = extractPointCoords(obj.point_geom) ?? [0, 0];
+      body.point_geom = {
+        type: 'Point',
+        coordinates: [pendingObjectEdit.x ?? cur[0], pendingObjectEdit.y ?? cur[1]],
+      };
+    }
+    if (pendingObjectEdit.widthM != null || pendingObjectEdit.heightM != null) {
+      body.metadata_json = {
+        ...(obj.metadata_json ?? {}),
+        ...(pendingObjectEdit.widthM != null ? { width_m: pendingObjectEdit.widthM } : {}),
+        ...(pendingObjectEdit.heightM != null ? { height_m: pendingObjectEdit.heightM } : {}),
+      };
+    }
+    if (Object.keys(body).length === 0) {
+      setPendingObjectEdit(null);
+      return;
+    }
+    const vars = { kind: 'object' as const, id: pendingObjectEdit.id, body };
+    if (isVersionEditing) {
+      patchVersionEntity.mutate(vars, { onSettled: () => setPendingObjectEdit(null) });
+    } else {
+      patchEntity.mutate(vars, { onSettled: () => setPendingObjectEdit(null) });
+    }
+  };
+
+  const handleCancelPendingObject = () => setPendingObjectEdit(null);
+
   const nextVersionNo =
     versions.length > 0 ? Math.max(...versions.map((v) => v.version_no)) + 1 : 1;
 
@@ -200,7 +362,26 @@ export default function EditorPage() {
     removeDraft.mutate(draftId);
   };
 
-  const openFilePicker = () => fileInputRef.current?.click();
+  // 글로벌(헤더/PromotedCard) 업로드용 hidden input — CanvasArea 안 떠있을 때도 동작.
+  const globalFileInputRef = useRef<HTMLInputElement>(null);
+  const openFilePicker = () => {
+    // CanvasArea 떠있으면 그쪽 입력으로 (real_width_m 같이 입력), 아니면 글로벌(기본 10m).
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    } else {
+      globalFileInputRef.current?.click();
+    }
+  };
+  const handleGlobalFilePick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    handleFile(f, 10);
+    toast.info(
+      '도면 분석 시작',
+      '실제 가로 길이는 10m 로 가정합니다. 더 정확한 값이 필요하면 분석 후 새로 업로드하세요.',
+    );
+  };
 
   // Wire global header buttons (도면 불러오기 / 도면 저장하기) to this page.
   // 불러오기: 층이 선택돼있고 분석이 안 도는 중이고, 아직 활성 draft 가 없을 때만.
@@ -220,11 +401,25 @@ export default function EditorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeDraftSummary?.id, nextVersionNo, canLoad, canSave]);
 
+  // draft 가 없고 확정된 버전만 있으면 PromotedCard 노출.
+  const showCurrentVersionCard =
+    !activeDraftSummary && !isAnalyzing && !justPromoted && !!currentVersion;
   const showOverlay =
-    !floorId || !!justPromoted || isAnalyzing || !!activeDraftSummary;
+    !floorId ||
+    !!justPromoted ||
+    isAnalyzing ||
+    !!activeDraftSummary ||
+    showCurrentVersionCard;
 
   return (
     <div className="flex h-full">
+      <input
+        ref={globalFileInputRef}
+        type="file"
+        accept="image/png,image/jpeg,application/pdf"
+        className="hidden"
+        onChange={handleGlobalFilePick}
+      />
       <CanvasToolbar
         tool={tool}
         onChangeTool={setTool}
@@ -234,12 +429,13 @@ export default function EditorPage() {
       <div className="relative flex flex-1 overflow-hidden">
         {floorId ? (
           <>
-            {activeDraft ? (
+            {editingScene ? (
               <DraftSceneCanvas
-                draft={activeDraft}
+                draft={editingScene}
                 selectedRef={selectedRef}
                 onSelect={setSelectedRef}
                 onDragEnd={handleDragEnd}
+                onResizeObject={handleResizeObject}
                 tool={tool}
                 onCreate={handleCreate}
               />
@@ -258,9 +454,11 @@ export default function EditorPage() {
                 {justPromoted ? (
                   <PromotedCard
                     version={justPromoted}
+                    versions={versions}
                     onReupload={() => {
                       setJustPromoted(null);
                       setPendingFileName(null);
+                      openFilePicker();
                     }}
                   />
                 ) : isAnalyzing ? (
@@ -282,6 +480,15 @@ export default function EditorPage() {
                   />
                 ) : activeDraftSummary ? (
                   <BusyOverlay title="Draft 불러오는 중..." />
+                ) : showCurrentVersionCard && currentVersion ? (
+                  <PromotedCard
+                    version={currentVersion}
+                    versions={versions}
+                    onReupload={() => {
+                      setPendingFileName(null);
+                      openFilePicker();
+                    }}
+                  />
                 ) : null}
               </OverlayLayer>
             )}
@@ -296,8 +503,15 @@ export default function EditorPage() {
         onDelete={handleDeleteSelected}
         onRotate={handleRotateSelected}
         onUpdateMaterial={handleUpdateMaterial}
-        isSaving={patchEntity.isPending}
-        isDeleting={deleteEntity.isPending}
+        onUpdateObjectPosition={handleUpdateObjectPosition}
+        onUpdateObjectSize={handleResizeObject}
+        hasPendingObjectEdit={
+          !!pendingObjectEdit && pendingObjectEdit.id === resolvedSelected?.data.id
+        }
+        onSavePendingObject={handleSavePendingObject}
+        onCancelPendingObject={handleCancelPendingObject}
+        isSaving={patchEntity.isPending || patchVersionEntity.isPending}
+        isDeleting={deleteEntity.isPending || deleteVersionEntity.isPending}
       />
     </div>
   );
@@ -392,6 +606,43 @@ function analyzingSubtitle(status: string | undefined): string {
   if (status === 'running')
     return '콜드 스타트는 최대 10분, 웜 상태에서는 수 초가 걸립니다.';
   return '잠시만 기다려주세요.';
+}
+
+function extractPointCoords(
+  geom: Record<string, unknown> | null | undefined,
+): [number, number] | null {
+  if (!geom) return null;
+  const coords = (geom as { coordinates?: unknown }).coordinates;
+  if (Array.isArray(coords) && coords.length >= 2) {
+    const x = Number(coords[0]);
+    const y = Number(coords[1]);
+    if (Number.isFinite(x) && Number.isFinite(y)) return [x, y];
+  }
+  return null;
+}
+
+/** 보류 편집(위치/크기)을 객체에 머지. 캔버스/속성 패널 시각 반영 전용. */
+function applyPendingToObject(
+  obj: DraftObject,
+  pending: { x?: number; y?: number; widthM?: number; heightM?: number },
+): DraftObject {
+  let pointGeom = obj.point_geom;
+  if (pending.x != null || pending.y != null) {
+    const cur = extractPointCoords(obj.point_geom) ?? [0, 0];
+    pointGeom = {
+      type: 'Point',
+      coordinates: [pending.x ?? cur[0], pending.y ?? cur[1]],
+    };
+  }
+  let metadata = obj.metadata_json ?? {};
+  if (pending.widthM != null || pending.heightM != null) {
+    metadata = {
+      ...metadata,
+      ...(pending.widthM != null ? { width_m: pending.widthM } : {}),
+      ...(pending.heightM != null ? { height_m: pending.heightM } : {}),
+    };
+  }
+  return { ...obj, point_geom: pointGeom, metadata_json: metadata };
 }
 
 function readError(err: unknown): string | null {
