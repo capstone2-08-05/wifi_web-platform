@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { NavLink, Outlet } from 'react-router-dom';
 import {
   LayoutGrid,
   Map,
@@ -8,11 +8,8 @@ import {
   Activity,
   Settings,
   Wifi,
-  FolderOpen,
-  Save,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useEditorStore } from '@/stores/editor-store';
 import { ProjectSelector } from '@/features/header/ProjectSelector';
 import { FloorSelector } from '@/features/header/FloorSelector';
 import { ProfileMenu } from '@/features/header/ProfileMenu';
@@ -27,9 +24,6 @@ const NAV = [
 ] as const;
 
 export function AppLayout() {
-  const location = useLocation();
-  const editorActions = useEditorStore((s) => s.actions);
-  const isEditor = location.pathname.startsWith('/editor');
   const [mobileConnectOpen, setMobileConnectOpen] = useState(false);
 
   return (
@@ -78,37 +72,10 @@ export function AppLayout() {
 
       <div className="flex flex-1 flex-col overflow-hidden">
         <header className="flex h-16 shrink-0 items-center justify-between border-b bg-background px-6">
-          <div className="flex items-center gap-2">
-            {isEditor ? (
-              <>
-                <button
-                  type="button"
-                  onClick={editorActions.onLoadFloorplan}
-                  disabled={!editorActions.onLoadFloorplan}
-                  title={!editorActions.onLoadFloorplan ? '층을 선택하거나 현재 작업을 마친 후 새 도면을 불러올 수 있습니다' : undefined}
-                  className="inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-sm font-medium text-foreground/80 shadow-sm transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-background"
-                >
-                  <FolderOpen className="h-4 w-4" />
-                  도면 불러오기
-                </button>
-                <button
-                  type="button"
-                  onClick={editorActions.onSaveFloorplan}
-                  disabled={!editorActions.onSaveFloorplan}
-                  title={!editorActions.onSaveFloorplan ? '저장할 분석 결과가 없습니다' : undefined}
-                  className="inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-sm font-medium text-foreground/80 shadow-sm transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-background"
-                >
-                  <Save className="h-4 w-4" />
-                  도면 저장하기
-                </button>
-              </>
-            ) : (
-              <div className="flex items-center gap-3">
-                <ProjectSelector />
-                <span className="text-muted-foreground/50">/</span>
-                <FloorSelector />
-              </div>
-            )}
+          <div className="flex items-center gap-3">
+            <ProjectSelector />
+            <span className="text-muted-foreground/50">/</span>
+            <FloorSelector />
           </div>
           <div className="flex items-center gap-2">
             <button

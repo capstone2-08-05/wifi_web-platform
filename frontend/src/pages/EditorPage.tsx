@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronRight, Loader2, Map as MapIcon } from 'lucide-react';
+import { ChevronRight, Loader2, Map as MapIcon, Undo2 } from 'lucide-react';
 import { useAppStore } from '@/stores/app-store';
 import { useEditorStore } from '@/stores/editor-store';
 import {
@@ -15,12 +15,18 @@ import {
   usePromoteDraft,
   useSceneVersion,
 } from '@/hooks/use-scene-version';
+import { useAsset, useFloorAssets } from '@/hooks/use-assets';
+import {
+  saveLocalFloorplanImage,
+  useLocalFloorplanImage,
+} from '@/hooks/use-local-floorplan-image';
 import {
   useCreateDraftEntity,
   useDeleteDraftEntity,
   usePatchDraftEntity,
 } from '@/hooks/use-draft-mutations';
 import {
+  useCreateVersionEntity,
   useDeleteVersionEntity,
   usePatchVersionEntity,
 } from '@/hooks/use-version-mutations';
@@ -40,7 +46,6 @@ import { toast } from '@/stores/toast-store';
 import type { DraftEntityKind } from '@/types/scene';
 import type { HttpError } from '@/api/client';
 import type {
-  DraftObject,
   SceneDraft,
   SceneVersion,
   SelectedEntityRef,
@@ -69,6 +74,7 @@ export default function EditorPage() {
   const createEntity = useCreateDraftEntity();
   const patchVersionEntity = usePatchVersionEntity();
   const deleteVersionEntity = useDeleteVersionEntity();
+  const createVersionEntity = useCreateVersionEntity();
 
   const [justPromoted, setJustPromoted] = useState<SceneVersion | null>(null);
   const [pendingFileName, setPendingFileName] = useState<string | null>(null);
@@ -107,37 +113,28 @@ export default function EditorPage() {
       ? versionToDraftShape(versionDetailQuery.data)
       : null;
 
-  // 객체 편집(이동/리사이즈) 의 보류 변경 — 저장 버튼을 누를 때까지 백엔드 PATCH 안 함.
-  // 캔버스 드래그/모서리 핸들 / PropertiesPanel 입력 모두 여기로 모이고, 캔버스 시각에 즉시 반영됨.
-  const [pendingObjectEdit, setPendingObjectEdit] = useState<{
-    id: string;
-    x?: number;
-    y?: number;
-    widthM?: number;
-    heightM?: number;
-  } | null>(null);
-
-  // 선택 객체가 바뀌면 보류 변경 폐기.
-  useEffect(() => {
-    if (selectedRef?.kind !== 'object' || selectedRef.id !== pendingObjectEdit?.id) {
-      if (pendingObjectEdit) setPendingObjectEdit(null);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedRef?.kind, selectedRef?.id]);
-
   // selectedRef → 현재 편집 중인 SceneDraft (draft or version-as-draft) 에서 해소.
   const baseScene: SceneDraft | null = activeDraft ?? versionAsDraft;
-  // 보류 편집을 합쳐 캔버스/속성 패널에 반영되는 scene.
-  const editingScene: SceneDraft | null = useMemo(() => {
-    if (!baseScene) return null;
-    if (!pendingObjectEdit) return baseScene;
-    return {
-      ...baseScene,
-      objects: baseScene.objects.map((o) =>
-        o.id === pendingObjectEdit.id ? applyPendingToObject(o, pendingObjectEdit) : o,
-      ),
-    };
-  }, [baseScene, pendingObjectEdit]);
+  // 원본 도면 이미지(asset) — 캔버스 배경에 연하게 깔기 위해 가져옴.
+  // 1순위: scene 의 source_asset_id (백엔드가 null 로 응답하는 경우 많음)
+  // 2순위: 층의 floorplan 자산 중 가장 최근 것 (fallback).
+  const sourceAssetId = baseScene?.source_asset_id ?? null;
+  const sourceAssetQuery = useAsset(sourceAssetId);
+  const floorAssetsQuery = useFloorAssets(floorId, 'floorplan');
+  const fallbackAsset = useMemo(() => {
+    const list = floorAssetsQuery.data ?? [];
+    if (list.length === 0) return null;
+    // created_at 내림차순 정렬 후 첫 항목.
+    return [...list].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+  }, [floorAssetsQuery.data]);
+  // 3순위: 사용자가 업로드한 파일을 base64 로 캐시해둔 로컬 이미지 (백엔드 미지원 우회).
+  const localImage = useLocalFloorplanImage(floorId);
+  const backgroundImageUrl =
+    sourceAssetQuery.data?.storage_url ??
+    fallbackAsset?.storage_url ??
+    localImage ??
+    null;
+  const editingScene: SceneDraft | null = baseScene;
   const resolvedSelected = useMemo<SelectedEntityResolved | null>(() => {
     const scene = editingScene;
     if (!scene || !selectedRef) return null;
@@ -173,29 +170,115 @@ export default function EditorPage() {
   // 현재 편집 모드: draft (활성 draft 존재) 또는 version (확정된 버전만 존재).
   const isVersionEditing = !activeDraft;
 
+  // ─ Undo 스택 ──────────────────────────────────────────────
+  // PATCH 직전에 변경 대상 필드의 "이전 값" 을 캡쳐해 둠. Ctrl+Z 로 마지막 변경 1건씩 되돌림.
+  // Delete / Create 는 §8 명세상 복원이 까다로워 일단 PATCH 만 추적.
+  type HistoryEntry = {
+    kind: DraftEntityKind;
+    id: string;
+    mode: 'draft' | 'version';
+    beforeBody: Record<string, unknown>;
+  };
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const HISTORY_MAX = 30;
+
+  /** 엔티티에서 body 키 목록에 해당하는 필드의 현재 값을 추출 (undo 용). */
+  const captureBefore = (
+    kind: DraftEntityKind,
+    id: string,
+    body: Record<string, unknown>,
+  ): Record<string, unknown> | null => {
+    if (!baseScene) return null;
+    const list =
+      kind === 'wall'
+        ? baseScene.walls
+        : kind === 'room'
+        ? baseScene.rooms
+        : kind === 'opening'
+        ? baseScene.openings
+        : baseScene.objects;
+    const entity = (list as Array<{ id: string }>).find((e) => e.id === id) as
+      | Record<string, unknown>
+      | undefined;
+    if (!entity) return null;
+    const before: Record<string, unknown> = {};
+    for (const key of Object.keys(body)) {
+      before[key] = entity[key] ?? null;
+    }
+    return before;
+  };
+
+  /** PATCH 실행 + history 에 이전 값 push. silent 옵션 같이 전달. */
+  const runPatch = (
+    kind: DraftEntityKind,
+    id: string,
+    body: Record<string, unknown>,
+    options?: { silent?: boolean; skipHistory?: boolean },
+  ) => {
+    if (!options?.skipHistory) {
+      const beforeBody = captureBefore(kind, id, body);
+      if (beforeBody) {
+        setHistory((h) => [
+          ...h.slice(-(HISTORY_MAX - 1)),
+          { kind, id, mode: isVersionEditing ? 'version' : 'draft', beforeBody },
+        ]);
+      }
+    }
+    const vars = { kind, id, body, silent: options?.silent };
+    if (isVersionEditing) patchVersionEntity.mutate(vars);
+    else patchEntity.mutate(vars);
+  };
+
+  /** Ctrl+Z — history pop. */
+  const undo = () => {
+    if (history.length === 0) {
+      toast.info('되돌릴 변경이 없습니다');
+      return;
+    }
+    const entry = history[history.length - 1];
+    setHistory((h) => h.slice(0, -1));
+    const vars = {
+      kind: entry.kind,
+      id: entry.id,
+      body: entry.beforeBody,
+      silent: true,
+    };
+    if (entry.mode === 'version') patchVersionEntity.mutate(vars);
+    else patchEntity.mutate(vars);
+    toast.info('변경을 되돌렸습니다');
+  };
+
+  const canUndo = history.length > 0;
+
+  // Ctrl+Z / Cmd+Z 키보드 단축키. 입력 필드에 포커스된 경우 브라우저 기본 동작 유지.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const isUndo = (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z';
+      if (!isUndo) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.getAttribute('contenteditable') === 'true'
+      ) {
+        return;
+      }
+      e.preventDefault();
+      undo();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [history, isVersionEditing]);
+
   // 드래그 (shape 평행이동 / vertex 개별 이동) 종료 시 새 geometry 로 PATCH.
-  // 객체는 보류 편집 → 저장 버튼으로 확정. 그 외 (벽/방/개구부) 는 즉시 PATCH.
   const handleDragEnd = (
     ref: SelectedEntityRef,
     geometry: GeoJsonGeometry,
   ) => {
-    if (ref.kind === 'object' && geometry.type === 'Point') {
-      const [x, y] = geometry.coordinates;
-      setPendingObjectEdit((prev) => ({
-        ...(prev?.id === ref.id ? prev : {}),
-        id: ref.id,
-        x,
-        y,
-      }));
-      return;
-    }
     const body = geomFieldFor(ref.kind, geometry);
     if (!body) return;
-    if (isVersionEditing) {
-      patchVersionEntity.mutate({ kind: ref.kind, id: ref.id, body, silent: true });
-    } else {
-      patchEntity.mutate({ kind: ref.kind, id: ref.id, body, silent: true });
-    }
+    runPatch(ref.kind, ref.id, body, { silent: true });
   };
 
   // 선택된 엔티티 삭제
@@ -215,12 +298,7 @@ export default function EditorPage() {
   // 벽 재질 변경
   const handleUpdateMaterial = (material: string) => {
     if (!selectedRef || selectedRef.kind !== 'wall') return;
-    const vars = { kind: 'wall' as const, id: selectedRef.id, body: { material_label: material } };
-    if (isVersionEditing) {
-      patchVersionEntity.mutate(vars);
-    } else {
-      patchEntity.mutate(vars);
-    }
+    runPatch('wall', selectedRef.id, { material_label: material });
   };
 
   // 90° 시계방향 회전 (벽 / 개구부 / 방). 객체는 의미 없음.
@@ -231,36 +309,36 @@ export default function EditorPage() {
     const rotated = rotateGeometry90Cw(g);
     const body = geomFieldFor(selectedRef.kind, rotated);
     if (!body) return;
-    const vars = { kind: selectedRef.kind, id: selectedRef.id, body };
-    if (isVersionEditing) {
-      patchVersionEntity.mutate(vars);
-    } else {
-      patchEntity.mutate(vars);
-    }
+    runPatch(selectedRef.kind, selectedRef.id, body);
   };
 
-  // 좌측 도구바로 새 도형 추가 — Draft 모드에서만 가능 (§8 명세에 POST 없음).
+  // 좌측 도구바로 새 도형 추가 — Draft / Version 모드에 따라 dispatch.
+  // 확정 버전은 §8 명세에 POST 가 명시되지 않아 백엔드 미지원 가능성 있음 (그 경우 토스트로 안내).
   const handleCreate = (kind: DraftEntityKind, body: Record<string, unknown>) => {
-    if (!activeDraft) {
-      toast.info('확정된 버전에는 새 도형을 추가할 수 없습니다', '새 도면 업로드 후 시도해주세요.');
+    if (activeDraft) {
+      createEntity.mutate({ draftId: activeDraft.id, kind, body });
       return;
     }
-    createEntity.mutate({ draftId: activeDraft.id, kind, body });
+    if (currentVersion) {
+      createVersionEntity.mutate({ versionId: currentVersion.id, kind, body });
+      return;
+    }
+    toast.info('편집할 도면이 없습니다', '먼저 도면을 업로드해주세요.');
   };
 
-  // 객체 박스 리사이즈/위치 변경 → 보류 편집에 저장 (저장 버튼 누를 때까지 PATCH 안 함).
+  // 객체 박스 리사이즈/위치 변경 → 즉시 PATCH (저장 버튼 없이 자동 저장).
   const handleResizeObject = (
     ref: SelectedEntityRef,
     widthM: number,
     heightM: number,
   ) => {
-    if (ref.kind !== 'object') return;
-    setPendingObjectEdit((prev) => ({
-      ...(prev?.id === ref.id ? prev : {}),
-      id: ref.id,
-      widthM,
-      heightM,
-    }));
+    if (ref.kind !== 'object' || !baseScene) return;
+    const obj = baseScene.objects.find((o) => o.id === ref.id);
+    if (!obj) return;
+    const body = {
+      metadata_json: { ...(obj.metadata_json ?? {}), width_m: widthM, height_m: heightM },
+    };
+    runPatch('object', ref.id, body, { silent: true });
   };
 
   const handleUpdateObjectPosition = (
@@ -269,50 +347,9 @@ export default function EditorPage() {
     y: number,
   ) => {
     if (ref.kind !== 'object') return;
-    setPendingObjectEdit((prev) => ({
-      ...(prev?.id === ref.id ? prev : {}),
-      id: ref.id,
-      x,
-      y,
-    }));
+    const body = { point_geom: { type: 'Point', coordinates: [x, y] } };
+    runPatch('object', ref.id, body, { silent: true });
   };
-
-  // 보류 변경 저장 — PATCH 실행 후 보류 상태 초기화.
-  const handleSavePendingObject = () => {
-    if (!pendingObjectEdit || !baseScene) return;
-    const obj = baseScene.objects.find((o) => o.id === pendingObjectEdit.id);
-    if (!obj) {
-      setPendingObjectEdit(null);
-      return;
-    }
-    const body: Record<string, unknown> = {};
-    if (pendingObjectEdit.x != null || pendingObjectEdit.y != null) {
-      const cur = extractPointCoords(obj.point_geom) ?? [0, 0];
-      body.point_geom = {
-        type: 'Point',
-        coordinates: [pendingObjectEdit.x ?? cur[0], pendingObjectEdit.y ?? cur[1]],
-      };
-    }
-    if (pendingObjectEdit.widthM != null || pendingObjectEdit.heightM != null) {
-      body.metadata_json = {
-        ...(obj.metadata_json ?? {}),
-        ...(pendingObjectEdit.widthM != null ? { width_m: pendingObjectEdit.widthM } : {}),
-        ...(pendingObjectEdit.heightM != null ? { height_m: pendingObjectEdit.heightM } : {}),
-      };
-    }
-    if (Object.keys(body).length === 0) {
-      setPendingObjectEdit(null);
-      return;
-    }
-    const vars = { kind: 'object' as const, id: pendingObjectEdit.id, body };
-    if (isVersionEditing) {
-      patchVersionEntity.mutate(vars, { onSettled: () => setPendingObjectEdit(null) });
-    } else {
-      patchEntity.mutate(vars, { onSettled: () => setPendingObjectEdit(null) });
-    }
-  };
-
-  const handleCancelPendingObject = () => setPendingObjectEdit(null);
 
   const nextVersionNo =
     versions.length > 0 ? Math.max(...versions.map((v) => v.version_no)) + 1 : 1;
@@ -329,6 +366,8 @@ export default function EditorPage() {
   const handleFile = (file: File, realWidthM: number) => {
     setPendingFileName(file.name);
     if (!floorId) return;
+    // 캔버스 배경용 로컬 캐시 — 백엔드가 source_asset_id 안 채워도 시각화 가능.
+    saveLocalFloorplanImage(floorId, file);
     analyze.mutate(
       {
         file,
@@ -382,6 +421,7 @@ export default function EditorPage() {
       '실제 가로 길이는 10m 로 가정합니다. 더 정확한 값이 필요하면 분석 후 새로 업로드하세요.',
     );
   };
+  // handleFile 안에서 saveLocalFloorplanImage 이미 호출됨.
 
   // Wire global header buttons (도면 불러오기 / 도면 저장하기) to this page.
   // 불러오기: 층이 선택돼있고 분석이 안 도는 중이고, 아직 활성 draft 가 없을 때만.
@@ -427,6 +467,22 @@ export default function EditorPage() {
       />
 
       <div className="relative flex flex-1 overflow-hidden">
+        {floorId && editingScene && (
+          <button
+            type="button"
+            onClick={undo}
+            disabled={!canUndo}
+            title="되돌리기 (Ctrl+Z)"
+            aria-label="되돌리기"
+            className="absolute left-4 top-4 z-10 inline-flex items-center gap-1.5 rounded-full border bg-card/95 px-3 py-1.5 text-xs font-medium shadow-md backdrop-blur transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-card/95"
+          >
+            <Undo2 className="h-3.5 w-3.5" />
+            되돌리기
+            <kbd className="hidden rounded bg-muted px-1 text-[10px] font-mono text-muted-foreground sm:inline">
+              Ctrl+Z
+            </kbd>
+          </button>
+        )}
         {floorId ? (
           <>
             {editingScene ? (
@@ -438,6 +494,7 @@ export default function EditorPage() {
                 onResizeObject={handleResizeObject}
                 tool={tool}
                 onCreate={handleCreate}
+                backgroundImageUrl={backgroundImageUrl}
               />
             ) : (
               <CanvasArea
@@ -505,11 +562,6 @@ export default function EditorPage() {
         onUpdateMaterial={handleUpdateMaterial}
         onUpdateObjectPosition={handleUpdateObjectPosition}
         onUpdateObjectSize={handleResizeObject}
-        hasPendingObjectEdit={
-          !!pendingObjectEdit && pendingObjectEdit.id === resolvedSelected?.data.id
-        }
-        onSavePendingObject={handleSavePendingObject}
-        onCancelPendingObject={handleCancelPendingObject}
         isSaving={patchEntity.isPending || patchVersionEntity.isPending}
         isDeleting={deleteEntity.isPending || deleteVersionEntity.isPending}
       />
@@ -606,43 +658,6 @@ function analyzingSubtitle(status: string | undefined): string {
   if (status === 'running')
     return '콜드 스타트는 최대 10분, 웜 상태에서는 수 초가 걸립니다.';
   return '잠시만 기다려주세요.';
-}
-
-function extractPointCoords(
-  geom: Record<string, unknown> | null | undefined,
-): [number, number] | null {
-  if (!geom) return null;
-  const coords = (geom as { coordinates?: unknown }).coordinates;
-  if (Array.isArray(coords) && coords.length >= 2) {
-    const x = Number(coords[0]);
-    const y = Number(coords[1]);
-    if (Number.isFinite(x) && Number.isFinite(y)) return [x, y];
-  }
-  return null;
-}
-
-/** 보류 편집(위치/크기)을 객체에 머지. 캔버스/속성 패널 시각 반영 전용. */
-function applyPendingToObject(
-  obj: DraftObject,
-  pending: { x?: number; y?: number; widthM?: number; heightM?: number },
-): DraftObject {
-  let pointGeom = obj.point_geom;
-  if (pending.x != null || pending.y != null) {
-    const cur = extractPointCoords(obj.point_geom) ?? [0, 0];
-    pointGeom = {
-      type: 'Point',
-      coordinates: [pending.x ?? cur[0], pending.y ?? cur[1]],
-    };
-  }
-  let metadata = obj.metadata_json ?? {};
-  if (pending.widthM != null || pending.heightM != null) {
-    metadata = {
-      ...metadata,
-      ...(pending.widthM != null ? { width_m: pending.widthM } : {}),
-      ...(pending.heightM != null ? { height_m: pending.heightM } : {}),
-    };
-  }
-  return { ...obj, point_geom: pointGeom, metadata_json: metadata };
 }
 
 function readError(err: unknown): string | null {

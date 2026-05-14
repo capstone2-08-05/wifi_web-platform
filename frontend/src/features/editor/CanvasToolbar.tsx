@@ -3,7 +3,6 @@ import {
   Upload,
   Square,
   Circle,
-  Type,
   Hexagon,
   DoorOpen,
   type LucideIcon,
@@ -34,7 +33,6 @@ const SHAPE_TOOLS: ToolDef[] = [
   { id: 'polygon', icon: Hexagon, label: '방 만들기', onClick: 'change' },
   { id: 'opening', icon: DoorOpen, label: '문/창 추가', onClick: 'change' },
   { id: 'circle', icon: Circle, label: '가구 배치', onClick: 'change' },
-  { id: 'text', icon: Type, label: '구역 라벨', onClick: 'change' },
 ];
 
 export function CanvasToolbar({ tool, onChangeTool, onUploadClick }: CanvasToolbarProps) {

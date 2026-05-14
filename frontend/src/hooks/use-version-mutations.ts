@@ -86,6 +86,25 @@ async function deleteByKind(vars: DeleteVars): Promise<void> {
   }
 }
 
+interface CreateVars {
+  versionId: UUID;
+  kind: DraftEntityKind;
+  body: AnyVersionEntityPatch;
+}
+
+async function addByKind(vars: CreateVars): Promise<AnyPatchResult> {
+  switch (vars.kind) {
+    case 'wall':
+      return sceneVersionEntitiesApi.addWall(vars.versionId, vars.body as Partial<SceneVersionWall>);
+    case 'room':
+      return sceneVersionEntitiesApi.addRoom(vars.versionId, vars.body as Partial<SceneVersionRoom>);
+    case 'opening':
+      return sceneVersionEntitiesApi.addOpening(vars.versionId, vars.body as Partial<SceneVersionOpening>);
+    case 'object':
+      return sceneVersionEntitiesApi.addObject(vars.versionId, vars.body as Partial<SceneVersionObject>);
+  }
+}
+
 type SceneVersionSnapshot = ReturnType<
   ReturnType<typeof useQueryClient>['getQueriesData']
 >;
@@ -159,6 +178,26 @@ export function usePatchVersionEntity() {
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ['scene-version'] });
       qc.invalidateQueries({ queryKey: ['patch-logs'] });
+    },
+  });
+}
+
+export function useCreateVersionEntity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: CreateVars) => addByKind(vars),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['scene-version'] });
+      qc.invalidateQueries({ queryKey: ['patch-logs'] });
+      toast.success(`${ENTITY_LABEL[vars.kind]} 추가 완료`);
+    },
+    onError: (err, vars) => {
+      const e = err as HttpError | null;
+      const message =
+        e?.status === 404 || e?.status === 405
+          ? '백엔드가 확정 버전에 도형 추가를 지원하지 않습니다.'
+          : e?.message ?? '잠시 후 다시 시도해주세요.';
+      toast.error(`${ENTITY_LABEL[vars.kind]} 추가 실패`, message);
     },
   });
 }
