@@ -76,8 +76,10 @@ export function useDeleteSceneDraft() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (draftId: UUID) => sceneDraftApi.remove(draftId),
-    onSuccess: () => {
+    onSuccess: (_data, draftId) => {
+      // list 무효화 + 삭제된 draft 의 detail 캐시도 제거 (stale 잔존 방지).
       qc.invalidateQueries({ queryKey: ['scene-drafts'] });
+      qc.removeQueries({ queryKey: ['scene-draft', draftId] });
       toast.info('Draft 가 삭제되었습니다');
     },
     onError: (err) => {
