@@ -33,11 +33,17 @@ from app.routers.material_hypotheses import (
     hypotheses_router,
 )
 from app.routers.rf_runs import router as rf_runs_router
+from app.routers.rf_jobs import router as rf_jobs_router
 from app.routers.jobs import router as jobs_router
 from app.routers.floorplan_jobs import router as floorplan_jobs_router
+from app.services.job_poller import job_poller_lifespan
 
 
-app = FastAPI(title="capstone2-backend", version="0.1.0")
+app = FastAPI(
+    title="capstone2-backend",
+    version="0.1.0",
+    lifespan=job_poller_lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -110,5 +116,6 @@ app.include_router(materials_router)
 app.include_router(wall_hypotheses_router)
 app.include_router(hypotheses_router)
 app.include_router(rf_runs_router)
+app.include_router(rf_jobs_router)
 app.include_router(jobs_router)
 app.include_router(floorplan_jobs_router)
