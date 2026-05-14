@@ -1,6 +1,6 @@
-import { Check, ChevronDown, RotateCcw, ScanLine, Sparkles, Trash2 } from 'lucide-react';
+import { ChevronDown, RotateCcw, ScanLine, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { openingTypeLabel } from '@/lib/labels';
+import { objectTypeLabel, OBJECT_TYPE_OPTIONS, openingTypeLabel } from '@/lib/labels';
 import type {
   DraftObject,
   DraftOpening,
@@ -9,12 +9,7 @@ import type {
   SelectedEntityResolved,
 } from '@/types/scene';
 import type { Material } from '@/types/material';
-import type { MaterialHypothesis } from '@/types/material-hypothesis';
 import { useMaterials } from '@/hooks/use-materials';
-import {
-  useSelectMaterialHypothesis,
-  useWallMaterialHypotheses,
-} from '@/hooks/use-material-hypotheses';
 
 interface PropertiesPanelProps {
   selected: SelectedEntityResolved | null;
@@ -24,6 +19,8 @@ interface PropertiesPanelProps {
   onRotate?: () => void;
   /** 벽의 material_label 변경. 백엔드 PATCH /draft-walls/{id}. */
   onUpdateMaterial?: (next: string) => void;
+  /** 객체의 object_type 변경. 백엔드 PATCH /draft-objects/{id}. */
+  onUpdateObjectType?: (next: string) => void;
   /** 작업 진행 중 표시 */
   isSaving?: boolean;
   isDeleting?: boolean;
@@ -50,6 +47,7 @@ export function PropertiesPanel({
   onDelete,
   onRotate,
   onUpdateMaterial,
+  onUpdateObjectType,
   isSaving,
   isDeleting,
 }: PropertiesPanelProps) {
@@ -65,6 +63,7 @@ export function PropertiesPanel({
           onDelete={onDelete}
           onRotate={onRotate}
           onUpdateMaterial={onUpdateMaterial}
+          onUpdateObjectType={onUpdateObjectType}
           isSaving={!!isSaving}
           isDeleting={!!isDeleting}
         />
@@ -82,6 +81,7 @@ function SelectedBody({
   onDelete,
   onRotate,
   onUpdateMaterial,
+  onUpdateObjectType,
   isSaving,
   isDeleting,
 }: {
@@ -89,6 +89,7 @@ function SelectedBody({
   onDelete?: () => void;
   onRotate?: () => void;
   onUpdateMaterial?: (next: string) => void;
+  onUpdateObjectType?: (next: string) => void;
   isSaving: boolean;
   isDeleting: boolean;
 }) {
@@ -119,8 +120,18 @@ function SelectedBody({
         </Section>
       )}
 
-      {selected.kind === 'wall' && (
-        <WallHypothesesSection wallId={selected.data.id} />
+      {selected.kind === 'object' && (
+        <Section label="객체 종류 변경">
+          <ObjectTypeSelect
+            value={selected.data.object_type}
+            onChange={onUpdateObjectType}
+            disabled={isSaving}
+          />
+          <p className="mt-2 rounded-md bg-primary/5 px-3 py-2 text-[11px] leading-relaxed text-primary/90">
+            AI 가 추정한 종류가 틀렸으면 직접 바꿔주세요.
+            {isSaving && ' 저장 중…'}
+          </p>
+        </Section>
       )}
 
       <div className="flex gap-2">
@@ -158,11 +169,10 @@ function SelectedBody({
 }
 
 function TypeHeader({ selected }: { selected: SelectedEntityResolved }) {
-  // 개구부는 generic '개구부' 대신 실제 종류('문'/'창문')를 메인 라벨로.
-  const label =
-    selected.kind === 'opening'
-      ? openingTypeLabel(selected.data.opening_type)
-      : KIND_LABELS[selected.kind];
+  // 개구부·객체는 generic 라벨 대신 실제 종류를 메인 라벨로.
+  let label = KIND_LABELS[selected.kind];
+  if (selected.kind === 'opening') label = openingTypeLabel(selected.data.opening_type);
+  else if (selected.kind === 'object') label = objectTypeLabel(selected.data.object_type);
   const subLabel = getEntitySubLabel(selected);
   return (
     <div className="flex items-center gap-3 rounded-lg border bg-background p-3">
@@ -221,10 +231,43 @@ function OpeningFields({ opening }: { opening: DraftOpening }) {
 function ObjectFields({ object }: { object: DraftObject }) {
   return (
     <Grid>
-      <Row label="종류" value={object.object_type} />
+      <Row label="종류" value={objectTypeLabel(object.object_type)} />
       <Row label="높이" value={fmtDecimal(object.z_m, 'm')} />
       <Row label="신뢰도" value={fmtConfidence(object.confidence)} />
     </Grid>
+  );
+}
+
+/** 객체 종류 변경 select. 백엔드 enum 값으로 onChange, 표시는 한국어 라벨. */
+function ObjectTypeSelect({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  onChange?: (next: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="relative">
+      <select
+        value={value}
+        onChange={(e) => onChange?.(e.target.value)}
+        disabled={disabled || !onChange}
+        className="w-full appearance-none rounded-md border bg-background px-3 py-2.5 pr-9 text-sm text-foreground shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-70"
+      >
+        {/* 옵션에 없는 현재값(AI 가 낸 미상 종류)도 유지 */}
+        {value && !OBJECT_TYPE_OPTIONS.includes(value) && (
+          <option value={value}>{objectTypeLabel(value)}</option>
+        )}
+        {OBJECT_TYPE_OPTIONS.map((t) => (
+          <option key={t} value={t}>
+            {objectTypeLabel(t)}
+          </option>
+        ))}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+    </div>
   );
 }
 
@@ -302,83 +345,6 @@ function MaterialSelect({
       )}
     </div>
   );
-}
-
-/**
- * §12.3 — 벽의 자동 추출된 재질 후보 목록.
- * 백엔드는 *확정본 Wall* 기준이라 Draft 단계에선 빈 응답 가능.
- * 비어있거나 에러면 섹션 자체를 안 보임 (조용히 graceful 처리).
- */
-function WallHypothesesSection({ wallId }: { wallId: string }) {
-  const { data, isError } = useWallMaterialHypotheses(wallId);
-  const select = useSelectMaterialHypothesis();
-
-  if (isError || !data || data.length === 0) return null;
-
-  return (
-    <Section label="추출된 재질 후보">
-      <ul className="space-y-1.5">
-        {data.map((h) => (
-          <HypothesisRow
-            key={h.id}
-            hypothesis={h}
-            onSelect={() => select.mutate(h.id)}
-            disabled={select.isPending}
-          />
-        ))}
-      </ul>
-      <p className="mt-2 text-[10px] text-muted-foreground/80">
-        AI 가 추출한 후보. 클릭하면 해당 후보로 확정됩니다.
-      </p>
-    </Section>
-  );
-}
-
-function HypothesisRow({
-  hypothesis,
-  onSelect,
-  disabled,
-}: {
-  hypothesis: MaterialHypothesis;
-  onSelect: () => void;
-  disabled: boolean;
-}) {
-  const confidence = parseConfidencePercent(hypothesis.confidence);
-  return (
-    <li>
-      <button
-        type="button"
-        onClick={onSelect}
-        disabled={disabled || hypothesis.is_selected}
-        className={cn(
-          'flex w-full items-center justify-between gap-2 rounded-md border bg-background px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent disabled:cursor-not-allowed',
-          hypothesis.is_selected && 'border-primary/40 bg-primary/5 disabled:opacity-100',
-        )}
-      >
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium">{hypothesis.material_name}</p>
-          {confidence != null && (
-            <p className="text-[11px] text-muted-foreground">신뢰도 {confidence}%</p>
-          )}
-        </div>
-        {hypothesis.is_selected ? (
-          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
-            <Check className="h-3 w-3" />
-            적용됨
-          </span>
-        ) : (
-          <Sparkles className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        )}
-      </button>
-    </li>
-  );
-}
-
-function parseConfidencePercent(value: string | null): number | null {
-  if (value == null) return null;
-  const n = Number(value);
-  if (!Number.isFinite(n)) return null;
-  return Math.round(n * 100);
 }
 
 function EmptyBody() {
@@ -483,6 +449,7 @@ function getEntitySubLabel(selected: SelectedEntityResolved): string | null {
       // 메인 라벨이 이미 '문'/'창문' 이라 sub 태그는 생략 (중복).
       return null;
     case 'object':
-      return selected.data.object_type;
+      // 메인 라벨이 이미 종류('가구'/'욕실' 등) 라 sub 태그 생략.
+      return null;
   }
 }

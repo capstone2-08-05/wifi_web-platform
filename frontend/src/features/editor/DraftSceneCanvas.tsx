@@ -193,6 +193,108 @@ function getEntityVertex(
   return null;
 }
 
+/** 엔티티의 모든 "기준점" — shape 드래그 스냅 시 어떤 점이든 anchor 에 붙도록. */
+function getEntityRefPoints(draft: SceneDraft, ref: SelectedEntityRef): Coord[] {
+  if (ref.kind === 'wall') {
+    const g = parseGeometry(draft.walls.find((w) => w.id === ref.id)?.centerline_geom);
+    return g?.type === 'LineString' ? g.coordinates : [];
+  }
+  if (ref.kind === 'opening') {
+    const g = parseGeometry(draft.openings.find((o) => o.id === ref.id)?.line_geom);
+    return g?.type === 'LineString' ? g.coordinates : [];
+  }
+  if (ref.kind === 'room') {
+    const g = parseGeometry(draft.rooms.find((r) => r.id === ref.id)?.polygon_geom);
+    return g?.type === 'Polygon' ? g.coordinates[0] ?? [] : [];
+  }
+  // object — Point 하나
+  const g = parseGeometry(draft.objects.find((o) => o.id === ref.id)?.point_geom);
+  return g?.type === 'Point' ? [g.coordinates] : [];
+}
+
+/** 점 p 를 선분 a-b 에 수직투영한 좌표. */
+function projectOnSegment(p: Coord, a: Coord, b: Coord): Coord {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-9) return [a[0], a[1]];
+  let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  return [a[0] + t * dx, a[1] + t * dy];
+}
+
+/** pt 에서 radius 이내, 가장 가까운 wall 선분 위의 점 (객체를 벽에 붙이기용). */
+function nearestWallProjection(
+  pt: Coord,
+  draft: SceneDraft,
+  radius: number,
+): Coord | null {
+  let best: Coord | null = null;
+  let bestD = radius;
+  for (const wall of draft.walls) {
+    const g = parseGeometry(wall.centerline_geom);
+    if (g?.type !== 'LineString') continue;
+    for (let i = 0; i + 1 < g.coordinates.length; i++) {
+      const proj = projectOnSegment(pt, g.coordinates[i], g.coordinates[i + 1]);
+      const d = Math.hypot(proj[0] - pt[0], proj[1] - pt[1]);
+      if (d < bestD) {
+        bestD = d;
+        best = proj;
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * shape 드래그(엔티티 통째 이동) 스냅 delta 계산.
+ * - 모든 기준점 중 하나라도 기존 anchor 끝점 근처면 거기에 붙임.
+ * - object 는 추가로 벽 선분 위에도 투영 (벽에 딱 붙이기).
+ */
+function computeShapeSnapDelta(
+  draft: SceneDraft,
+  ref: SelectedEntityRef,
+  rawDelta: Coord,
+  anchors: Coord[],
+): { delta: Coord; snapPoint: Coord | null } {
+  const pts = getEntityRefPoints(draft, ref);
+  let best: { from: Coord; to: Coord } | null = null;
+  let bestD = SNAP_RADIUS_M;
+
+  for (const pt of pts) {
+    const moved: Coord = [pt[0] + rawDelta[0], pt[1] + rawDelta[1]];
+    const anchor = nearestAnchor(moved, anchors, SNAP_RADIUS_M);
+    if (anchor) {
+      const d = Math.hypot(anchor[0] - moved[0], anchor[1] - moved[1]);
+      if (d < bestD) {
+        bestD = d;
+        best = { from: pt, to: [anchor[0], anchor[1]] };
+      }
+    }
+  }
+
+  // object: 벽 선분 위로 투영 (끝점 스냅이 없을 때만 시도)
+  if (ref.kind === 'object' && pts.length === 1) {
+    const moved: Coord = [pts[0][0] + rawDelta[0], pts[0][1] + rawDelta[1]];
+    const proj = nearestWallProjection(moved, draft, SNAP_RADIUS_M);
+    if (proj) {
+      const d = Math.hypot(proj[0] - moved[0], proj[1] - moved[1]);
+      if (d < bestD) {
+        bestD = d;
+        best = { from: pts[0], to: proj };
+      }
+    }
+  }
+
+  if (best) {
+    return {
+      delta: [best.to[0] - best.from[0], best.to[1] - best.from[1]],
+      snapPoint: best.to,
+    };
+  }
+  return { delta: rawDelta, snapPoint: null };
+}
+
 function polygonCentroid(points: Coord[]): Coord {
   if (points.length === 0) return [0, 0];
   const n = points.length;
@@ -342,10 +444,18 @@ export function DraftSceneCanvas({
       }
     }
 
-    // ─ shape 드래그: 스냅 없이 평행이동 ─
-    setDrag((prev) =>
-      prev ? { ...prev, delta: [raw[0] - prev.startSvg[0], raw[1] - prev.startSvg[1]] } : null,
-    );
+    // ─ shape 드래그: object 는 벽/앵커에 스냅, wall/opening/room 은 끝점·꼭짓점 스냅 ─
+    {
+      const rawDelta: Coord = [raw[0] - drag.startSvg[0], raw[1] - drag.startSvg[1]];
+      const { delta, snapPoint } = computeShapeSnapDelta(
+        draft,
+        drag.ref,
+        rawDelta,
+        snapAnchors,
+      );
+      setSnapIndicator(snapPoint);
+      setDrag((prev) => (prev ? { ...prev, delta } : null));
+    }
   };
 
   const handleSvgPointerUp = (e: React.PointerEvent<SVGSVGElement>) => {

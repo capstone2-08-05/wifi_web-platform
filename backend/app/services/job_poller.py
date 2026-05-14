@@ -8,14 +8,20 @@ FastAPI lifespan 이벤트에서 asyncio.create_task 로 띄움. 주기적으로
 → 프론트가 폴링 안 해도 백엔드가 알아서 상태 갱신.
 프론트 GET 은 여전히 polling 역할 가능 (즉시 결과 보고 싶을 때).
 
-설정:
-  - JOB_POLLER_INTERVAL_SECONDS (기본 30)
-  - JOB_POLLER_ENABLED (기본 true)
+설정 (env):
+  - JOB_POLLER_ENABLED          (기본 true)
+  - JOB_POLLER_INTERVAL_SECONDS (기본 60)
+  - JOB_POLLER_MAX_PER_CYCLE    (기본 8)  — 한 사이클에 폴링할 job 상한
+  - JOB_POLLER_MAX_AGE_MINUTES  (기본 90) — 이보다 오래된 running job 은 스킵 (사실상 죽은 job)
 
-운영 고려사항:
-  - 단일 프로세스 가정 (분산 worker 미지원 — Lock 없음).
+운영 안전장치:
+  - 한 사이클에 폴링하는 job 수 상한 (MAX_PER_CYCLE) — DB 커넥션 풀 압박 방지.
+    오래된 job 부터 우선 처리하되, 너무 오래된(MAX_AGE) 건 아예 스킵.
+  - boto3 client 는 bounded timeout (app.core.aws) — AWS 호출이 hang 해도
+    DB 세션을 무한정 잡지 않음.
+  - 각 job 은 자기 세션으로 폴링하고 즉시 close — 세션 수명 최소화.
+  - 단일 프로세스 가정 (분산 worker 미지원 — row lock 으로 중복 finalize 만 방지).
   - 폴링 중 에러는 swallow + log. 다음 사이클에서 재시도.
-  - "running" 이 오래된 job 도 같은 처리 (timeout 정책은 별도 이슈).
 """
 from __future__ import annotations
 
@@ -23,6 +29,7 @@ import asyncio
 import contextlib
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -33,8 +40,12 @@ from app.models import Job, Project, User
 
 logger = logging.getLogger(__name__)
 
-JOB_POLLER_INTERVAL_SECONDS = float(os.getenv("JOB_POLLER_INTERVAL_SECONDS", "30"))
+JOB_POLLER_INTERVAL_SECONDS = float(os.getenv("JOB_POLLER_INTERVAL_SECONDS", "60"))
 JOB_POLLER_ENABLED = os.getenv("JOB_POLLER_ENABLED", "true").lower() in {"1", "true", "yes"}
+# 한 사이클에 폴링할 job 상한 — 너무 많으면 DB 세션/스레드 압박.
+JOB_POLLER_MAX_PER_CYCLE = int(os.getenv("JOB_POLLER_MAX_PER_CYCLE", "8"))
+# 이보다 오래된 running job 은 스킵 (SageMaker cold start 최대치를 한참 넘김 = 사실상 죽음).
+JOB_POLLER_MAX_AGE_MINUTES = int(os.getenv("JOB_POLLER_MAX_AGE_MINUTES", "90"))
 
 
 async def run_job_poller_forever() -> None:
@@ -64,7 +75,7 @@ async def run_job_poller_forever() -> None:
 
 
 async def _poll_once() -> None:
-    """한 사이클: running job 모두 조회 + 각 job 의 owner 권한으로 poll 호출."""
+    """한 사이클: running job 조회 → 오래된 건 스킵 → 상한만큼만 폴링."""
     # 임포트는 lazy — 순환 import 회피
     from app.services.floorplan_job_service import (
         JOB_TYPE_FLOORPLAN_ANALYZE,
@@ -72,7 +83,11 @@ async def _poll_once() -> None:
     )
     from app.services.rf_job_service import JOB_TYPE_RF_SIMULATE, poll_rf_job
 
-    # 짧게 한 번 DB 열어 running job list + owner 매핑만 추출
+    now = datetime.now(timezone.utc)
+    min_created = now - timedelta(minutes=JOB_POLLER_MAX_AGE_MINUTES)
+
+    # 짧게 한 번 DB 열어 running job list 만 추출.
+    # 오래된 죽은 job 은 제외, 오래된 순으로 정렬해 상한만큼만 (오래 기다린 게 우선).
     db: Session = SessionLocal()
     try:
         rows = db.execute(
@@ -81,7 +96,10 @@ async def _poll_once() -> None:
             .where(
                 Job.status == "running",
                 Job.job_type.in_([JOB_TYPE_FLOORPLAN_ANALYZE, JOB_TYPE_RF_SIMULATE]),
+                Job.created_at >= min_created,
             )
+            .order_by(Job.created_at.asc())
+            .limit(JOB_POLLER_MAX_PER_CYCLE)
         ).all()
     finally:
         db.close()
@@ -89,7 +107,10 @@ async def _poll_once() -> None:
     if not rows:
         return
 
-    logger.info("Job poller: %d running job(s) to check", len(rows))
+    logger.info(
+        "Job poller: polling %d running job(s) (cap=%d, max_age=%dm)",
+        len(rows), JOB_POLLER_MAX_PER_CYCLE, JOB_POLLER_MAX_AGE_MINUTES,
+    )
 
     for job_id, job_type, owner_user_id in rows:
         await _poll_single(

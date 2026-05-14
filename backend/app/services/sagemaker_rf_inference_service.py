@@ -29,6 +29,7 @@ from typing import Any, Literal
 import boto3
 from botocore.exceptions import ClientError
 
+from app.core.aws import BOTO_CONFIG
 from app.core.errors import AppError, ErrorCode
 from app.core.settings import (
     AWS_REGION,
@@ -141,15 +142,17 @@ class SageMakerRfInferenceService:
         self._s3 = None
         self._smrt = None
 
-    # ----- lazy clients -----
+    # ----- lazy clients (bounded timeout — hang 방지) -----
     def _get_s3(self):
         if self._s3 is None:
-            self._s3 = boto3.client("s3", region_name=self.region)
+            self._s3 = boto3.client("s3", region_name=self.region, config=BOTO_CONFIG)
         return self._s3
 
     def _get_smrt(self):
         if self._smrt is None:
-            self._smrt = boto3.client("sagemaker-runtime", region_name=self.region)
+            self._smrt = boto3.client(
+                "sagemaker-runtime", region_name=self.region, config=BOTO_CONFIG
+            )
         return self._smrt
 
     def _check_configured(self) -> None:

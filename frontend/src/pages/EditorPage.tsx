@@ -134,6 +134,16 @@ export default function EditorPage() {
     });
   };
 
+  // 객체 종류 변경
+  const handleUpdateObjectType = (objectType: string) => {
+    if (!selectedRef || selectedRef.kind !== 'object') return;
+    patchEntity.mutate({
+      kind: 'object',
+      id: selectedRef.id,
+      body: { object_type: objectType },
+    });
+  };
+
   // 90° 시계방향 회전 (벽 / 개구부 / 방). 객체는 의미 없음.
   const handleRotateSelected = () => {
     if (!activeDraft || !selectedRef || selectedRef.kind === 'object') return;
@@ -302,6 +312,7 @@ export default function EditorPage() {
         onDelete={handleDeleteSelected}
         onRotate={handleRotateSelected}
         onUpdateMaterial={handleUpdateMaterial}
+        onUpdateObjectType={handleUpdateObjectType}
         isSaving={patchEntity.isPending}
         isDeleting={deleteEntity.isPending}
       />
