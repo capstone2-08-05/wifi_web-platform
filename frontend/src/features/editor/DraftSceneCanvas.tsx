@@ -1317,8 +1317,8 @@ function ObjectShape({
   const fill = selected ? 'oklch(0.92 0.05 264)' : 'oklch(0.95 0.03 240)';
   const stroke = selected ? 'oklch(0.55 0.22 264)' : 'oklch(0.74 0.08 240)';
   const labelFill = 'oklch(0.4 0.04 240)';
-  // 선택 시엔 강조 위해 실선, 평소엔 공간성만 점선.
-  const strokeDasharray = selected ? undefined : spaceLike ? '0.18 0.12' : undefined;
+  // 공간성 객체는 선택 여부와 무관하게 항상 점선 (공간 vs 가구 구분 일관).
+  const strokeDasharray = spaceLike ? '0.18 0.12' : undefined;
 
   return (
     <g className="cursor-pointer">

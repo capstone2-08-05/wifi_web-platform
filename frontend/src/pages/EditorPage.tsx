@@ -171,16 +171,28 @@ export default function EditorPage() {
   const isVersionEditing = !activeDraft;
 
   // ─ Undo 스택 ──────────────────────────────────────────────
-  // PATCH 직전에 변경 대상 필드의 "이전 값" 을 캡쳐해 둠. Ctrl+Z 로 마지막 변경 1건씩 되돌림.
-  // Delete / Create 는 §8 명세상 복원이 까다로워 일단 PATCH 만 추적.
-  type HistoryEntry = {
-    kind: DraftEntityKind;
-    id: string;
-    mode: 'draft' | 'version';
-    beforeBody: Record<string, unknown>;
-  };
+  // PATCH / CREATE 추적. Delete 는 §8 명세상 복원이 까다로워 추적 안 함.
+  // - PATCH undo → 이전 값으로 다시 PATCH
+  // - CREATE undo → 생성된 엔티티 DELETE
+  type HistoryEntry =
+    | {
+        action: 'patch';
+        kind: DraftEntityKind;
+        id: string;
+        mode: 'draft' | 'version';
+        beforeBody: Record<string, unknown>;
+      }
+    | {
+        action: 'create';
+        kind: DraftEntityKind;
+        id: string;
+        mode: 'draft' | 'version';
+      };
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const HISTORY_MAX = 30;
+  const pushHistory = (entry: HistoryEntry) => {
+    setHistory((h) => [...h.slice(-(HISTORY_MAX - 1)), entry]);
+  };
 
   /** 엔티티에서 body 키 목록에 해당하는 필드의 현재 값을 추출 (undo 용). */
   const captureBefore = (
@@ -218,10 +230,13 @@ export default function EditorPage() {
     if (!options?.skipHistory) {
       const beforeBody = captureBefore(kind, id, body);
       if (beforeBody) {
-        setHistory((h) => [
-          ...h.slice(-(HISTORY_MAX - 1)),
-          { kind, id, mode: isVersionEditing ? 'version' : 'draft', beforeBody },
-        ]);
+        pushHistory({
+          action: 'patch',
+          kind,
+          id,
+          mode: isVersionEditing ? 'version' : 'draft',
+          beforeBody,
+        });
       }
     }
     const vars = { kind, id, body, silent: options?.silent };
@@ -237,15 +252,26 @@ export default function EditorPage() {
     }
     const entry = history[history.length - 1];
     setHistory((h) => h.slice(0, -1));
-    const vars = {
-      kind: entry.kind,
-      id: entry.id,
-      body: entry.beforeBody,
-      silent: true,
-    };
-    if (entry.mode === 'version') patchVersionEntity.mutate(vars);
-    else patchEntity.mutate(vars);
-    toast.info('변경을 되돌렸습니다');
+
+    if (entry.action === 'patch') {
+      const vars = {
+        kind: entry.kind,
+        id: entry.id,
+        body: entry.beforeBody,
+        silent: true,
+      };
+      if (entry.mode === 'version') patchVersionEntity.mutate(vars);
+      else patchEntity.mutate(vars);
+      toast.info('변경을 되돌렸습니다');
+      return;
+    }
+
+    // action === 'create' → 삭제로 되돌림
+    const dvars = { kind: entry.kind, id: entry.id };
+    if (entry.mode === 'version') deleteVersionEntity.mutate(dvars);
+    else deleteEntity.mutate(dvars);
+    if (selectedRef?.id === entry.id) setSelectedRef(null);
+    toast.info('생성을 되돌렸습니다');
   };
 
   const canUndo = history.length > 0;
@@ -329,13 +355,29 @@ export default function EditorPage() {
 
   // 좌측 도구바로 새 도형 추가 — Draft / Version 모드에 따라 dispatch.
   // 확정 버전은 §8 명세에 POST 가 명시되지 않아 백엔드 미지원 가능성 있음 (그 경우 토스트로 안내).
+  /** 도구별 sticky/auto-reset 정책. 벽·방은 연속 작성이 자연스러우니 유지, 개구부·객체는 한 개씩 → 선택 모드로. */
+  const shouldAutoResetToolAfterCreate = (kind: DraftEntityKind): boolean =>
+    kind === 'opening' || kind === 'object';
+
   const handleCreate = (kind: DraftEntityKind, body: Record<string, unknown>) => {
+    const afterCreate = (createdId: string, mode: 'draft' | 'version') => {
+      pushHistory({ action: 'create', kind, id: createdId, mode });
+      if (shouldAutoResetToolAfterCreate(kind)) {
+        setTool('select');
+      }
+    };
     if (activeDraft) {
-      createEntity.mutate({ draftId: activeDraft.id, kind, body });
+      createEntity.mutate(
+        { draftId: activeDraft.id, kind, body },
+        { onSuccess: (created) => afterCreate(created.id, 'draft') },
+      );
       return;
     }
     if (currentVersion) {
-      createVersionEntity.mutate({ versionId: currentVersion.id, kind, body });
+      createVersionEntity.mutate(
+        { versionId: currentVersion.id, kind, body },
+        { onSuccess: (created) => afterCreate(created.id, 'version') },
+      );
       return;
     }
     toast.info('편집할 도면이 없습니다', '먼저 도면을 업로드해주세요.');
