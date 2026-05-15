@@ -23,6 +23,22 @@ class WallUpdate(BaseModel):
     metadata_json: Optional[dict[str, Any]] = None
 
 
+class WallCreate(BaseModel):
+    """확정본 Scene Version 에 새 Wall 추가용 (POST /scene-versions/{id}/walls)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    wall_role: Optional[str] = None  # DB default 'inner'
+    thickness_m: Optional[Decimal] = None  # DB default 0.18
+    height_m: Optional[Decimal] = None
+    material_label: Optional[str] = None
+    confidence: Optional[Decimal] = None
+    source_method: Optional[str] = None
+    centerline_geom: Optional[dict[str, Any]] = None
+    polygon_geom: Optional[dict[str, Any]] = None
+    metadata_json: Optional[dict[str, Any]] = None
+
+
 class WallResponse(BaseModel):
     id: UUID
     scene_version_id: UUID

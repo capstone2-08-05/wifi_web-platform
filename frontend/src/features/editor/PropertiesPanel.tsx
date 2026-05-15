@@ -242,8 +242,6 @@ function OpeningFields({ opening }: { opening: DraftOpening }) {
       <Row label="종류" value={openingTypeLabel(opening.opening_type)} />
       <Row label="너비" value={fmtDecimal(opening.width_m, 'm')} />
       <Row label="높이" value={fmtDecimal(opening.height_m, 'm')} />
-      <Row label="턱 높이" value={fmtDecimal(opening.sill_height_m, 'm')} />
-      <Row label="신뢰도" value={fmtConfidence(opening.confidence)} />
     </Grid>
   );
 }

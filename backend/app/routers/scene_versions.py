@@ -10,12 +10,22 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
+from app.schemas.opening import OpeningCreate, OpeningResponse
+from app.schemas.room import RoomCreate, RoomResponse
+from app.schemas.scene_object import ObjectCreate, ObjectResponse
 from app.schemas.scene_version import (
     PromoteRequest,
     SceneVersionDetailResponse,
     SceneVersionResponse,
 )
-from app.services import scene_version_service
+from app.schemas.wall import WallCreate, WallResponse
+from app.services import (
+    object_service,
+    opening_service,
+    room_service,
+    scene_version_service,
+    wall_service,
+)
 
 
 promote_router = APIRouter(prefix="/scene-drafts", tags=["scene-versions"])
@@ -83,4 +93,79 @@ def list_scene_versions_by_floor(
 ) -> list[SceneVersionResponse]:
     return scene_version_service.list_by_floor(
         db, floor_id=floor_id, user=current_user, is_current=is_current
+    )
+
+
+# ---------------------------------------------------------------------------
+# §8 확정본 자식 리소스 신규 추가 (POST). 기존 PATCH/DELETE 는 각 엔티티 라우터에 위치.
+# 명세서 §8 에는 누락돼있던 부분 — 프론트에서 확정 버전 위에 새 도형을 그리는
+# 요구사항으로 추가됨. 변경 시 patch_log 자동 기록.
+# ---------------------------------------------------------------------------
+
+
+@scene_versions_router.post(
+    "/{version_id}/walls",
+    response_model=WallResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="확정본 Scene Version 에 새 Wall 추가 (patch_log 자동 기록)",
+)
+def add_wall_to_version(
+    payload: WallCreate,
+    version_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> WallResponse:
+    return wall_service.create_wall(
+        db, scene_version_id=version_id, payload=payload, user=current_user
+    )
+
+
+@scene_versions_router.post(
+    "/{version_id}/rooms",
+    response_model=RoomResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="확정본 Scene Version 에 새 Room 추가 (patch_log 자동 기록)",
+)
+def add_room_to_version(
+    payload: RoomCreate,
+    version_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> RoomResponse:
+    return room_service.create_room(
+        db, scene_version_id=version_id, payload=payload, user=current_user
+    )
+
+
+@scene_versions_router.post(
+    "/{version_id}/openings",
+    response_model=OpeningResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="확정본 Scene Version 에 새 Opening 추가 (patch_log 자동 기록)",
+)
+def add_opening_to_version(
+    payload: OpeningCreate,
+    version_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> OpeningResponse:
+    return opening_service.create_opening(
+        db, scene_version_id=version_id, payload=payload, user=current_user
+    )
+
+
+@scene_versions_router.post(
+    "/{version_id}/objects",
+    response_model=ObjectResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="확정본 Scene Version 에 새 Object 추가 (patch_log 자동 기록)",
+)
+def add_object_to_version(
+    payload: ObjectCreate,
+    version_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ObjectResponse:
+    return object_service.create_object(
+        db, scene_version_id=version_id, payload=payload, user=current_user
     )
