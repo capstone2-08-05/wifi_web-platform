@@ -15,7 +15,7 @@ export function openingTypeLabel(type: string | null | undefined): string {
 /** object_type → 사용자 친화 라벨. value 는 백엔드 enum 값 그대로 유지. */
 const OBJECT_TYPE_LABELS: Record<string, string> = {
   furniture: '가구',
-  bathroom: '욕실',
+  bathroom: '화장실',
   kitchen: '주방',
   stairs: '계단',
   elevator: '엘리베이터',

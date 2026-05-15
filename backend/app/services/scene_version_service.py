@@ -370,3 +370,36 @@ def set_current(
         db.rollback()
         raise
     return _to_summary(sv)
+
+
+def delete_version(db: Session, version_id: UUID, user: User) -> None:
+    """확정본 Scene Version 삭제.
+
+    FK 가 ON DELETE CASCADE 로 걸려있어 children (walls/rooms/openings/objects),
+    patch_logs, rf_runs 까지 자동 정리됨.
+
+    현재 활성(is_confirmed) 버전을 삭제하면 같은 floor 의 다른 버전 중 가장 최근
+    것을 자동으로 활성화. 마지막 버전이면 활성 버전이 없는 상태로 남음.
+    """
+    sv = _get_owned_scene_version(db, version_id, user)
+    was_active = bool(sv.is_confirmed)
+    floor_id = sv.floor_id
+
+    db.delete(sv)
+    db.flush()
+
+    if was_active:
+        next_sv = db.execute(
+            select(SceneVersion)
+            .where(SceneVersion.floor_id == floor_id)
+            .order_by(SceneVersion.version_no.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if next_sv is not None:
+            next_sv.is_confirmed = True
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise

@@ -5,6 +5,7 @@ import { objectTypeLabel, OBJECT_TYPE_OPTIONS, openingTypeLabel } from '@/lib/la
 import type {
   DraftObject,
   DraftOpening,
+  DraftRoom,
   DraftWall,
   SelectedEntityRef,
   SelectedEntityResolved,
@@ -108,9 +109,10 @@ function SelectedBody({
         <TypeHeader selected={selected} />
       </Section>
 
-      {selected.kind !== 'object' && selected.kind !== 'room' && (
+      {selected.kind !== 'object' && (
         <Section label="속성">
           {selected.kind === 'wall' && <WallFields wall={selected.data} />}
+          {selected.kind === 'room' && <RoomFields room={selected.data} />}
           {selected.kind === 'opening' && <OpeningFields opening={selected.data} />}
         </Section>
       )}
@@ -236,16 +238,28 @@ function WallFields({ wall }: { wall: DraftWall }) {
   );
 }
 
+function RoomFields({ room }: { room: DraftRoom }) {
+  return (
+    <Grid>
+      <Row label="이름" value={room.room_name?.trim() || '-'} />
+      <Row label="용도" value={room.room_type ?? '-'} />
+    </Grid>
+  );
+}
+
 function OpeningFields({ opening }: { opening: DraftOpening }) {
   return (
     <Grid>
       <Row label="종류" value={openingTypeLabel(opening.opening_type)} />
       <Row label="너비" value={fmtDecimal(opening.width_m, 'm')} />
       <Row label="높이" value={fmtDecimal(opening.height_m, 'm')} />
-      <Row label="턱 높이" value={fmtDecimal(opening.sill_height_m, 'm')} />
-      <Row label="신뢰도" value={fmtConfidence(opening.confidence)} />
+      <Row label="소속 벽" value={opening.wall_id ? shortId(opening.wall_id) : '-'} />
     </Grid>
   );
+}
+
+function shortId(id: string): string {
+  return id.slice(0, 6) + '…';
 }
 
 /** 객체 종류 변경 select. value 는 백엔드 enum 값, 표시는 한국어 라벨. */

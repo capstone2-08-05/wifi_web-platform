@@ -13,9 +13,12 @@ from app.models.project import Project
 from app.models.scene_version import SceneVersion
 from app.models.user import User
 from app.models.wall import Wall
-from app.schemas.opening import OpeningResponse, OpeningUpdate
+from app.schemas.opening import OpeningCreate, OpeningResponse, OpeningUpdate
 from app.services._patch_log_helpers import record_patch, snapshot_opening
-from app.services.scene_version_service import _opening_to_response
+from app.services.scene_version_service import (
+    _get_owned_scene_version,
+    _opening_to_response,
+)
 
 
 def _get_owned_opening(db: Session, opening_id: UUID, user: User) -> Opening:
@@ -55,6 +58,68 @@ def _validate_wall_belongs_to_version(
 
 def get_opening(db: Session, opening_id: UUID, user: User) -> OpeningResponse:
     return _opening_to_response(_get_owned_opening(db, opening_id, user))
+
+
+def create_opening(
+    db: Session,
+    scene_version_id: UUID,
+    payload: OpeningCreate,
+    user: User,
+) -> OpeningResponse:
+    """확정본 SceneVersion 에 새 Opening INSERT + patch_log 기록."""
+    sv = _get_owned_scene_version(db, scene_version_id, user)
+
+    data = payload.model_dump(exclude_unset=True)
+    if "wall_id" in data and data["wall_id"] is not None:
+        _validate_wall_belongs_to_version(db, data["wall_id"], sv.id)
+
+    opening = Opening(
+        scene_version_id=sv.id,
+        opening_type=data["opening_type"],
+        width_m=data["width_m"],
+        height_m=data["height_m"],
+    )
+    if "wall_id" in data and data["wall_id"] is not None:
+        opening.wall_id = str(data["wall_id"])
+    if "line_geom" in data:
+        opening.line_geom = geojson_to_wkb(
+            data["line_geom"], "LineString", "line_geom"
+        )
+    if "polygon_geom" in data:
+        opening.polygon_geom = geojson_to_wkb(
+            data["polygon_geom"], "Polygon", "polygon_geom"
+        )
+    for field in (
+        "sill_height_m",
+        "confidence",
+        "source_method",
+        "metadata_json",
+    ):
+        if field in data:
+            setattr(opening, field, data[field])
+
+    db.add(opening)
+    db.flush()
+
+    after = snapshot_opening(opening)
+    record_patch(
+        db,
+        scene_version_id=opening.scene_version_id,
+        user=user,
+        patch_type="create",
+        target_type="opening",
+        target_id=opening.id,
+        before=None,
+        after=after,
+    )
+
+    try:
+        db.commit()
+        db.refresh(opening)
+    except Exception:
+        db.rollback()
+        raise
+    return _opening_to_response(opening)
 
 
 def update_opening(

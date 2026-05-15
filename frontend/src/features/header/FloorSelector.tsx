@@ -98,7 +98,7 @@ function FloorMenu({
               <div className="flex flex-col items-start">
                 <span className="truncate">{f.floor_name}</span>
                 <span className="text-[10px] text-muted-foreground">
-                  순서 {f.floor_order} · 높이 {f.height_m}m
+                  높이 {f.height_m}m
                 </span>
               </div>
               {f.id === selectedFloorId && <Check className="h-3.5 w-3.5 text-primary" />}
@@ -143,7 +143,6 @@ function CreateFloorForm({
   onCancel: () => void;
 }) {
   const [name, setName] = useState(`${nextOrder}층`);
-  const [order, setOrder] = useState(nextOrder);
   const [height, setHeight] = useState(3.2);
   const create = useCreateFloor(projectId);
 
@@ -151,42 +150,35 @@ function CreateFloorForm({
     e.preventDefault();
     const trimmed = name.trim();
     if (!trimmed) return;
+    // floor_order 는 사용자에게 노출하지 않고 자동 부여 (마지막 + 1).
     create.mutate(
-      { floor_name: trimmed, floor_order: order, height_m: height },
+      { floor_name: trimmed, floor_order: nextOrder, height_m: height },
       { onSuccess: (f) => onCreated(f) },
     );
   };
 
   return (
     <form onSubmit={submit} className="space-y-2">
-      <input
-        autoFocus
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="층 이름 (예: 1층)"
-        className="w-full rounded-md border bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-      />
-      <div className="grid grid-cols-2 gap-2">
-        <label className="block">
-          <span className="text-[10px] text-muted-foreground">순서</span>
-          <input
-            type="number"
-            value={order}
-            onChange={(e) => setOrder(Number(e.target.value))}
-            className="w-full rounded-md border bg-background px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          />
-        </label>
-        <label className="block">
-          <span className="text-[10px] text-muted-foreground">높이(m)</span>
-          <input
-            type="number"
-            step="0.1"
-            value={height}
-            onChange={(e) => setHeight(Number(e.target.value))}
-            className="w-full rounded-md border bg-background px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          />
-        </label>
-      </div>
+      <label className="block">
+        <span className="text-[10px] text-muted-foreground">층 이름</span>
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="예: 1층, B1, 옥상"
+          className="w-full rounded-md border bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+      </label>
+      <label className="block">
+        <span className="text-[10px] text-muted-foreground">높이 (m)</span>
+        <input
+          type="number"
+          step="0.1"
+          value={height}
+          onChange={(e) => setHeight(Number(e.target.value))}
+          className="w-full rounded-md border bg-background px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+      </label>
       <div className="flex gap-2">
         <button
           type="submit"

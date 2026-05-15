@@ -667,57 +667,129 @@ export function DraftSceneCanvas({
             }}
           />
         )}
-        {draft.rooms.map((room) => (
-          <RoomShape
-            key={room.id}
-            room={room}
-            selected={isSelected('room', room.id)}
-            drag={matchDrag(drag, 'room', room.id)}
-            onShapePointerDown={(e) => startShapeDrag(e, { kind: 'room', id: room.id })}
-            onVertexPointerDown={(e, idx) =>
-              startVertexDrag(e, { kind: 'room', id: room.id }, idx)
-            }
-          />
-        ))}
+        {/* 일반 렌더: 선택된 항목은 제외하고 그린 뒤, 마지막에 다시 위에 올림. */}
+        {draft.rooms
+          .filter((r) => !isSelected('room', r.id))
+          .map((room) => (
+            <RoomShape
+              key={room.id}
+              room={room}
+              selected={false}
+              drag={matchDrag(drag, 'room', room.id)}
+              onShapePointerDown={(e) => startShapeDrag(e, { kind: 'room', id: room.id })}
+              onVertexPointerDown={(e, idx) =>
+                startVertexDrag(e, { kind: 'room', id: room.id }, idx)
+              }
+            />
+          ))}
 
-        {draft.walls.map((wall) => (
-          <WallShape
-            key={wall.id}
-            wall={wall}
-            selected={isSelected('wall', wall.id)}
-            drag={matchDrag(drag, 'wall', wall.id)}
-            onShapePointerDown={(e) => startShapeDrag(e, { kind: 'wall', id: wall.id })}
-            onVertexPointerDown={(e, idx) =>
-              startVertexDrag(e, { kind: 'wall', id: wall.id }, idx)
-            }
-          />
-        ))}
+        {draft.walls
+          .filter((w) => !isSelected('wall', w.id))
+          .map((wall) => (
+            <WallShape
+              key={wall.id}
+              wall={wall}
+              selected={false}
+              drag={matchDrag(drag, 'wall', wall.id)}
+              onShapePointerDown={(e) => startShapeDrag(e, { kind: 'wall', id: wall.id })}
+              onVertexPointerDown={(e, idx) =>
+                startVertexDrag(e, { kind: 'wall', id: wall.id }, idx)
+              }
+            />
+          ))}
 
-        {draft.openings.map((op) => (
-          <OpeningShape
-            key={op.id}
-            opening={op}
-            selected={isSelected('opening', op.id)}
-            drag={matchDrag(drag, 'opening', op.id)}
-            onShapePointerDown={(e) => startShapeDrag(e, { kind: 'opening', id: op.id })}
-            onVertexPointerDown={(e, idx) =>
-              startVertexDrag(e, { kind: 'opening', id: op.id }, idx)
-            }
-          />
-        ))}
+        {draft.openings
+          .filter((o) => !isSelected('opening', o.id))
+          .map((op) => (
+            <OpeningShape
+              key={op.id}
+              opening={op}
+              selected={false}
+              drag={matchDrag(drag, 'opening', op.id)}
+              onShapePointerDown={(e) => startShapeDrag(e, { kind: 'opening', id: op.id })}
+              onVertexPointerDown={(e, idx) =>
+                startVertexDrag(e, { kind: 'opening', id: op.id }, idx)
+              }
+            />
+          ))}
 
-        {draft.objects.map((obj) => (
-          <ObjectShape
-            key={obj.id}
-            object={obj}
-            selected={isSelected('object', obj.id)}
-            drag={matchDrag(drag, 'object', obj.id)}
-            onShapePointerDown={(e) => startShapeDrag(e, { kind: 'object', id: obj.id })}
-            onResizePointerDown={(e, sign) =>
-              startResizeDrag(e, { kind: 'object', id: obj.id }, sign)
+        {draft.objects
+          .filter((o) => !isSelected('object', o.id))
+          .map((obj) => (
+            <ObjectShape
+              key={obj.id}
+              object={obj}
+              selected={false}
+              drag={matchDrag(drag, 'object', obj.id)}
+              onShapePointerDown={(e) => startShapeDrag(e, { kind: 'object', id: obj.id })}
+              onResizePointerDown={(e, sign) =>
+                startResizeDrag(e, { kind: 'object', id: obj.id }, sign)
+              }
+            />
+          ))}
+
+        {/* 선택된 항목 — 항상 맨 위에 렌더. */}
+        {selectedRef &&
+          (() => {
+            if (selectedRef.kind === 'room') {
+              const room = draft.rooms.find((r) => r.id === selectedRef.id);
+              return room ? (
+                <RoomShape
+                  key={`sel-${room.id}`}
+                  room={room}
+                  selected
+                  drag={matchDrag(drag, 'room', room.id)}
+                  onShapePointerDown={(e) => startShapeDrag(e, { kind: 'room', id: room.id })}
+                  onVertexPointerDown={(e, idx) =>
+                    startVertexDrag(e, { kind: 'room', id: room.id }, idx)
+                  }
+                />
+              ) : null;
             }
-          />
-        ))}
+            if (selectedRef.kind === 'wall') {
+              const wall = draft.walls.find((w) => w.id === selectedRef.id);
+              return wall ? (
+                <WallShape
+                  key={`sel-${wall.id}`}
+                  wall={wall}
+                  selected
+                  drag={matchDrag(drag, 'wall', wall.id)}
+                  onShapePointerDown={(e) => startShapeDrag(e, { kind: 'wall', id: wall.id })}
+                  onVertexPointerDown={(e, idx) =>
+                    startVertexDrag(e, { kind: 'wall', id: wall.id }, idx)
+                  }
+                />
+              ) : null;
+            }
+            if (selectedRef.kind === 'opening') {
+              const op = draft.openings.find((o) => o.id === selectedRef.id);
+              return op ? (
+                <OpeningShape
+                  key={`sel-${op.id}`}
+                  opening={op}
+                  selected
+                  drag={matchDrag(drag, 'opening', op.id)}
+                  onShapePointerDown={(e) => startShapeDrag(e, { kind: 'opening', id: op.id })}
+                  onVertexPointerDown={(e, idx) =>
+                    startVertexDrag(e, { kind: 'opening', id: op.id }, idx)
+                  }
+                />
+              ) : null;
+            }
+            const obj = draft.objects.find((o) => o.id === selectedRef.id);
+            return obj ? (
+              <ObjectShape
+                key={`sel-${obj.id}`}
+                object={obj}
+                selected
+                drag={matchDrag(drag, 'object', obj.id)}
+                onShapePointerDown={(e) => startShapeDrag(e, { kind: 'object', id: obj.id })}
+                onResizePointerDown={(e, sign) =>
+                  startResizeDrag(e, { kind: 'object', id: obj.id }, sign)
+                }
+              />
+            ) : null;
+          })()}
 
         {/* 벽 생성 preview */}
         {creating?.kind === 'wall' && cursorPos && (
@@ -736,7 +808,7 @@ export function DraftSceneCanvas({
             <circle
               cx={creating.firstPoint[0]}
               cy={creating.firstPoint[1]}
-              r="0.15"
+              r="0.07"
               fill="oklch(0.55 0.22 264)"
             />
           </g>
@@ -758,7 +830,7 @@ export function DraftSceneCanvas({
             <circle
               cx={creating.firstPoint[0]}
               cy={creating.firstPoint[1]}
-              r="0.15"
+              r="0.07"
               fill="oklch(0.55 0.22 264)"
             />
           </g>
@@ -820,10 +892,10 @@ export function DraftSceneCanvas({
                     key={i}
                     cx={p[0]}
                     cy={p[1]}
-                    r={isFirstHighlighted ? 0.28 : isFirst ? 0.2 : 0.13}
+                    r={isFirstHighlighted ? 0.13 : isFirst ? 0.09 : 0.06}
                     fill={isFirstHighlighted ? 'oklch(0.55 0.22 264)' : 'white'}
                     stroke="oklch(0.55 0.22 264)"
-                    strokeWidth={isFirstHighlighted ? 2 : 3}
+                    strokeWidth={isFirstHighlighted ? 2 : 2}
                     vectorEffect="non-scaling-stroke"
                   />
                 );
@@ -854,16 +926,16 @@ export function DraftSceneCanvas({
             <circle
               cx={snapIndicator[0]}
               cy={snapIndicator[1]}
-              r="0.28"
+              r="0.14"
               fill="none"
               stroke="oklch(0.72 0.19 145)"
-              strokeWidth="2.5"
+              strokeWidth="2"
               vectorEffect="non-scaling-stroke"
             />
             <circle
               cx={snapIndicator[0]}
               cy={snapIndicator[1]}
-              r="0.07"
+              r="0.04"
               fill="oklch(0.72 0.19 145)"
             />
           </g>
@@ -1069,14 +1141,21 @@ function RoomShape({
   );
 }
 
-/** 방 표시용 라벨 — room_name 우선, 없으면 room_type 한글 변환. */
+/** AI 자동 생성으로 의심되는 이름. 사용자가 의도적으로 붙인 이름이 아니면 무시. */
+const AUTO_ROOM_NAME = /^room[_\s-]?\d+$/i;
+
+/** 방 표시용 라벨 — 의미 있는 room_name 이 있으면 우선, 그 외엔 room_type 한글 변환. */
 function roomLabel(room: DraftRoom): string | null {
-  if (room.room_name && room.room_name.trim()) return room.room_name;
+  const name = room.room_name?.trim();
+  if (name && !AUTO_ROOM_NAME.test(name)) return name;
   if (room.room_type) return ROOM_TYPE_LABEL[room.room_type] ?? room.room_type;
-  return null;
+  return 'room';
 }
 
 const ROOM_TYPE_LABEL: Record<string, string> = {
+  general: 'room',
+  room: 'room',
+  unknown: 'room',
   kitchen: '주방',
   storage: '창고',
   office: '사무실',
@@ -1226,85 +1305,58 @@ function ObjectShape({
   const label = objectLabel(object);
   const spaceLike = isSpaceLikeObject(object);
 
-  if (spaceLike) {
-    // 공간성 객체 (bathroom/stairs/kitchen ...) — metadata_json 의 width/height 사용.
-    const size = readObjectSize(object);
-    let w = size.width;
-    let h = size.height;
-    // 리사이즈 중이면 시각적으로 즉시 반영 (delta * sign * 2 = 대칭 크기 변화).
-    if (drag?.mode === 'resize') {
-      w = Math.max(0.2, w + drag.delta[0] * drag.cornerSign[0] * 2);
-      h = Math.max(0.2, h + drag.delta[1] * drag.cornerSign[1] * 2);
-    }
-    return (
-      <g className="cursor-pointer">
-        <rect
-          x={x - w / 2}
-          y={y - h / 2}
-          width={w}
-          height={h}
-          rx="0.15"
-          fill={selected ? 'oklch(0.92 0.05 264)' : 'oklch(0.95 0.03 230)'}
-          stroke={selected ? 'oklch(0.55 0.22 264)' : 'oklch(0.78 0.06 230)'}
-          strokeWidth={selected ? 3 : 1.5}
-          strokeDasharray={selected ? undefined : '0.15 0.1'}
-          vectorEffect="non-scaling-stroke"
-          onPointerDown={onShapePointerDown}
-        />
-        {label && (
-          <text
-            x={x}
-            y={y}
-            textAnchor="middle"
-            dominantBaseline="middle"
-            fontSize={computeLabelFontSize(label, w, h)}
-            fontWeight="500"
-            fill="oklch(0.4 0.04 230)"
-            pointerEvents="none"
-            style={{ userSelect: 'none' }}
-          >
-            {label}
-          </text>
-        )}
-        {selected && onResizePointerDown && (
-          <>
-            <ResizeCorner x={x - w / 2} y={y - h / 2} sign={[-1, -1]} onPointerDown={onResizePointerDown} />
-            <ResizeCorner x={x + w / 2} y={y - h / 2} sign={[1, -1]} onPointerDown={onResizePointerDown} />
-            <ResizeCorner x={x - w / 2} y={y + h / 2} sign={[-1, 1]} onPointerDown={onResizePointerDown} />
-            <ResizeCorner x={x + w / 2} y={y + h / 2} sign={[1, 1]} onPointerDown={onResizePointerDown} />
-          </>
-        )}
-      </g>
-    );
+  // 모든 객체 동일한 박스 + 라벨 + 리사이즈 핸들. 색은 통일하되,
+  // 공간성(bathroom/kitchen/stairs ...) 은 점선 테두리로 "공간" 임을 시각적으로 구분.
+  const size = readObjectSize(object);
+  let w = size.width;
+  let h = size.height;
+  if (drag?.mode === 'resize') {
+    w = Math.max(0.2, w + drag.delta[0] * drag.cornerSign[0] * 2);
+    h = Math.max(0.2, h + drag.delta[1] * drag.cornerSign[1] * 2);
   }
+  const fill = selected ? 'oklch(0.92 0.05 264)' : 'oklch(0.95 0.03 240)';
+  const stroke = selected ? 'oklch(0.55 0.22 264)' : 'oklch(0.74 0.08 240)';
+  const labelFill = 'oklch(0.4 0.04 240)';
+  // 공간성 객체는 선택 여부와 무관하게 항상 점선 (공간 vs 가구 구분 일관).
+  const strokeDasharray = spaceLike ? '0.18 0.12' : undefined;
 
-  // 일반 객체 (table/chair/AP ...) — 원형 마커.
   return (
-    <g onPointerDown={onShapePointerDown} className="cursor-pointer">
-      <circle cx={x} cy={y} r="0.4" fill="transparent" />
-      <circle
-        cx={x}
-        cy={y}
-        r="0.18"
-        fill={selected ? 'oklch(0.55 0.22 264)' : 'oklch(0.9 0.04 256)'}
-        stroke={selected ? 'oklch(0.45 0.22 264)' : 'oklch(0.55 0.22 264)'}
+    <g className="cursor-pointer">
+      <rect
+        x={x - w / 2}
+        y={y - h / 2}
+        width={w}
+        height={h}
+        rx="0.15"
+        fill={fill}
+        stroke={stroke}
         strokeWidth={selected ? 3 : 1.5}
+        strokeDasharray={strokeDasharray}
         vectorEffect="non-scaling-stroke"
+        onPointerDown={onShapePointerDown}
       />
       {label && (
         <text
           x={x}
-          y={y + 0.45}
+          y={y}
           textAnchor="middle"
-          dominantBaseline="hanging"
-          fontSize="0.32"
+          dominantBaseline="middle"
+          fontSize={computeLabelFontSize(label, w, h)}
           fontWeight="500"
-          fill="oklch(0.45 0.02 256)"
+          fill={labelFill}
           pointerEvents="none"
           style={{ userSelect: 'none' }}
         >
           {label}
         </text>
+      )}
+      {selected && onResizePointerDown && (
+        <>
+          <ResizeCorner x={x - w / 2} y={y - h / 2} sign={[-1, -1]} onPointerDown={onResizePointerDown} />
+          <ResizeCorner x={x + w / 2} y={y - h / 2} sign={[1, -1]} onPointerDown={onResizePointerDown} />
+          <ResizeCorner x={x - w / 2} y={y + h / 2} sign={[-1, 1]} onPointerDown={onResizePointerDown} />
+          <ResizeCorner x={x + w / 2} y={y + h / 2} sign={[1, 1]} onPointerDown={onResizePointerDown} />
+        </>
       )}
     </g>
   );
@@ -1315,7 +1367,7 @@ function objectLabel(object: DraftObject): string | null {
   return OBJECT_TYPE_LABEL[object.object_type] ?? object.object_type;
 }
 
-/** 점이 아닌 "공간"으로 인식되어야 자연스러운 object_type 들. */
+/** "점"이 아닌 "공간"으로 인식되어야 자연스러운 object_type 들. 시각적으로 점선 박스로 구분. */
 const SPACE_LIKE_TYPES = new Set([
   'bathroom',
   'restroom',
