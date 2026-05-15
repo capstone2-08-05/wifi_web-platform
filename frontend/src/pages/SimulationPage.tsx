@@ -235,7 +235,7 @@ function CanvasModeBar({ apsCount }: { apsCount: number }) {
       </span>
       <span className="font-semibold">AP 배치 모드</span>
       <span className="text-muted-foreground">
-        — 우측 "AP 추가" 누르고 도면을 클릭하세요 ({apsCount}/8 · 백엔드 최대 8개)
+        — 우측 "AP 추가" 누르고 도면을 클릭하세요 ({apsCount}/8)
       </span>
     </div>
   );
