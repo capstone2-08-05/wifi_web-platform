@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import {
   LayoutGrid,
   Map,
@@ -25,6 +25,9 @@ const NAV = [
 
 export function AppLayout() {
   const [mobileConnectOpen, setMobileConnectOpen] = useState(false);
+  // /mobile 페이지에선 헤더의 "모바일 앱 연결" 버튼을 숨기고 페이지 내 카드 하단에 배치.
+  const location = useLocation();
+  const isMobileAppPage = location.pathname.startsWith('/mobile');
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background">
@@ -78,14 +81,16 @@ export function AppLayout() {
             <FloorSelector />
           </div>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setMobileConnectOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-sm font-medium text-foreground/80 shadow-sm transition-colors hover:bg-accent"
-            >
-              <Smartphone className="h-4 w-4" />
-              모바일 앱 연결
-            </button>
+            {!isMobileAppPage && (
+              <button
+                type="button"
+                onClick={() => setMobileConnectOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-sm font-medium text-foreground/80 shadow-sm transition-colors hover:bg-accent"
+              >
+                <Smartphone className="h-4 w-4" />
+                모바일 앱 연결
+              </button>
+            )}
             <ProfileMenu />
           </div>
         </header>

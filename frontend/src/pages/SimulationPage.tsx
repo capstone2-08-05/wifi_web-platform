@@ -11,8 +11,11 @@ import {
   Trash2,
   Wifi,
 } from 'lucide-react';
+import { useMemo } from 'react';
 import { useAppStore } from '@/stores/app-store';
-import { useFloorVersions } from '@/hooks/use-scene-version';
+import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
+import { useAsset, useFloorAssets } from '@/hooks/use-assets';
+import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
 import { useCreateRfRun, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
 import {
   useApCandidates,
@@ -27,7 +30,14 @@ import {
   SimulationHistory,
   type SimulationHistoryItem,
 } from '@/features/simulation/SimulationHistory';
+import {
+  DEFAULT_TX_POWER_DBM,
+  SimulationCanvas,
+  type PlacedAp,
+} from '@/features/simulation/SimulationCanvas';
+import { toast } from '@/stores/toast-store';
 import type { ApCandidate, ApLayout } from '@/types/ap-layout';
+import { cn } from '@/lib/utils';
 
 type SimulationState = 'idle' | 'running' | 'complete';
 
@@ -39,6 +49,29 @@ export default function SimulationPage() {
     versionsQuery.data?.find((v) => v.is_current) ?? versionsQuery.data?.[0] ?? null;
 
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+
+  // 사용자가 배치한 AP 목록 + 추가 모드(true 면 다음 클릭이 새 AP 추가).
+  const [aps, setAps] = useState<PlacedAp[]>([]);
+  const [pendingAdd, setPendingAdd] = useState(false);
+
+  // 캔버스 배경으로 보여줄 확정 버전 상세 (rooms/walls/openings/objects 포함).
+  const versionDetailQuery = useSceneVersion(currentVersion?.id ?? null);
+
+  // 배경 도면 이미지 — EditorPage 와 동일한 3단계 fallback.
+  const sourceAssetId = versionDetailQuery.data?.source_asset_id ?? null;
+  const sourceAssetQuery = useAsset(sourceAssetId);
+  const floorAssetsQuery = useFloorAssets(floorId, 'floorplan');
+  const fallbackAsset = useMemo(() => {
+    const list = floorAssetsQuery.data ?? [];
+    if (list.length === 0) return null;
+    return [...list].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+  }, [floorAssetsQuery.data]);
+  const localImage = useLocalFloorplanImage(floorId);
+  const backgroundImageUrl =
+    sourceAssetQuery.data?.storage_url ??
+    fallbackAsset?.storage_url ??
+    localImage ??
+    null;
 
   const createRfRun = useCreateRfRun();
   const rfRunPoll = useRfRun(activeRunId);
@@ -54,10 +87,29 @@ export default function SimulationPage() {
 
   const handleStart = () => {
     if (!currentVersion) return;
+    if (aps.length === 0) {
+      toast.info('AP 를 1개 이상 배치해주세요', '캔버스 우측의 "AP 추가하기" 에서 종류를 선택하고 클릭하세요.');
+      return;
+    }
     createRfRun.mutate(
       {
         scene_version_id: currentVersion.id,
         run_type: 'forward',
+        access_points: aps.map((ap) => ({
+          id: ap.id,
+          x_m: ap.x_m,
+          y_m: ap.y_m,
+          z_m: ap.z_m,
+        })),
+        simulation: {
+          frequency_hz: 2.4e9,
+          tx_power_dbm: DEFAULT_TX_POWER_DBM,
+          resolution_m: 0.5,
+          measurement_plane_z_m: 1.0,
+          max_depth: 3,
+          samples_per_tx: 100_000,
+          seed: 42,
+        },
       },
       { onSuccess: (data) => setActiveRunId(data.id) },
     );
@@ -66,6 +118,12 @@ export default function SimulationPage() {
   const handleReset = () => {
     setActiveRunId(null);
   };
+
+  const handleAddAp = (ap: PlacedAp) => setAps((prev) => [...prev, ap]);
+  const handleMoveAp = (id: string, x: number, y: number) =>
+    setAps((prev) => prev.map((a) => (a.id === id ? { ...a, x_m: x, y_m: y } : a)));
+  const handleRemoveAp = (id: string) =>
+    setAps((prev) => prev.filter((a) => a.id !== id));
 
   // 메트릭 추출 (백엔드가 metrics_json 안에 다양한 키로 넣을 수 있어 유연하게)
   const metrics = parseMetrics(
@@ -97,6 +155,7 @@ export default function SimulationPage() {
         state={state}
         hasVersion={!!currentVersion}
         isStarting={createRfRun.isPending}
+        apsCount={aps.length}
         onStart={handleStart}
         onReset={handleReset}
       />
@@ -117,11 +176,34 @@ export default function SimulationPage() {
         />
       ) : (
         <div className="mt-5 grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
-          <div className="min-h-0 rounded-2xl border bg-background p-6 shadow-sm">
-            <SimulationVisualization
-              state={state}
-              mapUrl={rfMapsQuery.data?.[0]?.storage_url}
-            />
+          <div className="relative min-h-0 overflow-hidden rounded-2xl border bg-background shadow-sm">
+            {state === 'idle' ? (
+              <>
+                <CanvasModeBar apsCount={aps.length} />
+                <SimulationCanvas
+                  sceneVersion={versionDetailQuery.data}
+                  backgroundImageUrl={backgroundImageUrl}
+                  aps={aps}
+                  onAdd={handleAddAp}
+                  onMove={handleMoveAp}
+                  onRemove={handleRemoveAp}
+                  pending={pendingAdd}
+                  onClearPending={() => setPendingAdd(false)}
+                />
+                <ApAddPanel
+                  active={pendingAdd}
+                  onToggle={() => setPendingAdd((v) => !v)}
+                  disabled={aps.length >= 8}
+                />
+              </>
+            ) : (
+              <div className="h-full p-6">
+                <SimulationVisualization
+                  state={state}
+                  mapUrl={rfMapsQuery.data?.[0]?.storage_url}
+                />
+              </div>
+            )}
           </div>
 
           <aside className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1">
@@ -144,16 +226,93 @@ export default function SimulationPage() {
   );
 }
 
+/** 캔버스 좌상단 모드 안내. */
+function CanvasModeBar({ apsCount }: { apsCount: number }) {
+  return (
+    <div className="pointer-events-none absolute left-4 top-4 z-10 flex items-center gap-2 rounded-full border bg-card/95 px-3 py-1.5 text-xs shadow-sm backdrop-blur">
+      <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-primary/10 text-primary">
+        <Play className="h-2.5 w-2.5 fill-current" />
+      </span>
+      <span className="font-semibold">AP 배치 모드</span>
+      <span className="text-muted-foreground">
+        — 우측 "AP 추가" 누르고 도면을 클릭하세요 ({apsCount}/8 · 백엔드 최대 8개)
+      </span>
+    </div>
+  );
+}
+
+/** 캔버스 우상단 "AP 추가하기" 토글 패널.
+ *  active=true (배치 모드) 이면 작은 칩으로 축소돼서 우상단 모서리 클릭 가능하게 함.
+ */
+function ApAddPanel({
+  active,
+  onToggle,
+  disabled,
+}: {
+  active: boolean;
+  onToggle: () => void;
+  disabled: boolean;
+}) {
+  if (active) {
+    return (
+      <button
+        type="button"
+        onClick={onToggle}
+        title="클릭하여 배치 모드 취소"
+        className="absolute right-4 top-4 z-10 inline-flex items-center gap-1.5 rounded-full border border-primary bg-primary/10 px-3 py-1.5 text-[11px] font-medium text-primary shadow-sm backdrop-blur hover:bg-primary/20"
+      >
+        <span
+          className="flex h-4 w-4 items-center justify-center rounded-full text-white"
+          style={{ backgroundColor: 'oklch(0.55 0.22 254)' }}
+        >
+          <Wifi className="h-2.5 w-2.5" />
+        </span>
+        도면 클릭으로 배치 · 취소
+      </button>
+    );
+  }
+
+  return (
+    <div className="absolute right-4 top-4 z-10 w-32 rounded-xl border bg-card p-3 shadow-md">
+      <p className="mb-2 text-center text-xs font-semibold text-muted-foreground">
+        AP 추가하기
+      </p>
+      <button
+        type="button"
+        onClick={onToggle}
+        disabled={disabled}
+        className={cn(
+          'flex w-full flex-col items-center gap-1.5 rounded-lg border bg-background p-2 text-[11px] font-medium transition-colors hover:bg-accent',
+          disabled && 'cursor-not-allowed opacity-50',
+        )}
+      >
+        <span
+          className="flex h-9 w-9 items-center justify-center rounded-full text-white"
+          style={{ backgroundColor: 'oklch(0.55 0.22 254)' }}
+        >
+          <Wifi className="h-4 w-4" />
+        </span>
+        AP 추가
+      </button>
+      {disabled && (
+        <p className="mt-2 text-center text-[10px] text-destructive">최대 8개</p>
+      )}
+    </div>
+  );
+}
+
 function PageHeader({
   state,
   hasVersion,
   isStarting,
+  apsCount,
   onStart,
   onReset,
 }: {
   state: SimulationState;
   hasVersion: boolean;
   isStarting: boolean;
+  apsCount: number;
   onStart: () => void;
   onReset: () => void;
 }) {
@@ -171,7 +330,12 @@ function PageHeader({
           <button
             type="button"
             onClick={onStart}
-            disabled={!hasVersion || isStarting}
+            disabled={!hasVersion || isStarting || apsCount === 0}
+            title={
+              apsCount === 0
+                ? 'AP 를 1개 이상 배치해주세요'
+                : '시뮬레이션 실행'
+            }
             className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Play className="h-4 w-4 fill-current" />

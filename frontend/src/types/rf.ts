@@ -9,9 +9,33 @@ export type RfRunStatus =
   | 'failed'
   | string;
 
+/** §13.1 RF 시뮬레이션 access point. 1~8 개. */
+export interface AccessPointDTO {
+  id: string;
+  x_m: number;
+  y_m: number;
+  z_m: number;
+}
+
+/** §13.1 RF 시뮬레이션 파라미터. SageMaker 입력. */
+export interface RfSimulationParams {
+  frequency_hz: number;
+  tx_power_dbm: number;
+  resolution_m?: number;
+  measurement_plane_z_m?: number;
+  max_depth?: number;
+  samples_per_tx?: number;
+  seed?: number;
+}
+
 export interface RfRunCreate {
   scene_version_id: UUID;
   run_type?: string;
+  /** access_points + simulation 둘 다 있으면 SageMaker 실제 호출. */
+  access_points?: AccessPointDTO[];
+  simulation?: RfSimulationParams;
+  metadata?: Record<string, unknown>;
+  /** Legacy 호환 (deprecated). */
   request_json?: Record<string, unknown>;
 }
 

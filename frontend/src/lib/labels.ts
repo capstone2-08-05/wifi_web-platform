@@ -28,8 +28,19 @@ const OBJECT_TYPE_LABELS: Record<string, string> = {
   closet: '붙박이장',
 };
 
-/** 객체 종류 변경 select 의 옵션 (백엔드 enum 값). */
-export const OBJECT_TYPE_OPTIONS = Object.keys(OBJECT_TYPE_LABELS);
+/**
+ * 객체 종류 변경 select 의 옵션 (백엔드 enum 값).
+ * 2026-05-16 DB 조회 기준 실제 사용되는 값(`SELECT DISTINCT object_type FROM objects/draft_objects`).
+ * AI 모델이 새 클래스를 뱉으면 라벨 매핑(OBJECT_TYPE_LABELS) 에는 있으니 표시는 정상.
+ * 단, 사용자가 이 선택지를 통해 변경할 수 있는 값만 여기에 둔다.
+ */
+export const OBJECT_TYPE_OPTIONS = [
+  'furniture',
+  'bathroom',
+  'stairs',
+  'sofa',
+  'table',
+];
 
 export function objectTypeLabel(type: string | null | undefined): string {
   const key = (type ?? '').toLowerCase();

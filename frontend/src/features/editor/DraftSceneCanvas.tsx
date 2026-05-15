@@ -239,9 +239,9 @@ function getEntityRefPoints(draft: SceneDraft, ref: SelectedEntityRef): Coord[] 
     const g = parseGeometry(draft.rooms.find((r) => r.id === ref.id)?.polygon_geom);
     return g?.type === 'Polygon' ? g.coordinates[0] ?? [] : [];
   }
-  // object — Point 하나
-  const g = parseGeometry(draft.objects.find((o) => o.id === ref.id)?.point_geom);
-  return g?.type === 'Point' ? [g.coordinates] : [];
+  // object — 스냅 비활성화. 객체 중심점을 벽 끝점에 붙이면 박스가 건물 밖으로 나가는
+  // 부작용이 있어, 객체는 자유 배치가 자연스럽다.
+  return [];
 }
 
 /** 점 p 를 선분 a-b 에 수직투영한 좌표. */
@@ -1618,7 +1618,7 @@ function OpeningShape({
   // 수직 단위 벡터
   const nx = -dy / len;
   const ny = dx / len;
-  const offsetM = 0.22;
+  const offsetM = 0.17;
   const labelX = midX + nx * offsetM;
   const labelY = midY + ny * offsetM;
   return (

@@ -27,7 +27,10 @@ export function PromotedCard({ version, versions, onReupload }: PromotedCardProp
 
   if (minimized) {
     return (
-      <div className="pointer-events-auto absolute right-6 top-6 flex items-center gap-2 rounded-full border bg-card px-3 py-2 text-xs shadow-md">
+      <div
+        key="promoted-min"
+        className="pointer-events-auto absolute right-6 top-6 flex items-center gap-2 rounded-full border bg-card px-3 py-2 text-xs shadow-md motion-safe:animate-in motion-safe:fade-in motion-safe:duration-300 motion-safe:ease-out"
+      >
         <CheckCircle2 className="h-4 w-4 text-primary" />
         <span className="font-medium">버전 #{displayVersion.version_no} 활성</span>
         <button
@@ -43,7 +46,10 @@ export function PromotedCard({ version, versions, onReupload }: PromotedCardProp
   }
 
   return (
-    <div className="rounded-xl border bg-card p-6 shadow-sm">
+    <div
+      key="promoted-full"
+      className="rounded-xl border bg-card p-6 shadow-sm motion-safe:animate-in motion-safe:fade-in motion-safe:duration-500 motion-safe:ease-out"
+    >
       <div className="flex items-start gap-3">
         <CheckCircle2 className="mt-0.5 h-6 w-6 text-primary" />
         <div className="flex-1">
