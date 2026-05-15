@@ -220,20 +220,19 @@ function SelectedBody({
       )}
 
       <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={onRotate}
-          disabled={isSaving || !onRotate || selected.kind === 'object'}
-          title={
-            selected.kind === 'object'
-              ? '점 객체는 회전이 적용되지 않습니다'
-              : '90° 시계방향 회전'
-          }
-          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border bg-background px-3 py-2 text-sm font-medium text-foreground/80 shadow-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <RotateCcw className="h-4 w-4" />
-          {isSaving ? '회전 중…' : '회전 90°'}
-        </button>
+        {/* 회전은 점 객체엔 의미 없음 — 그 외 종류에서만 노출. */}
+        {selected.kind !== 'object' && onRotate && (
+          <button
+            type="button"
+            onClick={onRotate}
+            disabled={isSaving}
+            title="90° 시계방향 회전"
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border bg-background px-3 py-2 text-sm font-medium text-foreground/80 shadow-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RotateCcw className="h-4 w-4" />
+            {isSaving ? '회전 중…' : '회전 90°'}
+          </button>
+        )}
         <button
           type="button"
           onClick={onDelete}
