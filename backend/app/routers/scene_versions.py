@@ -80,6 +80,22 @@ def set_current_scene_version(
     )
 
 
+@scene_versions_router.delete(
+    "/{version_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Scene Version 삭제 (children/patch_logs/rf_runs cascade)",
+)
+def delete_scene_version(
+    version_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    scene_version_service.delete_version(
+        db, version_id=version_id, user=current_user
+    )
+    return None
+
+
 @floor_scene_versions_router.get(
     "/{floor_id}/scene-versions",
     response_model=list[SceneVersionResponse],

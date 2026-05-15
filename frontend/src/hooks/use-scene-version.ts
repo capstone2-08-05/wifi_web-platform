@@ -30,15 +30,13 @@ export function useDeleteSceneVersion() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['scene-versions'] });
       qc.invalidateQueries({ queryKey: ['scene-version'] });
+      qc.invalidateQueries({ queryKey: ['rf-runs'] });
+      qc.invalidateQueries({ queryKey: ['patch-logs'] });
       toast.info('버전 삭제됨');
     },
     onError: (err) => {
       const e = err as HttpError | null;
-      const message =
-        e?.status === 404 || e?.status === 405
-          ? '백엔드가 버전 삭제를 지원하지 않습니다.'
-          : e?.message ?? '잠시 후 다시 시도해주세요.';
-      toast.error('버전 삭제 실패', message);
+      toast.error('버전 삭제 실패', e?.message ?? '잠시 후 다시 시도해주세요.');
     },
   });
 }
