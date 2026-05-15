@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import { Camera, MapPin, Smartphone } from 'lucide-react';
+import { MobileConnectModal } from '@/features/mobile/MobileConnectModal';
 
 const FLOW_STEPS = [
   '권한 동의 (시작하기 전)',
@@ -9,12 +11,14 @@ const FLOW_STEPS = [
 ];
 
 export default function MobileAppPage() {
+  const [connectOpen, setConnectOpen] = useState(false);
   return (
     <div className="h-full overflow-auto bg-muted/20 p-10">
       <div className="mx-auto flex max-w-6xl items-start justify-center gap-12">
         <PhoneMockup />
-        <InfoCard />
+        <InfoCard onConnectClick={() => setConnectOpen(true)} />
       </div>
+      <MobileConnectModal open={connectOpen} onClose={() => setConnectOpen(false)} />
     </div>
   );
 }
@@ -103,29 +107,40 @@ function PermissionRow({
   );
 }
 
-function InfoCard() {
+function InfoCard({ onConnectClick }: { onConnectClick: () => void }) {
   return (
-    <section className="w-[360px] shrink-0 rounded-2xl border bg-background p-6 shadow-sm">
-      <header className="flex items-center gap-2">
-        <Smartphone className="h-5 w-5 text-foreground" strokeWidth={1.8} />
-        <h3 className="text-base font-bold">모바일 앱 프로토타입</h3>
-      </header>
+    <div className="flex w-[360px] shrink-0 flex-col gap-3">
+      <section className="rounded-2xl border bg-background p-6 shadow-sm">
+        <header className="flex items-center gap-2">
+          <Smartphone className="h-5 w-5 text-foreground" strokeWidth={1.8} />
+          <h3 className="text-base font-bold">모바일 앱 프로토타입</h3>
+        </header>
 
-      <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
-        비전문가인 소상공인이 현장에서 간편하게 와이파이 품질을 측정하고
-        가구를 스캔할 수 있도록 돕는 Android 컴패니언 앱 디자인입니다.
-      </p>
+        <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
+          비전문가인 소상공인이 현장에서 간편하게 와이파이 품질을 측정하고
+          가구를 스캔할 수 있도록 돕는 Android 컴패니언 앱 디자인입니다.
+        </p>
 
-      <h4 className="mt-6 text-sm font-semibold">주요 화면 플로우</h4>
-      <ul className="mt-3 space-y-2 text-[13px] text-foreground/80">
-        {FLOW_STEPS.map((step) => (
-          <li key={step} className="flex items-start gap-2">
-            <span className="mt-1.5 block h-1.5 w-1.5 shrink-0 rounded-full bg-foreground/60" />
-            <span>{step}</span>
-          </li>
-        ))}
-      </ul>
-    </section>
+        <h4 className="mt-6 text-sm font-semibold">주요 화면 플로우</h4>
+        <ul className="mt-3 space-y-2 text-[13px] text-foreground/80">
+          {FLOW_STEPS.map((step) => (
+            <li key={step} className="flex items-start gap-2">
+              <span className="mt-1.5 block h-1.5 w-1.5 shrink-0 rounded-full bg-foreground/60" />
+              <span>{step}</span>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <button
+        type="button"
+        onClick={onConnectClick}
+        className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
+      >
+        <Smartphone className="h-4 w-4" />
+        모바일 앱 연결
+      </button>
+    </div>
   );
 }
 

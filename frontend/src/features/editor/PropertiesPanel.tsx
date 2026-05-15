@@ -1,7 +1,14 @@
 import { useState } from 'react';
 import { Check, ChevronDown, RotateCcw, ScanLine, Sparkles, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { objectTypeLabel, OBJECT_TYPE_OPTIONS, openingTypeLabel } from '@/lib/labels';
+import {
+  materialLabel,
+  objectTypeLabel,
+  OBJECT_TYPE_OPTIONS,
+  openingTypeLabel,
+  roomTypeLabel,
+  wallRoleLabel,
+} from '@/lib/labels';
 import type {
   DraftObject,
   DraftOpening,
@@ -20,6 +27,8 @@ import {
 
 interface PropertiesPanelProps {
   selected: SelectedEntityResolved | null;
+  /** 다중 선택 시 총 개수. 1 이하면 selected 단일 편집 UI 노출. */
+  selectedCount?: number;
   /** 선택된 엔티티 삭제 (백엔드 DELETE 호출). */
   onDelete?: () => void;
   /** 선택된 엔티티 90° 시계방향 회전. 객체(Point) 는 회전 무의미. */
@@ -46,6 +55,7 @@ const KIND_LABELS: Record<SelectedEntityResolved['kind'], string> = {
 
 export function PropertiesPanel({
   selected,
+  selectedCount,
   onDelete,
   onRotate,
   onUpdateMaterial,
@@ -55,13 +65,20 @@ export function PropertiesPanel({
   isSaving,
   isDeleting,
 }: PropertiesPanelProps) {
+  const isMulti = (selectedCount ?? 0) > 1;
   return (
     <aside className="flex w-80 shrink-0 flex-col gap-5 overflow-y-auto border-l bg-background p-5">
       <h2 className="text-sm font-semibold tracking-tight text-foreground">
         속성 (선택된 객체)
       </h2>
 
-      {selected ? (
+      {isMulti ? (
+        <MultiSelectBody
+          count={selectedCount ?? 0}
+          onDelete={onDelete}
+          isDeleting={!!isDeleting}
+        />
+      ) : selected ? (
         <SelectedBody
           selected={selected}
           onDelete={onDelete}
@@ -79,6 +96,42 @@ export function PropertiesPanel({
 
       <MobileScanCard />
     </aside>
+  );
+}
+
+function MultiSelectBody({
+  count,
+  onDelete,
+  isDeleting,
+}: {
+  count: number;
+  onDelete?: () => void;
+  isDeleting: boolean;
+}) {
+  return (
+    <div className="space-y-4 rounded-lg border bg-card p-4">
+      <div>
+        <p className="text-xs font-medium text-muted-foreground">선택됨</p>
+        <p className="mt-1 text-base font-semibold">{count}개 항목</p>
+      </div>
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        여러 도형이 선택돼 있습니다. 캔버스에서 드래그하면 함께 이동하고,
+        아래 버튼으로 한꺼번에 삭제할 수 있어요.
+        <br />
+        개별 속성 편집은 하나만 선택했을 때 가능합니다.
+      </p>
+      {onDelete && (
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={isDeleting}
+          className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+          {isDeleting ? '삭제 중…' : `${count}개 모두 삭제`}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -167,20 +220,19 @@ function SelectedBody({
       )}
 
       <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={onRotate}
-          disabled={isSaving || !onRotate || selected.kind === 'object'}
-          title={
-            selected.kind === 'object'
-              ? '점 객체는 회전이 적용되지 않습니다'
-              : '90° 시계방향 회전'
-          }
-          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border bg-background px-3 py-2 text-sm font-medium text-foreground/80 shadow-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <RotateCcw className="h-4 w-4" />
-          {isSaving ? '회전 중…' : '회전 90°'}
-        </button>
+        {/* 회전은 점 객체엔 의미 없음 — 그 외 종류에서만 노출. */}
+        {selected.kind !== 'object' && onRotate && (
+          <button
+            type="button"
+            onClick={onRotate}
+            disabled={isSaving}
+            title="90° 시계방향 회전"
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border bg-background px-3 py-2 text-sm font-medium text-foreground/80 shadow-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RotateCcw className="h-4 w-4" />
+            {isSaving ? '회전 중…' : '회전 90°'}
+          </button>
+        )}
         <button
           type="button"
           onClick={onDelete}
@@ -229,10 +281,10 @@ function TypeHeader({ selected }: { selected: SelectedEntityResolved }) {
 function WallFields({ wall }: { wall: DraftWall }) {
   return (
     <Grid>
-      <Row label="역할" value={wall.wall_role} />
+      <Row label="역할" value={wallRoleLabel(wall.wall_role)} />
       <Row label="두께" value={fmtDecimal(wall.thickness_m, 'm')} />
       <Row label="높이" value={fmtDecimal(wall.height_m, 'm')} />
-      <Row label="재질" value={wall.material_label ?? '-'} />
+      <Row label="재질" value={materialLabel(wall.material_label)} />
       <Row label="신뢰도" value={fmtConfidence(wall.confidence)} />
     </Grid>
   );
@@ -242,7 +294,7 @@ function RoomFields({ room }: { room: DraftRoom }) {
   return (
     <Grid>
       <Row label="이름" value={room.room_name?.trim() || '-'} />
-      <Row label="용도" value={room.room_type ?? '-'} />
+      <Row label="용도" value={roomTypeLabel(room.room_type)} />
     </Grid>
   );
 }

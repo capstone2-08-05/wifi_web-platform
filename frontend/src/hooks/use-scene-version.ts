@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { sceneVersionApi } from '@/api/scene-version';
 import type { UUID } from '@/types/common';
 import type { PromoteRequest } from '@/types/scene';
@@ -19,6 +24,9 @@ export function useSceneVersion(versionId: UUID | null) {
     queryKey: ['scene-version', versionId] as const,
     queryFn: () => sceneVersionApi.get(versionId as UUID),
     enabled: !!versionId,
+    // 버전 전환 시 새 detail 이 도착하기 전까지 이전 데이터를 유지 — 캔버스가 잠깐
+    // 비어 보이고 업로드 화면으로 떨어지는 현상 방지.
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -46,14 +54,37 @@ export function useSetCurrentVersion() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (versionId: UUID) => sceneVersionApi.setCurrent(versionId),
-    onSuccess: (data) => {
-      qc.invalidateQueries({ queryKey: ['scene-versions'] });
-      qc.invalidateQueries({ queryKey: ['scene-version', data.id] });
-      toast.success(`버전 #${data.version_no} 으로 전환됨`, '이 버전을 기준으로 작업합니다.');
+    // 낙관적 업데이트 — 리스트 캐시의 is_current 를 즉시 새 버전 쪽으로 옮긴다.
+    // refetch 가 끝나기 전에도 캔버스가 새 버전 상세를 가리키도록.
+    onMutate: async (versionId) => {
+      await qc.cancelQueries({ queryKey: ['scene-versions'] });
+      const snapshot = qc.getQueriesData<unknown>({ queryKey: ['scene-versions'] });
+      qc.setQueriesData<unknown>({ queryKey: ['scene-versions'] }, (old) => {
+        if (!Array.isArray(old)) return old;
+        return (old as Array<{ id: UUID; is_current: boolean }>).map((v) => ({
+          ...v,
+          is_current: v.id === versionId,
+        }));
+      });
+      return { snapshot };
     },
-    onError: (err) => {
+    onError: (err, _vars, ctx) => {
+      // 롤백.
+      if (ctx?.snapshot) {
+        for (const [key, data] of ctx.snapshot) qc.setQueryData(key, data);
+      }
       const e = err as HttpError | null;
       toast.error('버전 전환 실패', e?.message ?? '잠시 후 다시 시도해주세요.');
+    },
+    onSuccess: (data) => {
+      toast.success(`버전 #${data.version_no} 으로 전환됨`, '이 버전을 기준으로 작업합니다.');
+    },
+    onSettled: () => {
+      // 전체 scene-version 관련 캐시 + 드래프트/패치로그도 같이 새로 고침.
+      qc.invalidateQueries({ queryKey: ['scene-versions'] });
+      qc.invalidateQueries({ queryKey: ['scene-version'] });
+      qc.invalidateQueries({ queryKey: ['scene-drafts'] });
+      qc.invalidateQueries({ queryKey: ['patch-logs'] });
     },
   });
 }
