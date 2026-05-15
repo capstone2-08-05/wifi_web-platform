@@ -1069,14 +1069,21 @@ function RoomShape({
   );
 }
 
-/** 방 표시용 라벨 — room_name 우선, 없으면 room_type 한글 변환. */
+/** AI 자동 생성으로 의심되는 이름. 사용자가 의도적으로 붙인 이름이 아니면 무시. */
+const AUTO_ROOM_NAME = /^room[_\s-]?\d+$/i;
+
+/** 방 표시용 라벨 — 의미 있는 room_name 이 있으면 우선, 그 외엔 room_type 한글 변환. */
 function roomLabel(room: DraftRoom): string | null {
-  if (room.room_name && room.room_name.trim()) return room.room_name;
+  const name = room.room_name?.trim();
+  if (name && !AUTO_ROOM_NAME.test(name)) return name;
   if (room.room_type) return ROOM_TYPE_LABEL[room.room_type] ?? room.room_type;
-  return null;
+  return 'room';
 }
 
 const ROOM_TYPE_LABEL: Record<string, string> = {
+  general: 'room',
+  room: 'room',
+  unknown: 'room',
   kitchen: '주방',
   storage: '창고',
   office: '사무실',
