@@ -14,15 +14,22 @@ interface PromotedCardProps {
 export function PromotedCard({ version, versions, onReupload }: PromotedCardProps) {
   const [minimized, setMinimized] = useState(false);
 
+  // versions 리스트에 is_current 가 잡혀있으면 그쪽을 진실의 원천으로 사용.
+  // (justPromoted 로 캡처된 stale version prop 이 전환 후에도 따라오지 않는 문제 해결.)
+  const displayVersion = versions?.find((v) => v.is_current) ?? version;
+
   // 확정본 변경 이력 (§9.1) — Draft 단계 변경은 안 쌓이고, 확정 후 PATCH 시 기록됨.
-  const patchLogsQuery = useVersionPatchLogs(version.id, { page: 1, page_size: 1 });
+  const patchLogsQuery = useVersionPatchLogs(displayVersion.id, {
+    page: 1,
+    page_size: 1,
+  });
   const totalPatchLogs = patchLogsQuery.data?.total ?? 0;
 
   if (minimized) {
     return (
       <div className="pointer-events-auto absolute right-6 top-6 flex items-center gap-2 rounded-full border bg-card px-3 py-2 text-xs shadow-md">
         <CheckCircle2 className="h-4 w-4 text-primary" />
-        <span className="font-medium">버전 #{version.version_no} 활성</span>
+        <span className="font-medium">버전 #{displayVersion.version_no} 활성</span>
         <button
           type="button"
           onClick={() => setMinimized(false)}
@@ -40,9 +47,9 @@ export function PromotedCard({ version, versions, onReupload }: PromotedCardProp
       <div className="flex items-start gap-3">
         <CheckCircle2 className="mt-0.5 h-6 w-6 text-primary" />
         <div className="flex-1">
-          <h3 className="text-lg font-semibold">버전 #{version.version_no} 확정 완료</h3>
+          <h3 className="text-lg font-semibold">버전 #{displayVersion.version_no} 확정 완료</h3>
           <p className="mt-1 text-sm text-muted-foreground">
-            {version.is_current
+            {displayVersion.is_current
               ? '이어서 편집하시려면 오른쪽 위 최소화 버튼을 눌러 캔버스로 돌아가세요.'
               : '새 버전이 저장되었습니다.'}
           </p>

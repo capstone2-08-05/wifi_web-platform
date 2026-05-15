@@ -78,7 +78,51 @@ export default function EditorPage() {
 
   const [justPromoted, setJustPromoted] = useState<SceneVersion | null>(null);
   const [pendingFileName, setPendingFileName] = useState<string | null>(null);
-  const [selectedRef, setSelectedRef] = useState<SelectedEntityRef | null>(null);
+  // 다중 선택 지원 — selectedRef 는 primary (length 1 일 때만 유효).
+  const [selectedRefs, setSelectedRefs] = useState<SelectedEntityRef[]>([]);
+  const selectedRef: SelectedEntityRef | null =
+    selectedRefs.length === 1 ? selectedRefs[0] : null;
+  const setSelectedRef = (ref: SelectedEntityRef | null) =>
+    setSelectedRefs(ref ? [ref] : []);
+  /** 도형 클릭/Shift+클릭 핸들러. additive=true 면 토글, false 면 단일 교체. */
+  const handleSelect = (
+    ref: SelectedEntityRef | null,
+    options?: { additive?: boolean },
+  ) => {
+    if (!ref) {
+      setSelectedRefs([]);
+      return;
+    }
+    if (options?.additive) {
+      setSelectedRefs((prev) => {
+        const exists = prev.some((r) => r.kind === ref.kind && r.id === ref.id);
+        return exists
+          ? prev.filter((r) => !(r.kind === ref.kind && r.id === ref.id))
+          : [...prev, ref];
+      });
+      return;
+    }
+    setSelectedRefs([ref]);
+  };
+
+  /** Marquee 드래그 종료 시 영역 내부 도형들을 한꺼번에 선택. */
+  const handleSelectMany = (
+    refs: SelectedEntityRef[],
+    options?: { additive?: boolean },
+  ) => {
+    if (!options?.additive) {
+      setSelectedRefs(refs);
+      return;
+    }
+    setSelectedRefs((prev) => {
+      const merged = [...prev];
+      for (const r of refs) {
+        const exists = merged.some((m) => m.kind === r.kind && m.id === r.id);
+        if (!exists) merged.push(r);
+      }
+      return merged;
+    });
+  };
 
   // 분석 Job 추적 — POST /upload/floorplan/analyze 가 즉시 202 + job_id 만 반환.
   // 실제 완료 여부는 useFloorplanJob 폴링으로 확인.
@@ -298,27 +342,166 @@ export default function EditorPage() {
   }, [history, isVersionEditing]);
 
   // 드래그 (shape 평행이동 / vertex 개별 이동) 종료 시 새 geometry 로 PATCH.
+  // 다중 선택 + shape 모드 → 같은 변위(delta) 를 모든 선택 도형에 적용 (그룹 이동).
   const handleDragEnd = (
     ref: SelectedEntityRef,
     geometry: GeoJsonGeometry,
   ) => {
     const body = geomFieldFor(ref.kind, geometry);
     if (!body) return;
+
+    // 다중 선택 + 이동된 도형이 선택군 안에 있으면 → 그룹 이동.
+    const isMulti =
+      selectedRefs.length > 1 &&
+      selectedRefs.some((r) => r.kind === ref.kind && r.id === ref.id);
+    if (isMulti && baseScene) {
+      const delta = computeDragDelta(ref, geometry, baseScene);
+      if (delta) {
+        const [dx, dy] = delta;
+        for (const other of selectedRefs) {
+          if (other.kind === ref.kind && other.id === ref.id) {
+            runPatch(ref.kind, ref.id, body, { silent: true });
+          } else {
+            translateAndPatch(other, dx, dy);
+          }
+        }
+        return;
+      }
+    }
+
     runPatch(ref.kind, ref.id, body, { silent: true });
   };
 
-  // 선택된 엔티티 삭제
-  const handleDeleteSelected = () => {
-    if (!selectedRef) return;
-    const onSuccess = () => setSelectedRef(null);
-    if (isVersionEditing) {
-      deleteVersionEntity.mutate(
-        { kind: selectedRef.kind, id: selectedRef.id },
-        { onSuccess },
-      );
-    } else {
-      deleteEntity.mutate({ kind: selectedRef.kind, id: selectedRef.id }, { onSuccess });
+  /** 엔티티의 geometry 를 dx,dy 만큼 평행이동시킨 새 geometry 로 PATCH. */
+  const translateAndPatch = (ref: SelectedEntityRef, dx: number, dy: number) => {
+    if (!baseScene) return;
+    const list =
+      ref.kind === 'wall'
+        ? baseScene.walls
+        : ref.kind === 'room'
+        ? baseScene.rooms
+        : ref.kind === 'opening'
+        ? baseScene.openings
+        : baseScene.objects;
+    const entity = (list as Array<{ id: string }>).find((e) => e.id === ref.id) as
+      | Record<string, unknown>
+      | undefined;
+    if (!entity) return;
+    const geomFieldName =
+      ref.kind === 'wall'
+        ? 'centerline_geom'
+        : ref.kind === 'room'
+        ? 'polygon_geom'
+        : ref.kind === 'opening'
+        ? 'line_geom'
+        : 'point_geom';
+    const g = parseGeometry(entity[geomFieldName] as Record<string, unknown> | null | undefined);
+    if (!g) return;
+    const moved = (() => {
+      if (g.type === 'Point') {
+        return {
+          type: 'Point' as const,
+          coordinates: [g.coordinates[0] + dx, g.coordinates[1] + dy] as [number, number],
+        };
+      }
+      if (g.type === 'LineString') {
+        return {
+          type: 'LineString' as const,
+          coordinates: g.coordinates.map(([x, y]) => [x + dx, y + dy] as [number, number]),
+        };
+      }
+      return {
+        type: 'Polygon' as const,
+        coordinates: g.coordinates.map((ring) =>
+          ring.map(([x, y]) => [x + dx, y + dy] as [number, number]),
+        ),
+      };
+    })();
+    const body = geomFieldFor(ref.kind, moved);
+    if (body) runPatch(ref.kind, ref.id, body, { silent: true });
+  };
+
+  /** 그룹 리사이즈 종료 — 각 선택 도형 좌표 / 객체 W·H 를 같은 비율로 변환해 PATCH. */
+  const handleGroupResizeEnd = ({
+    fixed,
+    sx,
+    sy,
+    refs,
+  }: {
+    fixed: [number, number];
+    sx: number;
+    sy: number;
+    refs: SelectedEntityRef[];
+  }) => {
+    if (!baseScene) return;
+    const scale = (x: number, y: number): [number, number] => [
+      fixed[0] + (x - fixed[0]) * sx,
+      fixed[1] + (y - fixed[1]) * sy,
+    ];
+    for (const ref of refs) {
+      if (ref.kind === 'wall' || ref.kind === 'opening') {
+        const list = ref.kind === 'wall' ? baseScene.walls : baseScene.openings;
+        const field = ref.kind === 'wall' ? 'centerline_geom' : 'line_geom';
+        const entity = (list as Array<{ id: string } & Record<string, unknown>>).find(
+          (e) => e.id === ref.id,
+        );
+        const g = parseGeometry(entity?.[field] as Record<string, unknown> | null | undefined);
+        if (g?.type !== 'LineString') continue;
+        const scaled = {
+          type: 'LineString' as const,
+          coordinates: g.coordinates.map(([x, y]) => scale(x, y)),
+        };
+        const body = geomFieldFor(ref.kind, scaled);
+        if (body) runPatch(ref.kind, ref.id, body, { silent: true });
+      } else if (ref.kind === 'room') {
+        const room = baseScene.rooms.find((r) => r.id === ref.id);
+        const g = parseGeometry(room?.polygon_geom);
+        if (g?.type !== 'Polygon') continue;
+        const scaled = {
+          type: 'Polygon' as const,
+          coordinates: g.coordinates.map((ring) => ring.map(([x, y]) => scale(x, y))),
+        };
+        const body = geomFieldFor('room', scaled);
+        if (body) runPatch('room', ref.id, body, { silent: true });
+      } else {
+        const obj = baseScene.objects.find((o) => o.id === ref.id);
+        const g = parseGeometry(obj?.point_geom);
+        if (g?.type !== 'Point') continue;
+        const [cx, cy] = g.coordinates;
+        const [nx, ny] = scale(cx, cy);
+        const meta = (obj?.metadata_json ?? {}) as Record<string, unknown>;
+        const curW =
+          typeof meta.width_m === 'number' && meta.width_m > 0 ? meta.width_m : 1.6;
+        const curH =
+          typeof meta.height_m === 'number' && meta.height_m > 0 ? meta.height_m : 1.6;
+        const newW = Math.max(0.2, curW * Math.abs(sx));
+        const newH = Math.max(0.2, curH * Math.abs(sy));
+        runPatch(
+          'object',
+          ref.id,
+          {
+            point_geom: { type: 'Point', coordinates: [nx, ny] },
+            metadata_json: { ...meta, width_m: newW, height_m: newH },
+          },
+          { silent: true },
+        );
+      }
     }
+  };
+
+  // 선택된 엔티티들 삭제 (다중 선택 지원)
+  const handleDeleteSelected = () => {
+    if (selectedRefs.length === 0) return;
+    const onSuccess = () => setSelectedRefs([]);
+    selectedRefs.forEach((r, idx) => {
+      const last = idx === selectedRefs.length - 1;
+      const vars = { kind: r.kind, id: r.id };
+      if (isVersionEditing) {
+        deleteVersionEntity.mutate(vars, last ? { onSuccess } : undefined);
+      } else {
+        deleteEntity.mutate(vars, last ? { onSuccess } : undefined);
+      }
+    });
   };
 
   // 벽 재질 변경
@@ -552,8 +735,10 @@ export default function EditorPage() {
             {editingScene ? (
               <DraftSceneCanvas
                 draft={editingScene}
-                selectedRef={selectedRef}
-                onSelect={setSelectedRef}
+                selectedRefs={selectedRefs}
+                onSelect={handleSelect}
+                onSelectMany={handleSelectMany}
+                onGroupResizeEnd={handleGroupResizeEnd}
                 onDragEnd={handleDragEnd}
                 onResizeObject={handleResizeObject}
                 tool={tool}
@@ -629,6 +814,7 @@ export default function EditorPage() {
 
       <PropertiesPanel
         selected={resolvedSelected}
+        selectedCount={selectedRefs.length}
         onUpdateObjectType={handleUpdateObjectType}
         onDelete={handleDeleteSelected}
         onRotate={handleRotateSelected}
@@ -723,6 +909,30 @@ function geomFieldFor(
     return { polygon_geom: geometry };
   if (kind === 'object' && geometry.type === 'Point')
     return { point_geom: geometry };
+  return null;
+}
+
+/**
+ * 드래그된 엔티티의 변위(dx, dy) 계산.
+ * 새 geometry 의 첫 좌표 - 이전 geometry 의 첫 좌표. 그룹 이동 시 다른 도형들에 같은 변위 적용.
+ */
+function computeDragDelta(
+  ref: SelectedEntityRef,
+  newGeom: GeoJsonGeometry,
+  scene: SceneDraft,
+): [number, number] | null {
+  const oldGeom = readGeometryOf(ref, scene);
+  if (!oldGeom) return null;
+  const oldFirst = firstCoord(oldGeom);
+  const newFirst = firstCoord(newGeom);
+  if (!oldFirst || !newFirst) return null;
+  return [newFirst[0] - oldFirst[0], newFirst[1] - oldFirst[1]];
+}
+
+function firstCoord(g: GeoJsonGeometry): [number, number] | null {
+  if (g.type === 'Point') return g.coordinates as [number, number];
+  if (g.type === 'LineString') return g.coordinates[0] ?? null;
+  if (g.type === 'Polygon') return g.coordinates[0]?.[0] ?? null;
   return null;
 }
 

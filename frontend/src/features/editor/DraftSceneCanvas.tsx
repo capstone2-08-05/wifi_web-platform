@@ -54,10 +54,16 @@ function computeViewBox(draft: SceneDraft): { x: number; y: number; w: number; h
   }
   for (const obj of draft.objects) {
     const g = parseGeometry(obj.point_geom);
-    if (g?.type === 'Point') {
-      const [x, y] = g.coordinates;
-      extendBounds(b, x, y);
-    }
+    if (g?.type !== 'Point') continue;
+    const [x, y] = g.coordinates;
+    // 객체는 박스(W×H) 로 렌더링되므로 박스 모서리까지 bounds 에 포함.
+    const meta = (obj.metadata_json ?? {}) as Record<string, unknown>;
+    const w =
+      typeof meta.width_m === 'number' && meta.width_m > 0 ? meta.width_m : 1.6;
+    const h =
+      typeof meta.height_m === 'number' && meta.height_m > 0 ? meta.height_m : 1.6;
+    extendBounds(b, x - w / 2, y - h / 2);
+    extendBounds(b, x + w / 2, y + h / 2);
   }
   if (!isFinite(b.minX)) return { x: 0, y: 0, w: 10, h: 10 };
   const w = b.maxX - b.minX || 1;
@@ -88,6 +94,21 @@ type DragState =
       cornerSign: [-1 | 1, -1 | 1];
       startSvg: Coord;
       delta: Coord;
+    }
+  | {
+      // 빈 캔버스에서 사각형 드래그 → 영역 내부 도형 일괄 선택.
+      mode: 'marquee';
+      startSvg: Coord;
+      currentSvg: Coord;
+      additive: boolean;
+    }
+  | {
+      // 다중 선택 bbox 의 모서리 드래그 → 모든 선택 도형을 같은 비율로 스케일.
+      // fixed=고정 모서리(반대편), startCorner=드래그 시작 좌표, currentCorner=현재 커서.
+      mode: 'group-resize';
+      fixed: Coord;
+      startCorner: Coord;
+      currentCorner: Coord;
     };
 
 /** 생성 진행 중 임시 상태. */
@@ -307,6 +328,158 @@ function computeShapeSnapDelta(
   return { delta: rawDelta, snapPoint: null };
 }
 
+/** 두 코너 좌표로 (x,y,w,h) 사각형 정규화. w,h 는 항상 ≥ 0. */
+function normalizeRect(
+  a: Coord,
+  b: Coord,
+): { x: number; y: number; w: number; h: number } {
+  const x = Math.min(a[0], b[0]);
+  const y = Math.min(a[1], b[1]);
+  const w = Math.abs(a[0] - b[0]);
+  const h = Math.abs(a[1] - b[1]);
+  return { x, y, w, h };
+}
+
+/** 점이 사각형 안인지. */
+function pointInRect(
+  pt: Coord,
+  rect: { x: number; y: number; w: number; h: number },
+): boolean {
+  return (
+    pt[0] >= rect.x &&
+    pt[0] <= rect.x + rect.w &&
+    pt[1] >= rect.y &&
+    pt[1] <= rect.y + rect.h
+  );
+}
+
+/**
+ * 마퀴 영역 안에 들어간 도형 ref 들 수집.
+ * - wall/opening (LineString) → 양 끝점 모두 영역 안일 때
+ * - room (Polygon) → 외곽링 모든 점이 영역 안일 때
+ * - object (Point) → 박스 4 모서리가 영역 안일 때 (박스가 통째로 들어와야 선택됨)
+ */
+function collectEntitiesInRect(
+  draft: SceneDraft,
+  rect: { x: number; y: number; w: number; h: number },
+): SelectedEntityRef[] {
+  const hits: SelectedEntityRef[] = [];
+  for (const wall of draft.walls) {
+    const g = parseGeometry(wall.centerline_geom);
+    if (g?.type !== 'LineString') continue;
+    if (g.coordinates.every((p) => pointInRect(p, rect))) {
+      hits.push({ kind: 'wall', id: wall.id });
+    }
+  }
+  for (const op of draft.openings) {
+    const g = parseGeometry(op.line_geom);
+    if (g?.type !== 'LineString') continue;
+    if (g.coordinates.every((p) => pointInRect(p, rect))) {
+      hits.push({ kind: 'opening', id: op.id });
+    }
+  }
+  for (const room of draft.rooms) {
+    const g = parseGeometry(room.polygon_geom);
+    if (g?.type !== 'Polygon') continue;
+    const outer = g.coordinates[0] ?? [];
+    if (outer.length > 0 && outer.every((p) => pointInRect(p, rect))) {
+      hits.push({ kind: 'room', id: room.id });
+    }
+  }
+  for (const obj of draft.objects) {
+    const g = parseGeometry(obj.point_geom);
+    if (g?.type !== 'Point') continue;
+    const [cx, cy] = g.coordinates;
+    const meta = (obj.metadata_json ?? {}) as Record<string, unknown>;
+    const w =
+      typeof meta.width_m === 'number' && meta.width_m > 0 ? meta.width_m : 1.6;
+    const h =
+      typeof meta.height_m === 'number' && meta.height_m > 0 ? meta.height_m : 1.6;
+    const corners: Coord[] = [
+      [cx - w / 2, cy - h / 2],
+      [cx + w / 2, cy - h / 2],
+      [cx - w / 2, cy + h / 2],
+      [cx + w / 2, cy + h / 2],
+    ];
+    if (corners.every((p) => pointInRect(p, rect))) {
+      hits.push({ kind: 'object', id: obj.id });
+    }
+  }
+  return hits;
+}
+
+/** group-resize 드래그에서 sx, sy 추출. 0 으로 나눠지면 1 유지(축에 평행한 corner 일 때). */
+function groupResizeScale(
+  drag: Extract<DragState, { mode: 'group-resize' }>,
+): { sx: number; sy: number } {
+  const dx0 = drag.startCorner[0] - drag.fixed[0];
+  const dy0 = drag.startCorner[1] - drag.fixed[1];
+  const dx1 = drag.currentCorner[0] - drag.fixed[0];
+  const dy1 = drag.currentCorner[1] - drag.fixed[1];
+  const sx = Math.abs(dx0) > 1e-6 ? dx1 / dx0 : 1;
+  const sy = Math.abs(dy0) > 1e-6 ? dy1 / dy0 : 1;
+  // 최소 스케일 — 너무 작아지면 선택군이 점으로 수렴해버리므로 floor.
+  const MIN = 0.05;
+  return {
+    sx: Math.abs(sx) < MIN ? Math.sign(sx) * MIN || MIN : sx,
+    sy: Math.abs(sy) < MIN ? Math.sign(sy) * MIN || MIN : sy,
+  };
+}
+
+/** 고정점(fix) 기준으로 (x, y) 를 (sx, sy) 만큼 스케일. */
+function scaleAround(pt: Coord, fix: Coord, sx: number, sy: number): Coord {
+  return [fix[0] + (pt[0] - fix[0]) * sx, fix[1] + (pt[1] - fix[1]) * sy];
+}
+
+/** 선택된 도형들의 AABB(미니멈 경계상자). 없으면 null. */
+function computeSelectionBounds(
+  draft: SceneDraft,
+  refs: SelectedEntityRef[],
+): { x: number; y: number; w: number; h: number } | null {
+  const b = emptyBounds();
+  let any = false;
+  for (const ref of refs) {
+    if (ref.kind === 'wall') {
+      const g = parseGeometry(draft.walls.find((w) => w.id === ref.id)?.centerline_geom);
+      if (g?.type === 'LineString')
+        for (const [x, y] of g.coordinates) {
+          extendBounds(b, x, y);
+          any = true;
+        }
+    } else if (ref.kind === 'opening') {
+      const g = parseGeometry(draft.openings.find((o) => o.id === ref.id)?.line_geom);
+      if (g?.type === 'LineString')
+        for (const [x, y] of g.coordinates) {
+          extendBounds(b, x, y);
+          any = true;
+        }
+    } else if (ref.kind === 'room') {
+      const g = parseGeometry(draft.rooms.find((r) => r.id === ref.id)?.polygon_geom);
+      if (g?.type === 'Polygon')
+        for (const ring of g.coordinates)
+          for (const [x, y] of ring) {
+            extendBounds(b, x, y);
+            any = true;
+          }
+    } else {
+      const obj = draft.objects.find((o) => o.id === ref.id);
+      const g = parseGeometry(obj?.point_geom);
+      if (g?.type !== 'Point') continue;
+      const [cx, cy] = g.coordinates;
+      const meta = (obj?.metadata_json ?? {}) as Record<string, unknown>;
+      const w =
+        typeof meta.width_m === 'number' && meta.width_m > 0 ? meta.width_m : 1.6;
+      const h =
+        typeof meta.height_m === 'number' && meta.height_m > 0 ? meta.height_m : 1.6;
+      extendBounds(b, cx - w / 2, cy - h / 2);
+      extendBounds(b, cx + w / 2, cy + h / 2);
+      any = true;
+    }
+  }
+  if (!any || !isFinite(b.minX)) return null;
+  return { x: b.minX, y: b.minY, w: b.maxX - b.minX, h: b.maxY - b.minY };
+}
+
 function polygonCentroid(points: Coord[]): Coord {
   if (points.length === 0) return [0, 0];
   const n = points.length;
@@ -330,8 +503,27 @@ function polygonBounds(points: Coord[]): { w: number; h: number } {
 
 interface Props {
   draft: SceneDraft;
-  selectedRef?: SelectedEntityRef | null;
-  onSelect?: (ref: SelectedEntityRef | null) => void;
+  /** 선택된 도형들. 단일 선택이면 길이 1, 다중 선택이면 N. */
+  selectedRefs?: SelectedEntityRef[];
+  /**
+   * 도형 선택 콜백.
+   * - additive=true (Shift+클릭): 기존 선택에 추가/토글
+   * - additive=false (일반 클릭): 단일 선택으로 교체
+   * - ref=null: 전체 해제
+   */
+  onSelect?: (ref: SelectedEntityRef | null, options?: { additive?: boolean }) => void;
+  /** Marquee 드래그 종료 시 영역 내부 도형들을 한꺼번에 선택. additive=true 면 기존 선택에 합집합. */
+  onSelectMany?: (refs: SelectedEntityRef[], options?: { additive?: boolean }) => void;
+  /**
+   * 다중 선택 bbox 모서리 드래그 종료 시, 고정점과 스케일을 알려줌.
+   * 호출 측이 각 선택 도형 좌표/메타데이터를 변환해서 PATCH 한다.
+   */
+  onGroupResizeEnd?: (params: {
+    fixed: Coord;
+    sx: number;
+    sy: number;
+    refs: SelectedEntityRef[];
+  }) => void;
   /** 드래그 종료 시 새 geometry. 호출 측이 적절한 *_geom 필드로 PATCH 한다. */
   onDragEnd?: (ref: SelectedEntityRef, geometry: GeoJsonGeometry) => void;
   /** 공간성 객체 박스 리사이즈 종료. metadata_json 의 width_m/height_m 업데이트용. */
@@ -346,8 +538,10 @@ interface Props {
 
 export function DraftSceneCanvas({
   draft,
-  selectedRef,
+  selectedRefs,
   onSelect,
+  onSelectMany,
+  onGroupResizeEnd,
   onDragEnd,
   onResizeObject,
   tool = 'select',
@@ -361,6 +555,10 @@ export function DraftSceneCanvas({
   const [cursorPos, setCursorPos] = useState<Coord | null>(null);
   // 스냅 발생 시 표시할 위치 (초록 링). 스냅 안 되면 null.
   const [snapIndicator, setSnapIndicator] = useState<Coord | null>(null);
+
+  // 단일 선택일 때의 primary ref. vertex/resize 핸들·라벨은 단일 선택 시에만 의미.
+  const selectedRef: SelectedEntityRef | null =
+    selectedRefs && selectedRefs.length === 1 ? selectedRefs[0] : null;
 
   // 스냅 anchor = 벽 끝점만. 드래그/선택 중인 벽은 자기 자신에 안 붙도록 제외.
   const wallAnchors = useMemo(
@@ -421,7 +619,16 @@ export function DraftSceneCanvas({
     if (!pt) return;
     svgRef.current?.setPointerCapture(e.pointerId);
     setDrag({ mode: 'shape', ref, startSvg: pt, delta: [0, 0] });
-    onSelect?.(ref);
+    // Shift+클릭: 추가 선택. 그 외엔 단일 선택으로 교체.
+    // 이미 선택된 도형을 드래그 시작할 땐 선택 유지 (다중 선택 드래그 자연스럽게).
+    const alreadySelected = !!selectedRefs?.some(
+      (r) => r.kind === ref.kind && r.id === ref.id,
+    );
+    if (e.shiftKey) {
+      onSelect?.(ref, { additive: true });
+    } else if (!alreadySelected) {
+      onSelect?.(ref);
+    }
   };
 
   const startVertexDrag = (
@@ -452,6 +659,22 @@ export function DraftSceneCanvas({
     onSelect?.(ref);
   };
 
+  const startGroupResizeDrag = (
+    e: React.PointerEvent,
+    fixedCorner: Coord,
+    startCorner: Coord,
+  ) => {
+    if (tool !== 'select') return;
+    e.stopPropagation();
+    svgRef.current?.setPointerCapture(e.pointerId);
+    setDrag({
+      mode: 'group-resize',
+      fixed: fixedCorner,
+      startCorner,
+      currentCorner: startCorner,
+    });
+  };
+
   const handleSvgPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
     const raw = getSvgPoint(e);
     if (!raw) return;
@@ -470,6 +693,20 @@ export function DraftSceneCanvas({
 
     if (!drag) {
       if (!isCreationMode) setSnapIndicator(null);
+      return;
+    }
+
+    // ─ marquee 드래그: 사각형만 갱신, 실 선택은 pointerUp 에서. ─
+    if (drag.mode === 'marquee') {
+      setDrag((prev) => (prev && prev.mode === 'marquee' ? { ...prev, currentSvg: raw } : prev));
+      return;
+    }
+
+    // ─ group-resize: 현재 모서리 위치만 갱신. 미리보기는 effective* 가 처리. ─
+    if (drag.mode === 'group-resize') {
+      setDrag((prev) =>
+        prev && prev.mode === 'group-resize' ? { ...prev, currentCorner: raw } : prev,
+      );
       return;
     }
 
@@ -517,6 +754,35 @@ export function DraftSceneCanvas({
     const captured = drag;
     setDrag(null);
     setSnapIndicator(null);
+
+    // marquee: 박스 크기가 임계 이상이면 영역 안 도형 일괄 선택; 미만이면 단순 클릭으로 보고 선택 해제.
+    if (captured.mode === 'marquee') {
+      const rect = normalizeRect(captured.startSvg, captured.currentSvg);
+      const tiny =
+        rect.w < DRAG_THRESHOLD_M && rect.h < DRAG_THRESHOLD_M;
+      if (tiny) {
+        if (!captured.additive) onSelect?.(null);
+        return;
+      }
+      const hits = collectEntitiesInRect(draft, rect);
+      onSelectMany?.(hits, { additive: captured.additive });
+      return;
+    }
+
+    // group-resize: scale 이 의미 있는 경우 한해 상위로 전달.
+    if (captured.mode === 'group-resize') {
+      const { sx, sy } = groupResizeScale(captured);
+      const meaningful = Math.abs(sx - 1) > 0.01 || Math.abs(sy - 1) > 0.01;
+      if (meaningful && selectedRefs && selectedRefs.length >= 2) {
+        onGroupResizeEnd?.({
+          fixed: captured.fixed,
+          sx,
+          sy,
+          refs: selectedRefs,
+        });
+      }
+      return;
+    }
 
     const [dx, dy] = captured.delta;
     if (Math.abs(dx) < DRAG_THRESHOLD_M && Math.abs(dy) < DRAG_THRESHOLD_M) return;
@@ -626,12 +892,17 @@ export function DraftSceneCanvas({
       return;
     }
 
-    // select 모드: 빈 영역 클릭 → 선택 해제
-    if (e.target === e.currentTarget) onSelect?.(null);
+    // select 모드: 빈 영역 → marquee 드래그 시작 (작은 움직임이면 pointerUp 에서 선택 해제로 처리).
+    if (e.target === e.currentTarget) {
+      const pt = getSvgPoint(e);
+      if (!pt) return;
+      svgRef.current?.setPointerCapture(e.pointerId);
+      setDrag({ mode: 'marquee', startSvg: pt, currentSvg: pt, additive: e.shiftKey });
+    }
   };
 
   const isSelected = (kind: SelectedEntityRef['kind'], id: string) =>
-    selectedRef?.kind === kind && selectedRef.id === id;
+    !!selectedRefs?.some((r) => r.kind === kind && r.id === id);
 
   return (
     <div className="relative flex h-full w-full items-center justify-center overflow-hidden bg-[#f8fafc] p-6 [background-image:radial-gradient(circle,_oklch(0.92_0_0)_1px,_transparent_1px)] [background-position:0_0] [background-size:18px_18px]">
@@ -728,67 +999,111 @@ export function DraftSceneCanvas({
             />
           ))}
 
-        {/* 선택된 항목 — 항상 맨 위에 렌더. */}
-        {selectedRef &&
-          (() => {
-            if (selectedRef.kind === 'room') {
-              const room = draft.rooms.find((r) => r.id === selectedRef.id);
-              return room ? (
-                <RoomShape
-                  key={`sel-${room.id}`}
-                  room={room}
-                  selected
-                  drag={matchDrag(drag, 'room', room.id)}
-                  onShapePointerDown={(e) => startShapeDrag(e, { kind: 'room', id: room.id })}
-                  onVertexPointerDown={(e, idx) =>
-                    startVertexDrag(e, { kind: 'room', id: room.id }, idx)
-                  }
-                />
-              ) : null;
-            }
-            if (selectedRef.kind === 'wall') {
-              const wall = draft.walls.find((w) => w.id === selectedRef.id);
-              return wall ? (
-                <WallShape
-                  key={`sel-${wall.id}`}
-                  wall={wall}
-                  selected
-                  drag={matchDrag(drag, 'wall', wall.id)}
-                  onShapePointerDown={(e) => startShapeDrag(e, { kind: 'wall', id: wall.id })}
-                  onVertexPointerDown={(e, idx) =>
-                    startVertexDrag(e, { kind: 'wall', id: wall.id }, idx)
-                  }
-                />
-              ) : null;
-            }
-            if (selectedRef.kind === 'opening') {
-              const op = draft.openings.find((o) => o.id === selectedRef.id);
-              return op ? (
-                <OpeningShape
-                  key={`sel-${op.id}`}
-                  opening={op}
-                  selected
-                  drag={matchDrag(drag, 'opening', op.id)}
-                  onShapePointerDown={(e) => startShapeDrag(e, { kind: 'opening', id: op.id })}
-                  onVertexPointerDown={(e, idx) =>
-                    startVertexDrag(e, { kind: 'opening', id: op.id }, idx)
-                  }
-                />
-              ) : null;
-            }
-            const obj = draft.objects.find((o) => o.id === selectedRef.id);
-            return obj ? (
-              <ObjectShape
-                key={`sel-${obj.id}`}
-                object={obj}
+        {/* 선택된 항목들 — 항상 맨 위에 렌더 (단일/다중 모두). */}
+        {(selectedRefs ?? []).map((ref) => {
+          if (ref.kind === 'room') {
+            const room = draft.rooms.find((r) => r.id === ref.id);
+            return room ? (
+              <RoomShape
+                key={`sel-${room.id}`}
+                room={room}
                 selected
-                drag={matchDrag(drag, 'object', obj.id)}
-                onShapePointerDown={(e) => startShapeDrag(e, { kind: 'object', id: obj.id })}
-                onResizePointerDown={(e, sign) =>
-                  startResizeDrag(e, { kind: 'object', id: obj.id }, sign)
+                drag={groupDrag(drag, selectedRefs, 'room', room.id)}
+                onShapePointerDown={(e) => startShapeDrag(e, { kind: 'room', id: room.id })}
+                onVertexPointerDown={(e, idx) =>
+                  startVertexDrag(e, { kind: 'room', id: room.id }, idx)
                 }
               />
             ) : null;
+          }
+          if (ref.kind === 'wall') {
+            const wall = draft.walls.find((w) => w.id === ref.id);
+            return wall ? (
+              <WallShape
+                key={`sel-${wall.id}`}
+                wall={wall}
+                selected
+                drag={groupDrag(drag, selectedRefs, 'wall', wall.id)}
+                onShapePointerDown={(e) => startShapeDrag(e, { kind: 'wall', id: wall.id })}
+                onVertexPointerDown={(e, idx) =>
+                  startVertexDrag(e, { kind: 'wall', id: wall.id }, idx)
+                }
+              />
+            ) : null;
+          }
+          if (ref.kind === 'opening') {
+            const op = draft.openings.find((o) => o.id === ref.id);
+            return op ? (
+              <OpeningShape
+                key={`sel-${op.id}`}
+                opening={op}
+                selected
+                drag={groupDrag(drag, selectedRefs, 'opening', op.id)}
+                onShapePointerDown={(e) => startShapeDrag(e, { kind: 'opening', id: op.id })}
+                onVertexPointerDown={(e, idx) =>
+                  startVertexDrag(e, { kind: 'opening', id: op.id }, idx)
+                }
+              />
+            ) : null;
+          }
+          const obj = draft.objects.find((o) => o.id === ref.id);
+          return obj ? (
+            <ObjectShape
+              key={`sel-${obj.id}`}
+              object={obj}
+              selected
+              drag={groupDrag(drag, selectedRefs, 'object', obj.id)}
+              onShapePointerDown={(e) => startShapeDrag(e, { kind: 'object', id: obj.id })}
+              onResizePointerDown={(e, sign) =>
+                startResizeDrag(e, { kind: 'object', id: obj.id }, sign)
+              }
+            />
+          ) : null;
+        })}
+
+        {/* 다중 선택 bbox + 4 모서리 그룹 리사이즈 핸들 */}
+        {tool === 'select' &&
+          selectedRefs &&
+          selectedRefs.length >= 2 &&
+          drag?.mode !== 'group-resize' &&
+          (() => {
+            const b = computeSelectionBounds(draft, selectedRefs);
+            if (!b || b.w < 0.1 || b.h < 0.1) return null;
+            const corners: { sign: [-1 | 1, -1 | 1]; x: number; y: number }[] = [
+              { sign: [-1, -1], x: b.x, y: b.y },
+              { sign: [1, -1], x: b.x + b.w, y: b.y },
+              { sign: [-1, 1], x: b.x, y: b.y + b.h },
+              { sign: [1, 1], x: b.x + b.w, y: b.y + b.h },
+            ];
+            return (
+              <g>
+                <rect
+                  x={b.x}
+                  y={b.y}
+                  width={b.w}
+                  height={b.h}
+                  fill="none"
+                  stroke="oklch(0.55 0.22 264)"
+                  strokeWidth="1.5"
+                  strokeDasharray="0.18 0.12"
+                  vectorEffect="non-scaling-stroke"
+                  pointerEvents="none"
+                />
+                {corners.map((c) => (
+                  <GroupResizeHandle
+                    key={`gr-${c.sign[0]}-${c.sign[1]}`}
+                    x={c.x}
+                    y={c.y}
+                    onPointerDown={(e) => {
+                      // 반대편 모서리가 고정점.
+                      const fx = c.sign[0] === -1 ? b.x + b.w : b.x;
+                      const fy = c.sign[1] === -1 ? b.y + b.h : b.y;
+                      startGroupResizeDrag(e, [fx, fy], [c.x, c.y]);
+                    }}
+                  />
+                ))}
+              </g>
+            );
           })()}
 
         {/* 벽 생성 preview */}
@@ -920,6 +1235,27 @@ export function DraftSceneCanvas({
           />
         )}
 
+        {/* Marquee 선택 박스 — 영역 안 도형들을 일괄 선택 */}
+        {drag?.mode === 'marquee' &&
+          (() => {
+            const r = normalizeRect(drag.startSvg, drag.currentSvg);
+            if (r.w < DRAG_THRESHOLD_M && r.h < DRAG_THRESHOLD_M) return null;
+            return (
+              <rect
+                x={r.x}
+                y={r.y}
+                width={r.w}
+                height={r.h}
+                fill="oklch(0.62 0.18 264 / 0.08)"
+                stroke="oklch(0.62 0.18 264)"
+                strokeWidth="1.5"
+                strokeDasharray="4 3"
+                vectorEffect="non-scaling-stroke"
+                pointerEvents="none"
+              />
+            );
+          })()}
+
         {/* 스냅 인디케이터 — 끝점/축에 딱 붙었을 때 초록 링 */}
         {snapIndicator && (
           <g pointerEvents="none">
@@ -990,37 +1326,79 @@ function matchDrag(
   kind: SelectedEntityRef['kind'],
   id: string,
 ): DragState | null {
-  if (drag && drag.ref.kind === kind && drag.ref.id === id) return drag;
+  // marquee/group-resize 모드는 특정 ref 가 없음 — 도형별 단일 매칭 대상 아님.
+  if (!drag || drag.mode === 'marquee' || drag.mode === 'group-resize') return null;
+  if (drag.ref.kind === kind && drag.ref.id === id) return drag;
+  return null;
+}
+
+/**
+ * 다중 선택 + shape 드래그 시 그룹 미리보기용.
+ * 드래그 중인 도형이 선택군에 포함되고 현재 도형도 선택군에 있다면 같은 delta 를 적용한
+ * 가상 shape-drag 상태를 반환 (실 PATCH 는 pointerUp 에서 일괄 처리).
+ */
+function groupDrag(
+  drag: DragState | null,
+  selectedRefs: SelectedEntityRef[] | undefined,
+  kind: SelectedEntityRef['kind'],
+  id: string,
+): DragState | null {
+  const exact = matchDrag(drag, kind, id);
+  if (exact) return exact;
+  if (!drag || !selectedRefs || selectedRefs.length < 2) return null;
+  const thisInSelection = selectedRefs.some((r) => r.kind === kind && r.id === id);
+  if (!thisInSelection) return null;
+  // group-resize: 선택된 모든 도형이 같은 변환을 받음.
+  if (drag.mode === 'group-resize') return drag;
+  // shape 드래그: 드래그된 도형이 선택군에 속하면 같은 delta 를 다른 선택 도형에도 미리보기.
+  if (drag.mode === 'shape') {
+    const draggedInSelection = selectedRefs.some(
+      (r) => r.kind === drag.ref.kind && r.id === drag.ref.id,
+    );
+    if (!draggedInSelection) return null;
+    return {
+      mode: 'shape',
+      ref: { kind, id },
+      startSvg: drag.startSvg,
+      delta: drag.delta,
+    };
+  }
   return null;
 }
 
 /** drag 진행 중인 도형의 effective coords 계산 (rendering 용). */
 function effectiveLineCoords(coords: Coord[], drag: DragState | null): Coord[] {
-  if (!drag) return coords;
+  if (!drag || drag.mode === 'marquee' || drag.mode === 'resize') return coords;
+  if (drag.mode === 'group-resize') {
+    const { sx, sy } = groupResizeScale(drag);
+    return coords.map((c) => scaleAround(c, drag.fixed, sx, sy));
+  }
   const [dx, dy] = drag.delta;
   if (drag.mode === 'shape') {
     return coords.map(([x, y]) => [x + dx, y + dy] as Coord);
   }
-  if (drag.mode === 'vertex') {
-    return moveLineStringVertex(coords, drag.vertexIndex, dx, dy);
-  }
-  return coords;
+  return moveLineStringVertex(coords, drag.vertexIndex, dx, dy);
 }
 
 function effectivePolygonRings(rings: Coord[][], drag: DragState | null): Coord[][] {
-  if (!drag) return rings;
+  if (!drag || drag.mode === 'marquee' || drag.mode === 'resize') return rings;
+  if (drag.mode === 'group-resize') {
+    const { sx, sy } = groupResizeScale(drag);
+    return rings.map((r) => r.map((c) => scaleAround(c, drag.fixed, sx, sy)));
+  }
   const [dx, dy] = drag.delta;
   if (drag.mode === 'shape') {
     return rings.map((r) => r.map(([x, y]) => [x + dx, y + dy] as Coord));
   }
-  if (drag.mode === 'vertex') {
-    return movePolygonVertex(rings, drag.vertexIndex, dx, dy);
-  }
-  return rings;
+  return movePolygonVertex(rings, drag.vertexIndex, dx, dy);
 }
 
 function effectivePoint(p: Coord, drag: DragState | null): Coord {
   if (!drag) return p;
+  if (drag.mode === 'group-resize') {
+    const { sx, sy } = groupResizeScale(drag);
+    return scaleAround(p, drag.fixed, sx, sy);
+  }
   if (drag.mode !== 'shape') return p;
   const [dx, dy] = drag.delta;
   return [p[0] + dx, p[1] + dy];
@@ -1313,6 +1691,10 @@ function ObjectShape({
   if (drag?.mode === 'resize') {
     w = Math.max(0.2, w + drag.delta[0] * drag.cornerSign[0] * 2);
     h = Math.max(0.2, h + drag.delta[1] * drag.cornerSign[1] * 2);
+  } else if (drag?.mode === 'group-resize') {
+    const { sx, sy } = groupResizeScale(drag);
+    w = Math.max(0.2, w * Math.abs(sx));
+    h = Math.max(0.2, h * Math.abs(sy));
   }
   const fill = selected ? 'oklch(0.92 0.05 264)' : 'oklch(0.95 0.03 240)';
   const stroke = selected ? 'oklch(0.55 0.22 264)' : 'oklch(0.74 0.08 240)';
@@ -1467,6 +1849,32 @@ const OBJECT_TYPE_LABEL: Record<string, string> = {
   utility: '다용도실',
   lobby: '로비',
 };
+
+function GroupResizeHandle({
+  x,
+  y,
+  onPointerDown,
+}: {
+  x: number;
+  y: number;
+  onPointerDown: (e: React.PointerEvent) => void;
+}) {
+  return (
+    <g onPointerDown={onPointerDown} className="cursor-nwse-resize">
+      <rect x={x - 0.18} y={y - 0.18} width="0.36" height="0.36" fill="transparent" />
+      <rect
+        x={x - 0.08}
+        y={y - 0.08}
+        width="0.16"
+        height="0.16"
+        fill="white"
+        stroke="oklch(0.55 0.22 264)"
+        strokeWidth="2"
+        vectorEffect="non-scaling-stroke"
+      />
+    </g>
+  );
+}
 
 function VertexHandle({
   x,
