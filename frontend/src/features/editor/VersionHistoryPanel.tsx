@@ -9,6 +9,8 @@ import type { SceneVersion } from '@/types/scene';
 
 interface Props {
   versions: SceneVersion[];
+  /** 버전 전환 성공 후 호출 — 상위에서 PromotedCard 를 최소화시키는 데 사용. */
+  onSwitched?: () => void;
 }
 
 /**
@@ -16,7 +18,7 @@ interface Props {
  * - 클릭 → PATCH /scene-versions/{id}/set-current
  * - 휴지통 → DELETE /scene-versions/{id} (children · rf_runs · patch_logs cascade)
  */
-export function VersionHistoryPanel({ versions }: Props) {
+export function VersionHistoryPanel({ versions, onSwitched }: Props) {
   const [open, setOpen] = useState(false);
   const setCurrent = useSetCurrentVersion();
   const remove = useDeleteSceneVersion();
@@ -64,7 +66,11 @@ export function VersionHistoryPanel({ versions }: Props) {
                 <button
                   type="button"
                   disabled={v.is_current || isSwitching || isDeleting}
-                  onClick={() => setCurrent.mutate(v.id)}
+                  onClick={() =>
+                    setCurrent.mutate(v.id, {
+                      onSuccess: () => onSwitched?.(),
+                    })
+                  }
                   className={cn(
                     'flex flex-1 items-center justify-between gap-3 px-3 py-2 text-left text-xs transition-colors',
                     !v.is_current && 'hover:bg-muted/60 disabled:opacity-50',

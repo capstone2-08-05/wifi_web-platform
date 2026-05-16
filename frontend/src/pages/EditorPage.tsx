@@ -745,6 +745,14 @@ export default function EditorPage() {
                 onCreate={handleCreate}
                 backgroundImageUrl={backgroundImageUrl}
               />
+            ) : currentVersion ? (
+              // 버전이 선택돼있고 detail 로딩 중 — 파일 업로드 화면 대신 스피너.
+              <div className="flex flex-1 items-center justify-center bg-muted/30">
+                <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-6 w-6 animate-spin" />
+                  <p className="text-sm">버전 #{currentVersion.version_no} 도면 불러오는 중…</p>
+                </div>
+              </div>
             ) : (
               <CanvasArea
                 fileInputRef={fileInputRef}

@@ -36,6 +36,11 @@ function extendBounds(b: Bounds, x: number, y: number) {
   if (y > b.maxY) b.maxY = y;
 }
 
+/**
+ * 캔버스 viewBox 는 도면 구조(rooms/walls/openings) 만 기준으로 계산.
+ * 객체(가구) 는 캔버스 밖으로 이동될 수 있어 viewBox 에 포함 안 함 — 캔버스가
+ * 무한 확장되는 걸 방지. 밖으로 나간 가구는 그냥 잘려 보이게.
+ */
 function computeViewBox(draft: SceneDraft): { x: number; y: number; w: number; h: number } {
   const b = emptyBounds();
   for (const room of draft.rooms) {
@@ -51,19 +56,6 @@ function computeViewBox(draft: SceneDraft): { x: number; y: number; w: number; h
   for (const op of draft.openings) {
     const g = parseGeometry(op.line_geom);
     if (g?.type === 'LineString') for (const [x, y] of g.coordinates) extendBounds(b, x, y);
-  }
-  for (const obj of draft.objects) {
-    const g = parseGeometry(obj.point_geom);
-    if (g?.type !== 'Point') continue;
-    const [x, y] = g.coordinates;
-    // 객체는 박스(W×H) 로 렌더링되므로 박스 모서리까지 bounds 에 포함.
-    const meta = (obj.metadata_json ?? {}) as Record<string, unknown>;
-    const w =
-      typeof meta.width_m === 'number' && meta.width_m > 0 ? meta.width_m : 1.6;
-    const h =
-      typeof meta.height_m === 'number' && meta.height_m > 0 ? meta.height_m : 1.6;
-    extendBounds(b, x - w / 2, y - h / 2);
-    extendBounds(b, x + w / 2, y + h / 2);
   }
   if (!isFinite(b.minX)) return { x: 0, y: 0, w: 10, h: 10 };
   const w = b.maxX - b.minX || 1;
@@ -548,7 +540,15 @@ export function DraftSceneCanvas({
   onCreate,
   backgroundImageUrl,
 }: Props) {
-  const vb = computeViewBox(draft);
+  // viewBox 는 draft.id 가 바뀔 때만 재계산 → 같은 draft 안에서 도형이 줄거나, 객체가
+  // 캔버스 밖으로 이동해도 캔버스 자체는 절대 안 변함 (수축·확장 모두 안 함).
+  // 객체가 도면 밖으로 나가면 잘려 보이지만 캔버스 비율은 안정적.
+  const [vb, setVb] = useState(() => computeViewBox(draft));
+  const [prevDraftId, setPrevDraftId] = useState(draft.id);
+  if (prevDraftId !== draft.id) {
+    setPrevDraftId(draft.id);
+    setVb(computeViewBox(draft));
+  }
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [creating, setCreating] = useState<CreatingState>(null);
@@ -733,16 +733,44 @@ export function DraftSceneCanvas({
     // ─ shape 드래그: 엔티티 통째 이동 — 기준점을 벽 끝점/선분에 스냅 ─
     {
       const rawDelta: Coord = [raw[0] - drag.startSvg[0], raw[1] - drag.startSvg[1]];
-      const { delta, snapPoint } = computeShapeSnapDelta(
+      const { delta: snappedDelta, snapPoint } = computeShapeSnapDelta(
         draft,
         drag.ref,
         rawDelta,
         wallAnchors,
       );
+      // 객체(Point) 는 캔버스 viewBox 밖으로 못 나가도록 박스 모서리 기준 clamp.
+      // 벽/방/문창 등은 사용자가 의도적으로 외곽으로 끌 수 있어 clamp 안 함.
+      const delta = clampObjectDelta(snappedDelta, drag.ref, draft, vb);
       setSnapIndicator(snapPoint);
       setDrag((prev) => (prev ? { ...prev, delta } : null));
     }
   };
+
+  /** 객체가 viewBox 안에 머무르도록 delta clamp. 객체가 아니면 그대로 통과. */
+  function clampObjectDelta(
+    delta: Coord,
+    ref: SelectedEntityRef,
+    scene: SceneDraft,
+    vbox: { x: number; y: number; w: number; h: number },
+  ): Coord {
+    if (ref.kind !== 'object') return delta;
+    const obj = scene.objects.find((o) => o.id === ref.id);
+    const g = parseGeometry(obj?.point_geom);
+    if (g?.type !== 'Point') return delta;
+    const meta = (obj?.metadata_json ?? {}) as Record<string, unknown>;
+    const w = typeof meta.width_m === 'number' && meta.width_m > 0 ? meta.width_m : 1.6;
+    const h = typeof meta.height_m === 'number' && meta.height_m > 0 ? meta.height_m : 1.6;
+    const [cx, cy] = g.coordinates;
+    // 박스 중심이 들어갈 수 있는 범위: viewBox 안에 박스 전체가 들어가도록.
+    const minCx = vbox.x + w / 2;
+    const maxCx = vbox.x + vbox.w - w / 2;
+    const minCy = vbox.y + h / 2;
+    const maxCy = vbox.y + vbox.h - h / 2;
+    const clampedX = Math.max(minCx, Math.min(maxCx, cx + delta[0]));
+    const clampedY = Math.max(minCy, Math.min(maxCy, cy + delta[1]));
+    return [clampedX - cx, clampedY - cy];
+  }
 
   const handleSvgPointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
     if (!drag) return;

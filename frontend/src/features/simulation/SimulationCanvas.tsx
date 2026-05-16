@@ -53,6 +53,11 @@ function extendBounds(b: Bounds, x: number, y: number) {
   if (y > b.maxY) b.maxY = y;
 }
 
+/**
+ * 캔버스 viewBox 는 도면 구조(rooms/walls/openings) 만 기준으로 계산.
+ * 객체(가구/공간 박스) 는 건물 밖으로 삐져나갈 수 있어 viewBox 에서 제외 — 캔버스가
+ * 일그러지지 않도록 고정. 밖으로 나간 객체는 잘려 보이지만 캔버스 비율은 안정적.
+ */
 function computeViewBox(scene: SceneVersion | null | undefined): {
   x: number;
   y: number;
@@ -72,16 +77,6 @@ function computeViewBox(scene: SceneVersion | null | undefined): {
   for (const op of scene?.openings ?? []) {
     const g = parseGeometry(op.line_geom);
     if (g?.type === 'LineString') for (const [x, y] of g.coordinates) extendBounds(b, x, y);
-  }
-  for (const obj of scene?.objects ?? []) {
-    const g = parseGeometry(obj.point_geom);
-    if (g?.type !== 'Point') continue;
-    const [x, y] = g.coordinates;
-    const meta = (obj.metadata_json ?? {}) as Record<string, unknown>;
-    const w = typeof meta.width_m === 'number' && meta.width_m > 0 ? meta.width_m : 1.6;
-    const h = typeof meta.height_m === 'number' && meta.height_m > 0 ? meta.height_m : 1.6;
-    extendBounds(b, x - w / 2, y - h / 2);
-    extendBounds(b, x + w / 2, y + h / 2);
   }
   if (!isFinite(b.minX)) return { x: 0, y: 0, w: 10, h: 10 };
   const w = b.maxX - b.minX || 1;
@@ -107,7 +102,10 @@ export function SimulationCanvas({
   onClearPending,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const vb = useMemo(() => computeViewBox(sceneVersion), [sceneVersion]);
+  // viewBox 는 scene version id 가 바뀔 때만 재계산 → 같은 도면 안에서 도형이 변해도
+  // 캔버스가 자동 줌인/아웃 하지 않도록 고정.
+  const sceneId = sceneVersion?.id ?? null;
+  const vb = useMemo(() => computeViewBox(sceneVersion), [sceneId]);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<Coord>([0, 0]);
 
