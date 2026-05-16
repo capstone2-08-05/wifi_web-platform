@@ -34,6 +34,10 @@ from app.routers.material_hypotheses import (
 )
 from app.routers.rf_runs import router as rf_runs_router
 from app.routers.rf_jobs import router as rf_jobs_router
+from app.routers.ap_layouts import (
+    router as ap_layouts_router,
+    rf_run_router as rf_run_ap_layouts_router,
+)
 from app.routers.jobs import router as jobs_router
 from app.routers.floorplan_jobs import router as floorplan_jobs_router
 from app.services.job_poller import job_poller_lifespan
@@ -117,5 +121,7 @@ app.include_router(wall_hypotheses_router)
 app.include_router(hypotheses_router)
 app.include_router(rf_runs_router)
 app.include_router(rf_jobs_router)
+app.include_router(ap_layouts_router)
+app.include_router(rf_run_ap_layouts_router)
 app.include_router(jobs_router)
 app.include_router(floorplan_jobs_router)
