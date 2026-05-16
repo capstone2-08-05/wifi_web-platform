@@ -202,7 +202,7 @@ function nearestAnchor(pt: Coord, anchors: Coord[], radius: number): Coord | nul
 }
 
 /** from 기준으로 to 가 거의 수평/수직이면 정확히 맞춘 좌표 반환. */
-function axisSnap(from: Coord, to: Coord, tol: number): Coord {
+function snapToAxis(from: Coord, to: Coord, tol: number): Coord {
   const dx = to[0] - from[0];
   const dy = to[1] - from[1];
   if (Math.abs(dy) < tol && Math.abs(dx) >= Math.abs(dy)) return [to[0], from[1]];
@@ -210,9 +210,12 @@ function axisSnap(from: Coord, to: Coord, tol: number): Coord {
   return to;
 }
 
+type SnapKind = 'wall-anchor' | 'wall-projection' | 'axis';
+
 interface SnapResult {
   point: Coord;
   snapped: boolean;
+  kind?: SnapKind;
 }
 
 /**
@@ -228,14 +231,14 @@ function snapToWall(
 ): SnapResult {
   // 1) 벽 끝점
   const anchor = nearestAnchor(raw, wallAnchors, SNAP_RADIUS_M);
-  if (anchor) return { point: [anchor[0], anchor[1]], snapped: true };
+  if (anchor) return { point: [anchor[0], anchor[1]], snapped: true, kind: 'wall-anchor' };
   // 2) 벽 선분 위 (끝점이 아니어도 벽 라인에 붙음)
   const proj = nearestWallProjection(raw, draft, SNAP_RADIUS_M, excludeWallId);
-  if (proj) return { point: proj, snapped: true };
-  // 3) 축 스냅 (그리는 중일 때만)
+  if (proj) return { point: proj, snapped: true, kind: 'wall-projection' };
+  // 3) 축 스냅 (그리는 중 / vertex 드래그 시 반대편 꼭짓점 기준)
   if (axisFrom) {
-    const axed = axisSnap(axisFrom, raw, AXIS_SNAP_TOLERANCE_M);
-    if (axed[0] !== raw[0] || axed[1] !== raw[1]) return { point: axed, snapped: true };
+    const axed = snapToAxis(axisFrom, raw, AXIS_SNAP_TOLERANCE_M);
+    if (axed[0] !== raw[0] || axed[1] !== raw[1]) return { point: axed, snapped: true, kind: 'axis' };
   }
   return { point: raw, snapped: false };
 }
@@ -609,6 +612,13 @@ export function DraftSceneCanvas({
   const [cursorPos, setCursorPos] = useState<Coord | null>(null);
   // 스냅 발생 시 표시할 위치 (초록 링). 스냅 안 되면 null.
   const [snapIndicator, setSnapIndicator] = useState<Coord | null>(null);
+  // 벽/문창 vertex 가 반대편 꼭짓점 기준 0°/90° 에 스냅된 순간의 가이드 정보.
+  // from = 고정된 반대편 꼭짓점, to = 스냅된 현재 꼭짓점, axis = 'h'(수평선)|'v'(수직선).
+  const [axisSnap, setAxisSnapState] = useState<{
+    axis: 'h' | 'v';
+    from: Coord;
+    to: Coord;
+  } | null>(null);
 
   // 단일 선택일 때의 primary ref. vertex/resize 핸들·라벨은 단일 선택 시에만 의미.
   const selectedRef: SelectedEntityRef | null =
@@ -773,8 +783,23 @@ export function DraftSceneCanvas({
           orig[1] + (raw[1] - drag.startSvg[1]),
         ];
         const excludeWallId = drag.ref.kind === 'wall' ? drag.ref.id : null;
-        const res = snapToWall(rawTarget, draft, wallAnchors, null, excludeWallId);
-        setSnapIndicator(res.snapped ? res.point : null);
+        // 벽/문창은 2-점 LineString — 반대편 꼭짓점을 axis 기준점으로 넘겨서
+        // 드래그 결과가 수평/수직에 가까우면 정확히 90° 로 스냅. (방=폴리곤은 제외)
+        let axisFrom: Coord | null = null;
+        if (drag.ref.kind === 'wall' || drag.ref.kind === 'opening') {
+          const otherIdx = drag.vertexIndex === 0 ? 1 : 0;
+          axisFrom = getEntityVertex(draft, drag.ref, otherIdx);
+        }
+        const res = snapToWall(rawTarget, draft, wallAnchors, axisFrom, excludeWallId);
+        // axis 스냅은 별도 가이드(점선+90°뱃지)로 표시 — 일반 초록 링은 숨김.
+        setSnapIndicator(res.snapped && res.kind !== 'axis' ? res.point : null);
+        if (res.kind === 'axis' && axisFrom) {
+          // axisFrom 과 같은 x → 수직, 같은 y → 수평
+          const axis: 'h' | 'v' = res.point[0] === axisFrom[0] ? 'v' : 'h';
+          setAxisSnapState({ axis, from: axisFrom, to: res.point });
+        } else {
+          setAxisSnapState(null);
+        }
         setDrag((prev) =>
           prev
             ? { ...prev, delta: [res.point[0] - orig[0], res.point[1] - orig[1]] }
@@ -841,6 +866,7 @@ export function DraftSceneCanvas({
     const captured = drag;
     setDrag(null);
     setSnapIndicator(null);
+    setAxisSnapState(null);
 
     // marquee: 박스 크기가 임계 이상이면 영역 안 도형 일괄 선택; 미만이면 단순 클릭으로 보고 선택 해제.
     if (captured.mode === 'marquee') {
@@ -1370,6 +1396,63 @@ export function DraftSceneCanvas({
               r={handleSize * 0.7}
               fill="oklch(0.72 0.19 145)"
             />
+          </g>
+        )}
+
+        {/* 축 스냅 가이드 — 벽/문창 vertex 가 반대편 꼭짓점 기준 정확히 수평/수직이 된 순간.
+            (a) 캔버스 전체에 cyan 점선, (b) 스냅된 vertex 위치에 cyan 도트, (c) 90° 뱃지. */}
+        {axisSnap && (
+          <g pointerEvents="none">
+            {axisSnap.axis === 'h' ? (
+              <line
+                x1={vb.x}
+                y1={axisSnap.from[1]}
+                x2={vb.x + vb.w}
+                y2={axisSnap.from[1]}
+                stroke="oklch(0.82 0.22 135)"
+                strokeWidth="1.5"
+                strokeDasharray="0.18 0.12"
+                vectorEffect="non-scaling-stroke"
+              />
+            ) : (
+              <line
+                x1={axisSnap.from[0]}
+                y1={vb.y}
+                x2={axisSnap.from[0]}
+                y2={vb.y + vb.h}
+                stroke="oklch(0.82 0.22 135)"
+                strokeWidth="1.5"
+                strokeDasharray="0.18 0.12"
+                vectorEffect="non-scaling-stroke"
+              />
+            )}
+            <circle
+              cx={axisSnap.to[0]}
+              cy={axisSnap.to[1]}
+              r={handleSize * 0.8}
+              fill="oklch(0.82 0.22 135)"
+            />
+            {/* 90° 뱃지 — 스냅된 vertex 우상단에 살짝 띄워서. */}
+            <g transform={`translate(${axisSnap.to[0] + handleSize * 1.6} ${axisSnap.to[1] - handleSize * 1.6})`}>
+              <rect
+                x={0}
+                y={-handleSize * 1.4}
+                width={handleSize * 4.2}
+                height={handleSize * 1.8}
+                rx={handleSize * 0.4}
+                fill="oklch(0.82 0.22 135)"
+              />
+              <text
+                x={handleSize * 2.1}
+                y={-handleSize * 0.45}
+                textAnchor="middle"
+                fontSize={handleSize * 1.2}
+                fontWeight="600"
+                fill="white"
+              >
+                90°
+              </text>
+            </g>
           </g>
         )}
       </svg>
