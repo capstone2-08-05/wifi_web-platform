@@ -65,6 +65,8 @@ class ErrorCode(StrEnum):
     INVALID_RF_RUN_STATUS = "INVALID_RF_RUN_STATUS"
     SCENE_VERSION_EXPORT_FAILED = "SCENE_VERSION_EXPORT_FAILED"
 
+    AP_LAYOUT_NOT_FOUND = "AP_LAYOUT_NOT_FOUND"
+
 
 class AppError(Exception):
     def __init__(self, code: ErrorCode, message: str, status_code: int):
