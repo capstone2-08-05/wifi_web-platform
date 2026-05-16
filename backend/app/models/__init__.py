@@ -1,3 +1,4 @@
+from app.models.ap_layout import ApLayout
 from app.models.asset import Asset
 from app.models.draft_object import DraftObject
 from app.models.draft_opening import DraftOpening
@@ -48,5 +49,6 @@ __all__ = [
     "MeasurementLink",
     "MeasurementSession",
     "MeasurementPoint",
+    "ApLayout",
 ]
 
