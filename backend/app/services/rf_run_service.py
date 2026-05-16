@@ -148,6 +148,19 @@ def get_rf_run(db: Session, rf_run_id: UUID, user: User) -> RfRunResponse:
     return _to_response(_get_owned_rf_run(db, rf_run_id, user))
 
 
+def _rf_map_to_response(m: RfMap) -> RfMapResponse:
+    """storage_url 이 s3:// 면 presigned URL 도 같이 채워서 반환."""
+    resp = RfMapResponse.model_validate(m, from_attributes=True)
+    if m.storage_url and m.storage_url.startswith("s3://"):
+        from app.services import _s3
+        try:
+            resp = resp.model_copy(update={"url": _s3.presigned_get_url(m.storage_url)})
+        except Exception:
+            # presigned 발급 실패 시 url=None 유지 (storage_url 은 남음)
+            pass
+    return resp
+
+
 def list_maps(
     db: Session, rf_run_id: UUID, user: User
 ) -> list[RfMapResponse]:
@@ -161,7 +174,7 @@ def list_maps(
         .scalars()
         .all()
     )
-    return [RfMapResponse.model_validate(m, from_attributes=True) for m in rows]
+    return [_rf_map_to_response(m) for m in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -249,4 +262,4 @@ def create_rf_map(
     except Exception:
         db.rollback()
         raise
-    return RfMapResponse.model_validate(rf_map, from_attributes=True)
+    return _rf_map_to_response(rf_map)

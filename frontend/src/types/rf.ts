@@ -61,8 +61,10 @@ export interface RfMap {
   rf_run_id: UUID;
   map_type: string;
   resolution_cm: number;
-  /** s3:// URI. <img> src 로 직접 못 씀 — useRfJob 의 heatmap/radio_map.url (presigned) 사용. */
+  /** s3:// URI (raw). 프론트에서 직접 사용 X — `url` (백엔드가 자동 발급한 presigned) 사용. */
   storage_url: string;
+  /** storage_url 이 s3:// 면 백엔드가 발급한 presigned GET URL. <img src> 로 바로 사용. */
+  url?: string | null;
   bounds_json: Record<string, unknown>;
   metrics_json: Record<string, unknown>;
   created_at: ISODateString;
