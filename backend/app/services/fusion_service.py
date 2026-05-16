@@ -58,6 +58,7 @@ class FusionService:
             real_width_m,
             result.prob_map_local_path,
             sagemaker_meta,
+            result.source_image_local_path,
         )
         return scene
 
@@ -67,6 +68,7 @@ class FusionService:
         real_width_m: float,
         prob_map_local_path,
         sagemaker_meta: dict[str, Any] | None = None,
+        source_image_local_path=None,
     ) -> SceneSchema:
         geo_service = GeometryService(
             pixel_width=ml_output.meta.original_width,
@@ -76,9 +78,13 @@ class FusionService:
         topo_service = TopologyService()
         scale_ratio = geo_service.scale_ratio
 
-        # wall_extraction 은 .npy 파일 경로를 받아 prob_map 로딩
+        # wall_extraction 은 .npy 파일 경로를 받아 prob_map 로딩.
+        # source_image 있으면 §69 multi-threshold + OCR scoring 흐름 활성화.
         raw_coords = wall_extractor.execute_from_prob_map(
-            prob_map_local_path, threshold=None, detections=ml_output.detections
+            prob_map_local_path,
+            threshold=None,
+            detections=ml_output.detections,
+            image_path=source_image_local_path,
         )
 
         raw_walls: list[Wall] = []

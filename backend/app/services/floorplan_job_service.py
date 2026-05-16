@@ -196,10 +196,12 @@ async def _complete_floorplan_job(
     current_user: User,
     output_prefix: str,
 ) -> Job:
+    source_s3_uri = (job.input_json or {}).get("sagemaker", {}).get("source_s3_uri")
     inference = await run_in_threadpool(
         sagemaker_inference_service.download_result,
         str(job.id),
         output_prefix,
+        source_s3_uri,
     )
 
     input_meta = job.input_json or {}
