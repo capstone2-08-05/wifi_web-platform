@@ -3,17 +3,44 @@ Scene Draft 라우터
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, status
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Path, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.pagination import PaginatedResponse
-from app.schemas.scene_draft import SceneDraftDetailResponse, SceneDraftSummaryResponse
+from app.schemas.scene_draft import (
+    SceneDraftCreateRequest,
+    SceneDraftDetailResponse,
+    SceneDraftSummaryResponse,
+)
 from app.services import scene_draft_service
 
 router = APIRouter(prefix="/scene-drafts", tags=["scene-drafts"])
+floor_scene_drafts_router = APIRouter(prefix="/floors", tags=["scene-drafts"])
+
+
+@floor_scene_drafts_router.post(
+    "/{floor_id}/scene-drafts",
+    response_model=SceneDraftDetailResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="빈 Scene Draft 생성 (수동 도면 작성용 — AI 분석 안 함)",
+)
+def create_empty_scene_draft(
+    payload: SceneDraftCreateRequest,
+    floor_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SceneDraftDetailResponse:
+    return scene_draft_service.create_empty_draft(
+        db,
+        floor_id=floor_id,
+        source_mode=payload.source_mode,
+        current_user=current_user,
+    )
 
 
 @router.get(

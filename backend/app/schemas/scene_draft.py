@@ -6,9 +6,9 @@ from app.schemas.scene import SceneSchema
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 
 
 class UploadStorageMetadataDTO(BaseModel):
@@ -38,6 +38,17 @@ class AnalyzeFromAssetRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     real_width_m: float = 10.0
+
+
+class SceneDraftCreateRequest(BaseModel):
+    """POST /floors/{floor_id}/scene-drafts — 빈 Draft 생성.
+
+    AI 분석 없이 사용자가 도면을 처음부터 그릴 때 사용.
+    현재는 "manual" 만 허용. 추후 다른 source_mode 추가 시 enum 확장.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    source_mode: Literal["manual"] = Field(default="manual")
 
 
 class SubmitFloorplanJobResponse(BaseModel):
