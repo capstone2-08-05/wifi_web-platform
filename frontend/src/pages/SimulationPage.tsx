@@ -14,8 +14,6 @@ import {
 import { useMemo } from 'react';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
-import { useAssetDownloadUrl, useFloorAssets } from '@/hooks/use-assets';
-import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
 import { useCreateRfRun, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
 import {
   useApCandidates,
@@ -57,20 +55,8 @@ export default function SimulationPage() {
   // 캔버스 배경으로 보여줄 확정 버전 상세 (rooms/walls/openings/objects 포함).
   const versionDetailQuery = useSceneVersion(currentVersion?.id ?? null);
 
-  // 배경 도면 이미지 — EditorPage 와 동일한 3단계 fallback.
-  // Asset.storage_url 이 s3:// URI 라서 직접 못 쓰고, /download-url 로 presigned 받음.
-  const sourceAssetId = versionDetailQuery.data?.source_asset_id ?? null;
-  const floorAssetsQuery = useFloorAssets(floorId, 'floorplan');
-  const fallbackAsset = useMemo(() => {
-    const list = floorAssetsQuery.data ?? [];
-    if (list.length === 0) return null;
-    return [...list].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
-  }, [floorAssetsQuery.data]);
-  const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
-  const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
-  const localImage = useLocalFloorplanImage(floorId);
-  const backgroundImageUrl =
-    assetUrlQuery.data?.url ?? localImage ?? null;
+  // 시뮬레이션 페이지는 배경 도면 이미지를 안 깔음 — 도형만 + 히트맵 오버레이.
+  // (배경 이미지는 공간편집/대시보드 한정.)
 
   const createRfRun = useCreateRfRun();
   const rfRunPoll = useRfRun(activeRunId);
@@ -192,7 +178,10 @@ export default function SimulationPage() {
                 <CanvasModeBar apsCount={aps.length} />
                 <SimulationCanvas
                   sceneVersion={versionDetailQuery.data}
-                  backgroundImageUrl={backgroundImageUrl}
+                  // 시뮬레이션 페이지는 배경 도면 이미지 안 깔음 — 도형만으로 표시
+                  // (공간편집/대시보드만 배경 이미지). 히트맵과 시각 충돌 방지 + AP 배치
+                  // 시 깔끔한 캔버스 유지.
+                  backgroundImageUrl={null}
                   aps={aps}
                   onAdd={handleAddAp}
                   onMove={handleMoveAp}
@@ -211,10 +200,10 @@ export default function SimulationPage() {
                 <SimulationVisualization state={state} />
               </div>
             ) : (
-              // 'complete' — 도면/도형/AP + 히트맵 오버레이를 한 SVG 안에 겹쳐 표시 (read-only).
+              // 'complete' — 도형/AP + 히트맵 오버레이를 한 SVG 안에 겹쳐 표시 (read-only).
               <SimulationCanvas
                 sceneVersion={versionDetailQuery.data}
-                backgroundImageUrl={backgroundImageUrl}
+                backgroundImageUrl={null}
                 aps={aps}
                 onAdd={handleAddAp}
                 onMove={handleMoveAp}
