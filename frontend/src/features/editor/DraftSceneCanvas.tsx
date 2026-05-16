@@ -1835,7 +1835,7 @@ function OpeningShape({
         y={labelY}
         textAnchor="middle"
         dominantBaseline="middle"
-        fontSize={computeOpeningLabelFontSize(label, len)}
+        fontSize={OPENING_LABEL_FONT_SIZE_M}
         fontWeight="500"
         fill={baseColor}
         pointerEvents="none"
@@ -1851,14 +1851,6 @@ function OpeningShape({
       )}
     </g>
   );
-}
-
-/** 개구부 길이에 비례한 라벨 폰트 크기 (미터). 최대 0.13m, 최소 0.05m. */
-function computeOpeningLabelFontSize(label: string, lineLengthM: number): number {
-  const charCount = Math.max(1, label.length);
-  // 가로로 글자가 라인 길이의 약 70% 안에 들어가도록.
-  const widthFit = (lineLengthM * 0.7) / charCount;
-  return Math.max(0.05, Math.min(OPENING_LABEL_FONT_SIZE_M, widthFit));
 }
 
 function ObjectShape({
