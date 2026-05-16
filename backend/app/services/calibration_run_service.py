@@ -187,18 +187,21 @@ def create_calibration_run(
     db.add(cr)
     db.flush()
 
-    # AI 워커 등록용 Job. 워커가 아직 없어도 큐에 쌓임 (poller 가 type 모르면 skip).
+    # 백그라운드 워커 (job_poller) 가 픽업하도록 running 으로 시작.
+    # poller 는 status=running 만 본다.
+    now = datetime.now(timezone.utc)
     job = Job(
         project_id=sv.project_id,
         floor_id=sv.floor_id,
         job_type=JOB_TYPE_CALIBRATION,
-        status="queued",
+        status="running",
         input_json={
             "calibration_run_id": cr.id,
             "scene_version_id": sv.id,
             "rf_run_id": rr.id,
             "measurement_session_id": ms.id,
         },
+        started_at=now,
     )
     db.add(job)
 
