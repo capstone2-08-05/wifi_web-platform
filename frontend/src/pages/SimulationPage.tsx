@@ -14,7 +14,7 @@ import {
 import { useMemo } from 'react';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
-import { useAsset, useFloorAssets } from '@/hooks/use-assets';
+import { useAssetDownloadUrl, useFloorAssets } from '@/hooks/use-assets';
 import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
 import { useCreateRfRun, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
 import {
@@ -58,24 +58,34 @@ export default function SimulationPage() {
   const versionDetailQuery = useSceneVersion(currentVersion?.id ?? null);
 
   // 배경 도면 이미지 — EditorPage 와 동일한 3단계 fallback.
+  // Asset.storage_url 이 s3:// URI 라서 직접 못 쓰고, /download-url 로 presigned 받음.
   const sourceAssetId = versionDetailQuery.data?.source_asset_id ?? null;
-  const sourceAssetQuery = useAsset(sourceAssetId);
   const floorAssetsQuery = useFloorAssets(floorId, 'floorplan');
   const fallbackAsset = useMemo(() => {
     const list = floorAssetsQuery.data ?? [];
     if (list.length === 0) return null;
     return [...list].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
   }, [floorAssetsQuery.data]);
+  const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
+  const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
   const localImage = useLocalFloorplanImage(floorId);
   const backgroundImageUrl =
-    sourceAssetQuery.data?.storage_url ??
-    fallbackAsset?.storage_url ??
-    localImage ??
-    null;
+    assetUrlQuery.data?.url ?? localImage ?? null;
 
   const createRfRun = useCreateRfRun();
   const rfRunPoll = useRfRun(activeRunId);
   const rfMapsQuery = useRfMaps(activeRunId, rfRunPoll.isSucceeded);
+  // 백엔드가 RfMapResponse 에 presigned `url` 을 자동 채워주므로 (PR #70)
+  // /rf-jobs 별도 호출 없이 /maps 응답 하나로 heatmap URL + bounds 둘 다 처리.
+  const heatmapMap = useMemo(() => {
+    const maps = rfMapsQuery.data ?? [];
+    return maps.find((m) => m.map_type === 'heatmap') ?? maps[0] ?? null;
+  }, [rfMapsQuery.data]);
+  const heatmapUrl = heatmapMap?.url ?? null;
+  const heatmapBounds = useMemo(
+    () => parseHeatmapBounds(heatmapMap?.bounds_json),
+    [heatmapMap],
+  );
 
   // 백엔드 상태 → UI 상태 매핑
   const state: SimulationState = (() => {
@@ -196,13 +206,25 @@ export default function SimulationPage() {
                   disabled={aps.length >= 8}
                 />
               </>
-            ) : (
+            ) : state === 'running' ? (
               <div className="h-full p-6">
-                <SimulationVisualization
-                  state={state}
-                  mapUrl={rfMapsQuery.data?.[0]?.url ?? rfMapsQuery.data?.[0]?.storage_url}
-                />
+                <SimulationVisualization state={state} />
               </div>
+            ) : (
+              // 'complete' — 도면/도형/AP + 히트맵 오버레이를 한 SVG 안에 겹쳐 표시 (read-only).
+              <SimulationCanvas
+                sceneVersion={versionDetailQuery.data}
+                backgroundImageUrl={backgroundImageUrl}
+                aps={aps}
+                onAdd={handleAddAp}
+                onMove={handleMoveAp}
+                onRemove={handleRemoveAp}
+                pending={false}
+                onClearPending={() => {}}
+                heatmapUrl={heatmapUrl}
+                heatmapBounds={heatmapBounds}
+                readOnly
+              />
             )}
           </div>
 
@@ -356,26 +378,8 @@ function PageHeader({
   );
 }
 
-function SimulationVisualization({
-  state,
-  mapUrl,
-}: {
-  state: SimulationState;
-  mapUrl?: string;
-}) {
-  if (state === 'idle') {
-    return (
-      <div className="flex h-full min-h-80 flex-col items-center justify-center gap-2 text-center">
-        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
-          <Play className="h-5 w-5 text-primary" />
-        </div>
-        <p className="text-sm font-medium">시뮬레이션 실행 대기 중</p>
-        <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
-          상단의 시뮬레이션 실행 버튼을 누르면 확정된 도면 기준으로 RF 시뮬레이션이 시작됩니다.
-        </p>
-      </div>
-    );
-  }
+/** running 상태일 때만 스피너 표시. idle/complete 는 SimulationCanvas 가 직접 렌더. */
+function SimulationVisualization({ state }: { state: SimulationState }) {
   if (state === 'running') {
     return (
       <div className="flex h-full min-h-80 flex-col items-center justify-center gap-2 text-center">
@@ -388,23 +392,14 @@ function SimulationVisualization({
     );
   }
   return (
-    <div className="flex h-full flex-col gap-3">
-      {mapUrl ? (
-        <img
-          src={mapUrl}
-          alt="RF 시뮬레이션 결과 맵"
-          className="w-full flex-1 rounded-md object-contain"
-          loading="lazy"
-        />
-      ) : (
-        <div className="flex h-full min-h-80 flex-col items-center justify-center gap-2 text-center">
-          <MapIcon className="h-8 w-8 text-muted-foreground" />
-          <p className="text-sm font-medium">결과 맵을 불러오는 중입니다</p>
-          <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
-            잠시 후 자동으로 표시됩니다.
-          </p>
-        </div>
-      )}
+    <div className="flex h-full min-h-80 flex-col items-center justify-center gap-2 text-center">
+      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
+        <Play className="h-5 w-5 text-primary" />
+      </div>
+      <p className="text-sm font-medium">시뮬레이션 실행 대기 중</p>
+      <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
+        상단의 시뮬레이션 실행 버튼을 누르면 확정된 도면 기준으로 RF 시뮬레이션이 시작됩니다.
+      </p>
     </div>
   );
 }
@@ -595,6 +590,32 @@ function ApLayoutRow({
   );
 }
 
+/**
+ * RfMap.bounds_json → 히트맵 이미지의 실제 미터 좌표 영역.
+ * 백엔드 응답 예: { z: 1, min_x, min_y, max_x, max_y }.
+ * 4개 좌표 중 하나라도 유효하지 않으면 null → 히트맵 오버레이 생략.
+ */
+function parseHeatmapBounds(
+  bounds: Record<string, unknown> | null | undefined,
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  if (!bounds) return null;
+  const minX = Number(bounds['min_x']);
+  const minY = Number(bounds['min_y']);
+  const maxX = Number(bounds['max_x']);
+  const maxY = Number(bounds['max_y']);
+  if (
+    !Number.isFinite(minX) ||
+    !Number.isFinite(minY) ||
+    !Number.isFinite(maxX) ||
+    !Number.isFinite(maxY) ||
+    maxX <= minX ||
+    maxY <= minY
+  ) {
+    return null;
+  }
+  return { minX, minY, maxX, maxY };
+}
+
 function formatPoint(geom: Record<string, unknown> | null): string {
   if (!geom) return '좌표 없음';
   const coords = (geom as { coordinates?: unknown }).coordinates;
@@ -610,7 +631,19 @@ function formatPoint(geom: Record<string, unknown> | null): string {
 
 /**
  * 백엔드 metrics_json 에서 표시용 값 추출.
- * AI 서버가 다양한 키로 넣을 수 있어 흔히 쓰이는 키들을 fallback 순으로 확인.
+ *
+ * 실측 응답 구조 (heatmap / radio_map_dbm 둘 다 동일):
+ *   {
+ *     rss_dbm: { max, min, mean },                       ← 평균 dBm = mean
+ *     coverage_summary: {
+ *       "ge_-67": 0~1,   ← RSSI ≥ -67 dBm 인 셀 비율 (양호 임계값)
+ *       "ge_-70": 0~1, "ge_-75": 0~1,
+ *       total_cell_count, valid_cell_count
+ *     },
+ *     valid_ratio: 0~1
+ *   }
+ *
+ * 옛 키 이름 (avg_rssi_dbm / coverage_percent 등) 도 fallback 으로 유지.
  */
 function parseMetrics(
   ...sources: Array<Record<string, unknown> | undefined>
@@ -619,18 +652,35 @@ function parseMetrics(
   for (const s of sources) {
     if (s) Object.assign(merged, s);
   }
-  const pickNumber = (...keys: string[]): number | null => {
-    for (const k of keys) {
-      const v = merged[k];
-      if (typeof v === 'number' && Number.isFinite(v)) return v;
-      if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) {
-        return Number(v);
-      }
+  const toNum = (v: unknown): number | null => {
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) {
+      return Number(v);
     }
     return null;
   };
-  return {
-    avgRssiDbm: pickNumber('avg_rssi_dbm', 'avg_dbm', 'rssi_avg', 'avg_rssi'),
-    coveragePercent: pickNumber('coverage_percent', 'coverage', 'coverage_pct'),
+  const pickNumber = (...keys: string[]): number | null => {
+    for (const k of keys) {
+      const n = toNum(merged[k]);
+      if (n !== null) return n;
+    }
+    return null;
   };
+
+  // 평균 RSSI: 신규 구조 rss_dbm.mean 우선, 없으면 옛 키들.
+  const rssDbm = merged['rss_dbm'] as Record<string, unknown> | undefined;
+  const avgRssiDbm =
+    toNum(rssDbm?.['mean']) ??
+    pickNumber('avg_rssi_dbm', 'avg_dbm', 'rssi_avg', 'avg_rssi');
+
+  // 커버리지: 신규 구조 coverage_summary["ge_-67"] (0~1 비율) 우선 → 100 곱해 %.
+  // 없으면 옛 키들 (이미 % 단위로 가정).
+  const coverage = merged['coverage_summary'] as Record<string, unknown> | undefined;
+  const ge67 = toNum(coverage?.['ge_-67']);
+  const coveragePercent =
+    ge67 !== null
+      ? ge67 * 100
+      : pickNumber('coverage_percent', 'coverage', 'coverage_pct');
+
+  return { avgRssiDbm, coveragePercent };
 }

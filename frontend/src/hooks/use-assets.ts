@@ -22,3 +22,25 @@ export function useFloorAssets(floorId: UUID | null, assetType?: AssetType) {
     staleTime: 60_000,
   });
 }
+
+/**
+ * GET /assets/{id}/download-url — S3 presigned HTTPS URL.
+ *
+ * Asset.storage_url 이 s3:// URI 로 바뀐 뒤로 <img src>·SVG <image href> 에
+ * 직접 못 박음. 이 훅이 presigned URL 을 받아온다.
+ *
+ * 캐싱: 백엔드 기본 TTL = 3600s (RF_PRESIGNED_URL_EXPIRES_SECONDS).
+ * staleTime 을 그보다 5분 짧게 잡아 만료 직전 자동 재발급.
+ */
+const PRESIGN_STALE_MS = 55 * 60_000; // 55분
+const PRESIGN_GC_MS = 60 * 60_000; // 60분
+
+export function useAssetDownloadUrl(assetId: UUID | null) {
+  return useQuery({
+    queryKey: ['asset-download-url', assetId] as const,
+    queryFn: () => assetApi.getDownloadUrl(assetId as UUID),
+    enabled: !!assetId,
+    staleTime: PRESIGN_STALE_MS,
+    gcTime: PRESIGN_GC_MS,
+  });
+}
