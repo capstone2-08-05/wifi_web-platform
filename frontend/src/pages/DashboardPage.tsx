@@ -14,7 +14,7 @@ import { HelpFab } from '@/components/HelpFab';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
-import { useAsset, useFloorAssets } from '@/hooks/use-assets';
+import { useAssetDownloadUrl, useFloorAssets } from '@/hooks/use-assets';
 import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
 import { DraftSceneCanvas } from '@/features/editor/DraftSceneCanvas';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
@@ -86,14 +86,17 @@ export default function DashboardPage() {
   const versionAsDraft = versionDetailQuery.data
     ? versionToDraftShape(versionDetailQuery.data)
     : null;
-  const bgAssetQuery = useAsset(versionAsDraft?.source_asset_id ?? null);
+  // Asset.storage_url 이 s3:// URI 라서 직접 못 쓰고, /download-url 로 presigned 받음.
+  const sourceAssetId = versionAsDraft?.source_asset_id ?? null;
   const floorAssetsQuery = useFloorAssets(floorId, 'floorplan');
   const fallbackAsset = (floorAssetsQuery.data ?? [])
     .slice()
     .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+  const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
+  const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
   const localImage = useLocalFloorplanImage(floorId);
   const backgroundImageUrl =
-    bgAssetQuery.data?.storage_url ?? fallbackAsset?.storage_url ?? localImage ?? null;
+    assetUrlQuery.data?.url ?? localImage ?? null;
 
   return (
     <div className="relative h-full overflow-auto p-6">

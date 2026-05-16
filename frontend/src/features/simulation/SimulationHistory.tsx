@@ -41,11 +41,11 @@ export function SimulationHistory({ items, showCompareButton }: Props) {
               </div>
               <div className="mt-2 flex items-center gap-3 text-[12px] text-muted-foreground">
                 <span>
-                  평균: <span className="font-semibold text-foreground">{item.avgRssiDbm}dBm</span>
+                  평균: <span className="font-semibold text-foreground">{formatNum(item.avgRssiDbm)}dBm</span>
                 </span>
                 <span>
                   커버리지:{' '}
-                  <span className="font-semibold text-foreground">{item.coveragePercent}%</span>
+                  <span className="font-semibold text-foreground">{formatNum(item.coveragePercent)}%</span>
                 </span>
               </div>
             </button>
@@ -63,4 +63,9 @@ export function SimulationHistory({ items, showCompareButton }: Props) {
       )}
     </section>
   );
+}
+
+/** 소수 셋째자리에서 반올림 → 둘째자리까지 표시. 정수면 trailing 0 안 붙음. */
+function formatNum(n: number): string {
+  return Number(n.toFixed(2)).toString();
 }

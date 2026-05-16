@@ -1,10 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { rfRunApi } from '@/api/rf-run';
+import { rfJobApi, rfRunApi } from '@/api/rf-run';
 import type { HttpError } from '@/api/client';
 import { toast } from '@/stores/toast-store';
 import type { UUID } from '@/types/common';
-import type { RfRun, RfRunCreate } from '@/types/rf';
+import type { RfJob, RfRun, RfRunCreate } from '@/types/rf';
 import { isJobFailed, isJobSucceeded, isJobTerminal } from '@/types/job';
 
 const POLL_INTERVAL_MS = 3_000;
@@ -80,4 +80,34 @@ export function useRfMaps(rfRunId: UUID | null, enabled: boolean) {
     queryFn: () => rfRunApi.listMaps(rfRunId as UUID),
     enabled: !!rfRunId && enabled,
   });
+}
+
+/**
+ * GET /rf-jobs/{job_id} — Job 폴링.
+ * RfMap.storage_url 이 s3:// 라서 직접 못 박는 대신, 이 응답의
+ * heatmap.url / radio_map.url (이미 presigned) 을 사용한다.
+ *
+ * useRfRun 과 동일하게 succeeded/failed 까지 폴링하되, 완료 후엔 폴링 중단.
+ */
+export function useRfJob(jobId: UUID | null) {
+  const query = useQuery({
+    queryKey: ['rf-job', jobId] as const,
+    queryFn: () => rfJobApi.get(jobId as UUID),
+    enabled: !!jobId,
+    refetchInterval: (q) => {
+      const s = q.state.data?.status;
+      if (isJobTerminal(s)) return false;
+      return POLL_INTERVAL_MS;
+    },
+    refetchIntervalInBackground: false,
+  });
+
+  const rfJob: RfJob | null = query.data ?? null;
+  const status = rfJob?.status;
+  return {
+    rfJob,
+    isPolling: !!jobId && !isJobTerminal(status),
+    isSucceeded: isJobSucceeded(status),
+    isFailed: isJobFailed(status),
+  };
 }

@@ -35,6 +35,7 @@ export interface ApLayout {
   power_dbm: number | null;
   channel_info_json: Record<string, unknown>;
   created_at: ISODateString;
+  updated_at: ISODateString;
 }
 
 export interface ApLayoutCreate {
