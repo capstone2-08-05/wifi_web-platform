@@ -1,7 +1,6 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Optional
 from uuid import UUID, uuid4
@@ -11,11 +10,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, ErrorCode
-from app.core.settings import ASSETS_DIR
+from app.core.settings import RF_PRESIGNED_URL_EXPIRES_SECONDS
 from app.models.asset import Asset
 from app.models.floor import Floor
 from app.models.project import Project
 from app.models.user import User
+from app.services import _s3
 
 ALLOWED_EXTENSIONS: dict[str, str] = {
     "png": "image/png",
@@ -107,30 +107,12 @@ def _validate_asset_type(asset_type: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 파일 저장 헬퍼
+# S3 키 빌더
 # ---------------------------------------------------------------------------
-def _build_storage_path(
+def _build_s3_key(
     project_id: str, floor_id: str, asset_id: UUID, ext: str
-) -> Path:
-    return Path(ASSETS_DIR) / str(project_id) / str(floor_id) / f"{asset_id}.{ext}"
-
-
-def _save_upload_to_disk(upload: UploadFile, dest: Path) -> int:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with dest.open("wb") as f:
-            shutil.copyfileobj(upload.file, f)
-    except OSError as e:
-        if dest.exists():
-            dest.unlink(missing_ok=True)
-        raise AppError(
-            code=ErrorCode.FILE_STORAGE_ERROR,
-            message=f"Failed to save file: {e}",
-            status_code=500,
-        ) from e
-    finally:
-        upload.file.close()
-    return dest.stat().st_size
+) -> str:
+    return f"assets/{project_id}/{floor_id}/{asset_id}.{ext}"
 
 
 # ---------------------------------------------------------------------------
@@ -150,13 +132,17 @@ def create_asset(
     # 2. 권한 체크 (project_id 확보)
     floor, project = _get_owned_floor_or_404(db, floor_id, user)
 
-    # 3. 디스크 저장
+    # 3. 본문 읽기 + S3 업로드
     asset_id = uuid4()
-    storage_path = _build_storage_path(project.id, floor.id, asset_id, ext)
-    file_size = _save_upload_to_disk(upload, storage_path)
+    key = _build_s3_key(project.id, floor.id, asset_id, ext)
+    mime_type = ALLOWED_EXTENSIONS[ext]
+    try:
+        body = upload.file.read()
+    finally:
+        upload.file.close()
+    s3_uri = _s3.upload_bytes(key, body, content_type=mime_type)
 
     # 4. DB row 생성
-    mime_type = ALLOWED_EXTENSIONS[ext]
     asset = Asset(
         id=str(asset_id),
         project_id=project.id,
@@ -164,9 +150,9 @@ def create_asset(
         uploaded_by=user.id,
         asset_type=asset_type,
         source_format=ext,
-        storage_url=str(storage_path),
+        storage_url=s3_uri,
         mime_type=mime_type,
-        file_size_bytes=file_size,
+        file_size_bytes=len(body),
         metadata_json={},
     )
     try:
@@ -175,8 +161,8 @@ def create_asset(
         db.refresh(asset)
     except Exception:
         db.rollback()
-        if storage_path.exists():
-            storage_path.unlink(missing_ok=True)
+        # DB 실패 시 업로드된 S3 객체 정리
+        _s3.delete_object(s3_uri)
         raise
 
     return asset
@@ -204,10 +190,31 @@ def get_asset(db: Session, asset_id: UUID, user: User) -> Asset:
     return asset
 
 
+def get_asset_download_url(
+    db: Session, asset_id: UUID, user: User
+) -> tuple[str, int]:
+    """presigned GET URL + 만료 초 반환."""
+    asset, _floor, _project = _get_owned_asset_or_404(db, asset_id, user)
+    if not asset.storage_url or not asset.storage_url.startswith("s3://"):
+        raise AppError(
+            ErrorCode.UPLOADED_FILE_NOT_FOUND,
+            "Asset is not on S3 (legacy local path).",
+            status_code=404,
+        )
+    url = _s3.presigned_get_url(
+        asset.storage_url, expires_seconds=RF_PRESIGNED_URL_EXPIRES_SECONDS
+    )
+    return url, RF_PRESIGNED_URL_EXPIRES_SECONDS
+
+
 def delete_asset(db: Session, asset_id: UUID, user: User) -> None:
     asset, _floor, _project = _get_owned_asset_or_404(db, asset_id, user)
+    s3_uri = asset.storage_url if asset.storage_url else None
 
-    storage_path = Path(asset.storage_url) if asset.storage_url else None
+    # S3 먼저 — 실패 시 (예: AccessDenied) DB 행 유지해서 재시도 가능.
+    # 성공 시 idempotent (S3 객체 없어도 200) 라 DB 만 남은 상태에서도 안전.
+    if s3_uri and s3_uri.startswith("s3://"):
+        _s3.delete_object(s3_uri)
 
     try:
         db.delete(asset)
@@ -215,9 +222,3 @@ def delete_asset(db: Session, asset_id: UUID, user: User) -> None:
     except Exception:
         db.rollback()
         raise
-
-    if storage_path is not None and storage_path.exists():
-        try:
-            storage_path.unlink()
-        except OSError:
-            pass

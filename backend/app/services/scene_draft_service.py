@@ -280,42 +280,39 @@ async def analyze_from_asset(
     /upload/floorplan/analyze 와 동일하게 Job 패턴 사용 → 202 응답 + job_id.
     완료 조회는 GET /floorplan-jobs/{job_id}.
     """
-    from pathlib import Path
-
+    from app.services import _s3
     from app.services.asset_service import _get_owned_asset_or_404
     from app.services.floorplan_job_service import submit_floorplan_analysis
 
     asset, _floor, _project = _get_owned_asset_or_404(db, asset_id, current_user)
 
-    storage_path = Path(asset.storage_url)
-    if not storage_path.exists():
+    if not asset.storage_url or not asset.storage_url.startswith("s3://"):
         raise AppError(
             ErrorCode.UPLOADED_FILE_NOT_FOUND,
-            f"Asset file not found on storage: {asset.storage_url}",
+            f"Asset is not on S3: {asset.storage_url}",
             status_code=500,
         )
 
-    try:
-        content = storage_path.read_bytes()
-    except OSError as exc:
-        raise AppError(
-            ErrorCode.FILE_SAVE_FAILED,
-            f"Failed to read asset file: {exc}",
-            status_code=500,
-        ) from exc
+    # S3 에서 본문 다운로드. 이후 submit_floorplan_analysis 가 SageMaker 입력용으로
+    # 다시 S3 에 올린다 (현재 흐름 유지). 추후 source_s3_uri 직접 전달로 최적화 가능.
+    content = _s3.download_bytes(asset.storage_url)
 
+    filename = asset.storage_url.rsplit("/", 1)[-1] or f"{asset.id}.{asset.source_format or 'bin'}"
+    s3_bucket, s3_key = _s3.split_s3_uri(asset.storage_url)
     upload_metadata = UploadStorageMetadataDTO(
-        provider="local",
-        original_filename=storage_path.name,
+        provider="s3",
+        original_filename=filename,
         content_type=asset.mime_type,
         size_bytes=asset.file_size_bytes,
-        local_saved_path=str(storage_path),
+        s3_uri=asset.storage_url,
+        s3_bucket=s3_bucket,
+        s3_key=s3_key,
     )
 
     job = await submit_floorplan_analysis(
         db,
         image_bytes=content,
-        filename=storage_path.name,
+        filename=filename,
         content_type=asset.mime_type or "application/octet-stream",
         real_width_m=real_width_m,
         project_id=asset.project_id,

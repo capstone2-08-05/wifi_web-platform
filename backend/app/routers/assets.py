@@ -12,9 +12,16 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
+from pydantic import BaseModel
+
 from app.schemas.asset import AssetResponse
 from app.schemas.scene_draft import AnalyzeFromAssetRequest, AnalyzeFromAssetResponse
 from app.services import asset_service, scene_draft_service
+
+
+class AssetDownloadUrlResponse(BaseModel):
+    url: str
+    expires_in: int
 
 
 
@@ -77,10 +84,26 @@ def get_asset(
     return AssetResponse.model_validate(asset)
 
 
+@assets_router.get(
+    "/{asset_id}/download-url",
+    response_model=AssetDownloadUrlResponse,
+    summary="자산 파일 presigned GET URL 발급 (S3)",
+)
+def get_asset_download_url(
+    asset_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> AssetDownloadUrlResponse:
+    url, expires_in = asset_service.get_asset_download_url(
+        db=db, asset_id=asset_id, user=current_user
+    )
+    return AssetDownloadUrlResponse(url=url, expires_in=expires_in)
+
+
 @assets_router.delete(
     "/{asset_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="자산 삭제 (DB row + 파일 시스템)",
+    summary="자산 삭제 (DB row + S3 객체)",
 )
 def delete_asset(
     asset_id: UUID = Path(...),

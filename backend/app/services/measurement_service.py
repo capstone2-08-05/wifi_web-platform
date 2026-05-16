@@ -154,8 +154,17 @@ def _floorplan_info_from_asset(db: Session, asset_id: str | None) -> FloorplanIn
     if asset is None:
         return FloorplanInfoDTO()
     metadata = asset.metadata_json or {}
+    # S3 객체면 presigned URL 발급 (모바일이 직접 다운로드 가능하게).
+    # 비-S3 (옛 로컬 경로) 면 그대로 노출 — 어차피 외부 접근 불가지만 fallback.
+    url = asset.storage_url
+    if url and url.startswith("s3://"):
+        from app.services import _s3
+        try:
+            url = _s3.presigned_get_url(url)
+        except Exception:
+            url = None
     return FloorplanInfoDTO(
-        url=asset.storage_url,
+        url=url,
         width_px=metadata.get("width_px"),
         height_px=metadata.get("height_px"),
         scale_m_per_px=metadata.get("scale_m_per_px"),
