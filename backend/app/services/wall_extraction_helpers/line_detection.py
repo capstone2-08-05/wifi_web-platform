@@ -23,10 +23,16 @@ def detect_line_segments(
     canny_low: int = 50,
     canny_high: int = 150,
     hough_threshold: int = 80,
-    min_line_length_ratio: float = 0.05,
+    min_line_length_ratio: float = 0.10,
     max_line_gap: int = 10,
+    angle_tolerance_deg: float = 5.0,
 ) -> np.ndarray:
-    """이미지에서 긴 직선 후보 (N, 4) `[x1, y1, x2, y2]` 배열로 반환. 실패 시 빈 배열."""
+    """이미지에서 **벽 후보** 직선 추출 (N, 4) `[x1, y1, x2, y2]`.
+
+    raw Hough → 해칭/치수선/가구까지 다 잡혀서 노이즈 많음. 벽 후보로 좁히기 위해:
+      - `min_line_length_ratio` 0.10 (도면 짧은 변의 10% 이상) — 짧은 가구/디테일 제거
+      - 수평/수직만 (`angle_tolerance_deg` 이내) — 대각선/해칭 제거
+    """
     img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
     if img is None:
         logger.warning("line detection: 이미지 읽기 실패 %s", image_path)
@@ -48,7 +54,22 @@ def detect_line_segments(
         return np.empty((0, 4), dtype=np.int32)
 
     segs = lines.reshape(-1, 4)
-    logger.info("line detection: %d segments (min_length=%d)", len(segs), min_length)
+    raw_count = len(segs)
+
+    # 수평/수직 필터: 각도가 0° 또는 90° 근처인 것만.
+    if angle_tolerance_deg > 0 and raw_count > 0:
+        dx = segs[:, 2] - segs[:, 0]
+        dy = segs[:, 3] - segs[:, 1]
+        # arctan2 결과를 0~90° 로 fold (수평/수직 모두 0 또는 90 근처가 됨)
+        angle = np.degrees(np.arctan2(np.abs(dy), np.abs(dx)))  # 0~90
+        horiz = angle <= angle_tolerance_deg
+        vert = angle >= (90.0 - angle_tolerance_deg)
+        segs = segs[horiz | vert]
+
+    logger.info(
+        "line detection: %d → %d segments (min_length=%d, ±%.1f° H/V)",
+        raw_count, len(segs), min_length, angle_tolerance_deg,
+    )
     return segs
 
 
