@@ -1,5 +1,7 @@
 from app.models.ap_layout import ApLayout
 from app.models.asset import Asset
+from app.models.calibration_run import CalibrationRun
+from app.models.parameter_update import ParameterUpdate
 from app.models.draft_object import DraftObject
 from app.models.draft_opening import DraftOpening
 from app.models.draft_room import DraftRoom
@@ -50,5 +52,7 @@ __all__ = [
     "MeasurementSession",
     "MeasurementPoint",
     "ApLayout",
+    "CalibrationRun",
+    "ParameterUpdate",
 ]
 
