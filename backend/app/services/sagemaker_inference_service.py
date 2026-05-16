@@ -80,6 +80,8 @@ class InferenceResult:
     image_width_px: int
     image_height_px: int
     result_payload: dict[str, Any]      # 원본 result.json (디버깅/메트릭)
+    # 원본 도면 이미지 (S3 에서 다운). OCR/선분 검출에 필요. 다운로드 실패 시 None.
+    source_image_local_path: Path | None = None
 
     def cleanup(self) -> None:
         try:
@@ -338,9 +340,15 @@ class SageMakerInferenceService:
         return "running"
 
     # ----- 3. download_result -----
-    def download_result(self, job_id: str, output_prefix: str) -> InferenceResult:
+    def download_result(
+        self,
+        job_id: str,
+        output_prefix: str,
+        source_s3_uri: str | None = None,
+    ) -> InferenceResult:
         """result.json + raw outputs 를 temp 디렉토리로 다운로드.
 
+        source_s3_uri 가 주어지면 원본 도면 이미지도 같이 다운 (OCR/선분 검출용).
         호출 후 반드시 InferenceResult.cleanup() 으로 정리할 것.
         """
         bucket, prefix_key = _split_s3_uri(output_prefix)
@@ -369,6 +377,20 @@ class SageMakerInferenceService:
                 502,
             ) from exc
 
+        # 원본 이미지 다운 (best-effort — 실패해도 인퍼런스 결과 자체는 살림).
+        source_image_path: Path | None = None
+        if source_s3_uri:
+            try:
+                src_bucket, src_key = _split_s3_uri(source_s3_uri)
+                ext = Path(src_key).suffix or ".png"
+                source_image_path = temp_dir / f"source{ext}"
+                _s3_download(s3, src_bucket, src_key, source_image_path)
+            except (ClientError, ValueError) as exc:
+                logger.warning(
+                    "source image download failed (OCR/line detection 비활성화됨): %s", exc
+                )
+                source_image_path = None
+
         detections_payload = json.loads(detections_bytes)
         detections = list(detections_payload.get("detections") or [])
 
@@ -382,6 +404,7 @@ class SageMakerInferenceService:
             image_width_px=int(image_info.get("width_px", 0)),
             image_height_px=int(image_info.get("height_px", 0)),
             result_payload=result_payload,
+            source_image_local_path=source_image_path,
         )
 
     # ----- 4. download_failure -----

@@ -36,12 +36,10 @@ function extendBounds(b: Bounds, x: number, y: number) {
   if (y > b.maxY) b.maxY = y;
 }
 
-/**
- * 캔버스 viewBox 는 도면 구조(rooms/walls/openings) 만 기준으로 계산.
- * 객체(가구) 는 캔버스 밖으로 이동될 수 있어 viewBox 에 포함 안 함 — 캔버스가
- * 무한 확장되는 걸 방지. 밖으로 나간 가구는 그냥 잘려 보이게.
- */
-function computeViewBox(draft: SceneDraft): { x: number; y: number; w: number; h: number } {
+type ViewBox = { x: number; y: number; w: number; h: number };
+
+/** 도형(rooms/walls/openings) 의 미터 단위 bounding box. 가구(objects) 는 제외. */
+function computeShapeBounds(draft: SceneDraft): Bounds {
   const b = emptyBounds();
   for (const room of draft.rooms) {
     const g = parseGeometry(room.polygon_geom);
@@ -57,6 +55,43 @@ function computeViewBox(draft: SceneDraft): { x: number; y: number; w: number; h
     const g = parseGeometry(op.line_geom);
     if (g?.type === 'LineString') for (const [x, y] of g.coordinates) extendBounds(b, x, y);
   }
+  return b;
+}
+
+/**
+ * 캔버스 viewBox 계산.
+ * - imageExtent 가 있으면 (real_width_m + 이미지 natural 비율로 추정한 실제 미터 크기):
+ *   이미지가 (0,0) ~ (imageExtent.w, imageExtent.h) 에 위치한다고 가정하고, 도형 bounds 와
+ *   합집합 → "도형을 줄여도 캔버스가 이미지 크기만큼은 유지" 됨 (사용자 요구).
+ * - imageExtent 가 없으면 도형 bounds 만 사용 (기존 동작 fallback).
+ */
+function computeViewBox(
+  draft: SceneDraft,
+  imageExtent?: { w: number; h: number } | null,
+): ViewBox {
+  const b = computeShapeBounds(draft);
+  if (imageExtent && imageExtent.w > 0 && imageExtent.h > 0) {
+    // 이미지는 (0, 0) 기준 배치. 도형 bounds 와 합집합.
+    if (!isFinite(b.minX)) {
+      // 도형이 비어있으면 이미지만으로 계산.
+      const padding = Math.max(imageExtent.w, imageExtent.h) * 0.05;
+      return {
+        x: -padding,
+        y: -padding,
+        w: imageExtent.w + 2 * padding,
+        h: imageExtent.h + 2 * padding,
+      };
+    }
+    const minX = Math.min(b.minX, 0);
+    const minY = Math.min(b.minY, 0);
+    const maxX = Math.max(b.maxX, imageExtent.w);
+    const maxY = Math.max(b.maxY, imageExtent.h);
+    const w = maxX - minX;
+    const h = maxY - minY;
+    const padding = Math.max(w, h) * 0.05;
+    return { x: minX - padding, y: minY - padding, w: w + 2 * padding, h: h + 2 * padding };
+  }
+  // fallback: shape bounds only.
   if (!isFinite(b.minX)) return { x: 0, y: 0, w: 10, h: 10 };
   const w = b.maxX - b.minX || 1;
   const h = b.maxY - b.minY || 1;
@@ -64,12 +99,12 @@ function computeViewBox(draft: SceneDraft): { x: number; y: number; w: number; h
   return { x: b.minX - padding, y: b.minY - padding, w: w + 2 * padding, h: h + 2 * padding };
 }
 
-// draft.id 별 최초 viewBox 를 localStorage 에 캐싱.
+// draft.id 별 최초 viewBox 를 localStorage 에 캐싱 (이미지 extent 없을 때의 fallback).
 // 새로고침 후에도 같은 draft 면 같은 viewBox 가 복원되어, 그룹 리사이즈로 도형이
 // 줄어들었을 때 캔버스가 작아진 도형에 자동 맞춤되는 현상(라벨·핸들이 커보임)을 막는다.
+// 이미지 extent (real_width_m + natural dims) 가 있는 경우엔 union viewBox 가 자연스럽게
+// 안정적이므로 캐시 불필요.
 const VIEWBOX_CACHE_PREFIX = 'draft-viewbox:v1:';
-
-type ViewBox = { x: number; y: number; w: number; h: number };
 
 function loadCachedViewBox(draftId: string): ViewBox | null {
   try {
@@ -106,6 +141,56 @@ function resolveInitialViewBox(draft: SceneDraft): ViewBox {
   const computed = computeViewBox(draft);
   saveCachedViewBox(draft.id, computed);
   return computed;
+}
+
+/**
+ * 이미지를 비동기 로드해서 naturalWidth/Height 반환. URL 바뀌면 null 로 리셋.
+ * presigned URL 의 만료/갱신 시에도 동작.
+ */
+function useImageNaturalDimensions(
+  url: string | null | undefined,
+): { w: number; h: number } | null {
+  const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
+  useEffect(() => {
+    setDims(null);
+    if (!url) return;
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    let cancelled = false;
+    img.onload = () => {
+      if (!cancelled && img.naturalWidth > 0 && img.naturalHeight > 0) {
+        setDims({ w: img.naturalWidth, h: img.naturalHeight });
+      }
+    };
+    img.onerror = () => {
+      if (!cancelled) setDims(null);
+    };
+    img.src = url;
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+  return dims;
+}
+
+/**
+ * draft.summary_json.storage.real_width_m + 이미지 natural 비율로 이미지의 실제 미터 크기 계산.
+ * 둘 중 하나라도 없으면 null → fallback 으로 도형 bounds 기준 viewBox 사용.
+ */
+function deriveImageExtent(
+  draft: SceneDraft,
+  imageDims: { w: number; h: number } | null,
+): { w: number; h: number } | null {
+  if (!imageDims || imageDims.w <= 0) return null;
+  const summary = (draft.summary_json ?? {}) as {
+    storage?: { real_width_m?: number };
+  };
+  const realWidthM = summary.storage?.real_width_m;
+  if (typeof realWidthM !== 'number' || realWidthM <= 0) return null;
+  return {
+    w: realWidthM,
+    h: realWidthM * (imageDims.h / imageDims.w),
+  };
 }
 
 const DRAG_THRESHOLD_M = 0.05;
@@ -587,15 +672,29 @@ export function DraftSceneCanvas({
   onCreate,
   backgroundImageUrl,
 }: Props) {
-  // viewBox 는 draft.id 가 바뀔 때만 재계산 → 같은 draft 안에서 도형이 줄거나, 객체가
-  // 캔버스 밖으로 이동해도 캔버스 자체는 절대 안 변함 (수축·확장 모두 안 함).
-  // 객체가 도면 밖으로 나가면 잘려 보이지만 캔버스 비율은 안정적.
-  // 새로고침 후에도 동일한 viewBox 를 유지하기 위해 draft.id 별로 localStorage 캐싱.
-  const [vb, setVb] = useState(() => resolveInitialViewBox(draft));
+  // 배경 도면 이미지의 natural 픽셀 dim → real_width_m 와 조합해 실제 미터 크기 산출.
+  // 이미지 extent 가 있으면 viewBox 는 (이미지 + 도형) 합집합 → 도형을 줄여도 캔버스가
+  // 이미지 크기는 유지 → "도면 위에 그렸을 때 그림+도면 크기 저장 + 화면에 안 늘어남".
+  // 이미지가 없거나 real_width_m 가 없으면 fallback 으로 캐시된 도형 bounds viewBox.
+  const imageDims = useImageNaturalDimensions(backgroundImageUrl ?? null);
+  const imageExtent = useMemo(
+    () => deriveImageExtent(draft, imageDims),
+    [draft, imageDims],
+  );
+
+  const [vb, setVb] = useState(() =>
+    imageExtent ? computeViewBox(draft, imageExtent) : resolveInitialViewBox(draft),
+  );
   const [prevDraftId, setPrevDraftId] = useState(draft.id);
+  const [prevExtent, setPrevExtent] = useState(imageExtent);
   if (prevDraftId !== draft.id) {
     setPrevDraftId(draft.id);
-    setVb(resolveInitialViewBox(draft));
+    setPrevExtent(imageExtent);
+    setVb(imageExtent ? computeViewBox(draft, imageExtent) : resolveInitialViewBox(draft));
+  } else if (prevExtent !== imageExtent) {
+    // 이미지 로드 완료 시 viewBox 를 union 으로 한 번 업데이트.
+    setPrevExtent(imageExtent);
+    if (imageExtent) setVb(computeViewBox(draft, imageExtent));
   }
 
   // 핸들 크기는 현재 도형의 자연 크기에 비례 — viewBox 가 고정돼도 사용자가 그룹
@@ -1037,12 +1136,14 @@ export function DraftSceneCanvas({
           <image
             href={backgroundImageUrl}
             xlinkHref={backgroundImageUrl}
-            x={vb.x}
-            y={vb.y}
-            width={vb.w}
-            height={vb.h}
+            // imageExtent 가 있으면 실제 미터 좌표 (0,0)~(extent.w, extent.h) 에 배치 →
+            // 도형과 동일 좌표계 → 정렬 일치. 없으면 vb 영역에 fitting (fallback).
+            x={imageExtent ? 0 : vb.x}
+            y={imageExtent ? 0 : vb.y}
+            width={imageExtent ? imageExtent.w : vb.w}
+            height={imageExtent ? imageExtent.h : vb.h}
             opacity={0.25}
-            preserveAspectRatio="xMidYMid meet"
+            preserveAspectRatio={imageExtent ? 'none' : 'xMidYMid meet'}
             pointerEvents="none"
             crossOrigin="anonymous"
             onError={() => {
@@ -1835,7 +1936,7 @@ function OpeningShape({
         y={labelY}
         textAnchor="middle"
         dominantBaseline="middle"
-        fontSize={computeOpeningLabelFontSize(label, len)}
+        fontSize={OPENING_LABEL_FONT_SIZE_M}
         fontWeight="500"
         fill={baseColor}
         pointerEvents="none"
@@ -1851,14 +1952,6 @@ function OpeningShape({
       )}
     </g>
   );
-}
-
-/** 개구부 길이에 비례한 라벨 폰트 크기 (미터). 최대 0.13m, 최소 0.05m. */
-function computeOpeningLabelFontSize(label: string, lineLengthM: number): number {
-  const charCount = Math.max(1, label.length);
-  // 가로로 글자가 라인 길이의 약 70% 안에 들어가도록.
-  const widthFit = (lineLengthM * 0.7) / charCount;
-  return Math.max(0.05, Math.min(OPENING_LABEL_FONT_SIZE_M, widthFit));
 }
 
 function ObjectShape({

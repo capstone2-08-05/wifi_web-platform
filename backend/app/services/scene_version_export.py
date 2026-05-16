@@ -26,6 +26,46 @@ DEFAULT_WALL_THICKNESS_M = 0.12
 DEFAULT_WALL_HEIGHT_M = 2.6
 DEFAULT_WALL_MATERIAL = "plasterboard"
 
+# Sionna 1.0.2 의 ITURadioMaterial type 인자가 받는 enum (소문자, prefix 없음).
+# 출처: ITU-R P.2040 표준. 컨테이너 (`apps/sagemaker_rf_inference`) 가
+# scene.json 의 walls[*].material 을 그대로 ITURadioMaterial(name, type, ...)
+# 의 type 으로 넘기므로, 이 set 안의 값만 보내야 함.
+SIONNA_MATERIAL_SET: set[str] = {
+    "vacuum",
+    "concrete",
+    "brick",
+    "plasterboard",
+    "wood",
+    "glass",
+    "ceiling_board",
+    "chipboard",
+    "floorboard",
+    "metal",
+    "very_dry_ground",
+    "medium_dry_ground",
+    "wet_ground",
+}
+# 우리 material_code → Sionna enum.
+MATERIAL_ALIAS: dict[str, str] = {
+    "drywall": "plasterboard",
+    "marble": "concrete",   # Sionna 1.0.2 에 marble 없음 → 가장 비슷한 concrete 로
+    "plywood": "wood",
+}
+SIONNA_FALLBACK = "plasterboard"
+
+
+def _to_sionna_material(name: str | None) -> str:
+    if not name:
+        return SIONNA_FALLBACK
+    key = name.lower().strip()
+    # 옛 ITU prefix 가 묻어있으면 떼어냄
+    if key.startswith("itu_"):
+        key = key[len("itu_"):]
+    key = MATERIAL_ALIAS.get(key, key)
+    if key in SIONNA_MATERIAL_SET:
+        return key
+    return SIONNA_FALLBACK
+
 
 def export_scene_version_to_scene_json(
     db: Session, scene_version_id: str
@@ -65,7 +105,7 @@ def export_scene_version_to_scene_json(
                 "y2": float(y2),
                 "thickness": float(w.thickness_m or DEFAULT_WALL_THICKNESS_M),
                 "height": float(w.height_m or DEFAULT_WALL_HEIGHT_M),
-                "material": w.material_label or DEFAULT_WALL_MATERIAL,
+                "material": _to_sionna_material(w.material_label or DEFAULT_WALL_MATERIAL),
             }
         )
 

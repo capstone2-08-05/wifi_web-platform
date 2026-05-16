@@ -419,13 +419,28 @@ class WallExtractor:
     def execute(self, image_path: Path, detections: List[Any] = None) -> List[List[float]]:
         return self.execute_from_unet_image(image_path, detections)
 
-    def execute_from_prob_map(self, prob_map_path: Path, threshold: float = None, detections: List[Any] = None) -> List[List[float]]:
+    def execute_from_prob_map(
+        self,
+        prob_map_path: Path,
+        threshold: float = None,
+        detections: List[Any] = None,
+        image_path: Path | None = None,
+    ) -> List[List[float]]:
+        """U-Net wall probability map → wall 선분 리스트.
+
+        threshold 결정 우선순위:
+          1. `threshold` 인자가 명시되면 그 값 사용
+          2. `image_path` 가 있으면 multi-threshold + OCR/선분 정합도 기반 best 선택 (§69)
+          3. 그 외 → Otsu fallback
+        """
         from skimage.filters import threshold_otsu
-        
+
         prob = np.load(str(prob_map_path))
-        
-        # 1. Adaptive threshold
-        thr = threshold if threshold is not None else threshold_otsu(prob)
+
+        # 1. threshold 결정
+        thr = self._pick_threshold(prob, threshold, image_path)
+        if thr is None:
+            thr = float(threshold_otsu(prob))
         mask = (prob > thr).astype(np.uint8) * 255
         
         edges = self._preprocess(mask)
@@ -481,6 +496,62 @@ class WallExtractor:
 
         self._save_debug(skeleton, result, detections or [])
         return result
+
+    def _pick_threshold(
+        self,
+        prob: np.ndarray,
+        explicit: float | None,
+        image_path: Path | None,
+    ) -> float | None:
+        """§69 multi-threshold scoring 으로 best 선택. image_path 없으면 None 반환 (fallback)."""
+        if explicit is not None:
+            return float(explicit)
+        if image_path is None or not image_path.exists():
+            return None
+        try:
+            from app.services.wall_extraction_helpers import (
+                line_detection,
+                ocr,
+                threshold_scoring,
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "wall_extraction_helpers import 실패 → Otsu fallback: %s", exc
+            )
+            return None
+
+        # prob_map 과 source image 의 해상도가 다를 수 있음 → image 기준으로 prob_map 리사이즈.
+        img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return None
+        h_img, w_img = img.shape
+        h_prob, w_prob = prob.shape
+        if (h_img, w_img) != (h_prob, w_prob):
+            prob_resized = cv2.resize(
+                prob.astype(np.float32), (w_img, h_img), interpolation=cv2.INTER_LINEAR
+            )
+        else:
+            prob_resized = prob
+
+        # OCR + line 추출 (실패해도 둘 다 None 처리해서 진행)
+        try:
+            text_bboxes = ocr.detect_text_bboxes(image_path)
+            text_mask = ocr.build_text_mask(text_bboxes, prob_resized.shape, pad=3)
+        except Exception:
+            text_mask = None
+
+        try:
+            segs = line_detection.detect_line_segments(image_path)
+            line_mask = line_detection.build_line_mask(segs, prob_resized.shape, thickness=3) if len(segs) > 0 else None
+        except Exception:
+            line_mask = None
+
+        best_thr, _scores = threshold_scoring.pick_best_threshold(
+            prob_resized, line_mask=line_mask, text_mask=text_mask
+        )
+        return float(best_thr)
+
 
 wall_extractor = WallExtractor()
 
