@@ -75,7 +75,12 @@ export function PromotedCard({ version, versions, onReupload }: PromotedCardProp
         변경 이력 {totalPatchLogs} 건 (확정 후 수정 시 기록됩니다)
       </div>
 
-      {versions && versions.length > 1 && <VersionHistoryPanel versions={versions} />}
+      {versions && versions.length > 1 && (
+        <VersionHistoryPanel
+          versions={versions}
+          onSwitched={() => setMinimized(true)}
+        />
+      )}
 
       <div className="mt-5 flex flex-wrap justify-end gap-2">
         <button

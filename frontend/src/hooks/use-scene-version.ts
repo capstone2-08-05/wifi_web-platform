@@ -24,8 +24,10 @@ export function useSceneVersion(versionId: UUID | null) {
     queryKey: ['scene-version', versionId] as const,
     queryFn: () => sceneVersionApi.get(versionId as UUID),
     enabled: !!versionId,
-    // 버전 전환 시 새 detail 이 도착하기 전까지 이전 데이터를 유지 — 캔버스가 잠깐
-    // 비어 보이고 업로드 화면으로 떨어지는 현상 방지.
+    // 한 번 방문한 버전은 5분간 캐시 활용 → 다음 전환 시 즉시 표시.
+    staleTime: 5 * 60_000,
+    // 전환 중엔 이전 버전 데이터를 그대로 유지 → 캔버스가 빈 화면으로 떨어지지 않음.
+    // 삭제된 버전이 stale 데이터로 남는 부작용은 useDeleteSceneVersion 의 removeQueries 로 차단.
     placeholderData: keepPreviousData,
   });
 }
@@ -35,7 +37,10 @@ export function useDeleteSceneVersion() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (versionId: UUID) => sceneVersionApi.remove(versionId),
-    onSuccess: () => {
+    onSuccess: (_data, versionId) => {
+      // 삭제된 버전의 detail 캐시 자체를 제거 — invalidate 만 하면 stale 데이터가
+      // 다른 hook 의 placeholder 등에서 재사용될 수 있어 깨끗하게 지움.
+      qc.removeQueries({ queryKey: ['scene-version', versionId], exact: true });
       qc.invalidateQueries({ queryKey: ['scene-versions'] });
       qc.invalidateQueries({ queryKey: ['scene-version'] });
       qc.invalidateQueries({ queryKey: ['rf-runs'] });
@@ -80,11 +85,11 @@ export function useSetCurrentVersion() {
       toast.success(`버전 #${data.version_no} 으로 전환됨`, '이 버전을 기준으로 작업합니다.');
     },
     onSettled: () => {
-      // 전체 scene-version 관련 캐시 + 드래프트/패치로그도 같이 새로 고침.
+      // 리스트만 새로 받아오고 detail 캐시는 staleTime 안이면 그대로 활용.
+      // (set-current 는 detail 내용엔 영향 없고 is_current 플래그만 바꾸므로
+      // 굳이 무거운 detail 을 다시 fetch 할 필요 없음.)
       qc.invalidateQueries({ queryKey: ['scene-versions'] });
-      qc.invalidateQueries({ queryKey: ['scene-version'] });
       qc.invalidateQueries({ queryKey: ['scene-drafts'] });
-      qc.invalidateQueries({ queryKey: ['patch-logs'] });
     },
   });
 }
