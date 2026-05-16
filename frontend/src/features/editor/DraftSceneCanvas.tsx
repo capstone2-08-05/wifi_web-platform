@@ -64,6 +64,50 @@ function computeViewBox(draft: SceneDraft): { x: number; y: number; w: number; h
   return { x: b.minX - padding, y: b.minY - padding, w: w + 2 * padding, h: h + 2 * padding };
 }
 
+// draft.id 별 최초 viewBox 를 localStorage 에 캐싱.
+// 새로고침 후에도 같은 draft 면 같은 viewBox 가 복원되어, 그룹 리사이즈로 도형이
+// 줄어들었을 때 캔버스가 작아진 도형에 자동 맞춤되는 현상(라벨·핸들이 커보임)을 막는다.
+const VIEWBOX_CACHE_PREFIX = 'draft-viewbox:v1:';
+
+type ViewBox = { x: number; y: number; w: number; h: number };
+
+function loadCachedViewBox(draftId: string): ViewBox | null {
+  try {
+    const raw = localStorage.getItem(VIEWBOX_CACHE_PREFIX + draftId);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ViewBox>;
+    if (
+      typeof parsed.x === 'number' &&
+      typeof parsed.y === 'number' &&
+      typeof parsed.w === 'number' &&
+      typeof parsed.h === 'number' &&
+      parsed.w > 0 &&
+      parsed.h > 0
+    ) {
+      return parsed as ViewBox;
+    }
+  } catch {
+    // localStorage 접근 실패 / JSON parse 실패: 캐시 무시.
+  }
+  return null;
+}
+
+function saveCachedViewBox(draftId: string, vb: ViewBox) {
+  try {
+    localStorage.setItem(VIEWBOX_CACHE_PREFIX + draftId, JSON.stringify(vb));
+  } catch {
+    // quota exceeded / private mode: 무시. 캐시 없이도 동작.
+  }
+}
+
+function resolveInitialViewBox(draft: SceneDraft): ViewBox {
+  const cached = loadCachedViewBox(draft.id);
+  if (cached) return cached;
+  const computed = computeViewBox(draft);
+  saveCachedViewBox(draft.id, computed);
+  return computed;
+}
+
 const DRAG_THRESHOLD_M = 0.05;
 
 type DragState =
@@ -158,7 +202,7 @@ function nearestAnchor(pt: Coord, anchors: Coord[], radius: number): Coord | nul
 }
 
 /** from 기준으로 to 가 거의 수평/수직이면 정확히 맞춘 좌표 반환. */
-function axisSnap(from: Coord, to: Coord, tol: number): Coord {
+function snapToAxis(from: Coord, to: Coord, tol: number): Coord {
   const dx = to[0] - from[0];
   const dy = to[1] - from[1];
   if (Math.abs(dy) < tol && Math.abs(dx) >= Math.abs(dy)) return [to[0], from[1]];
@@ -166,9 +210,12 @@ function axisSnap(from: Coord, to: Coord, tol: number): Coord {
   return to;
 }
 
+type SnapKind = 'wall-anchor' | 'wall-projection' | 'axis';
+
 interface SnapResult {
   point: Coord;
   snapped: boolean;
+  kind?: SnapKind;
 }
 
 /**
@@ -184,14 +231,14 @@ function snapToWall(
 ): SnapResult {
   // 1) 벽 끝점
   const anchor = nearestAnchor(raw, wallAnchors, SNAP_RADIUS_M);
-  if (anchor) return { point: [anchor[0], anchor[1]], snapped: true };
+  if (anchor) return { point: [anchor[0], anchor[1]], snapped: true, kind: 'wall-anchor' };
   // 2) 벽 선분 위 (끝점이 아니어도 벽 라인에 붙음)
   const proj = nearestWallProjection(raw, draft, SNAP_RADIUS_M, excludeWallId);
-  if (proj) return { point: proj, snapped: true };
-  // 3) 축 스냅 (그리는 중일 때만)
+  if (proj) return { point: proj, snapped: true, kind: 'wall-projection' };
+  // 3) 축 스냅 (그리는 중 / vertex 드래그 시 반대편 꼭짓점 기준)
   if (axisFrom) {
-    const axed = axisSnap(axisFrom, raw, AXIS_SNAP_TOLERANCE_M);
-    if (axed[0] !== raw[0] || axed[1] !== raw[1]) return { point: axed, snapped: true };
+    const axed = snapToAxis(axisFrom, raw, AXIS_SNAP_TOLERANCE_M);
+    if (axed[0] !== raw[0] || axed[1] !== raw[1]) return { point: axed, snapped: true, kind: 'axis' };
   }
   return { point: raw, snapped: false };
 }
@@ -543,18 +590,35 @@ export function DraftSceneCanvas({
   // viewBox 는 draft.id 가 바뀔 때만 재계산 → 같은 draft 안에서 도형이 줄거나, 객체가
   // 캔버스 밖으로 이동해도 캔버스 자체는 절대 안 변함 (수축·확장 모두 안 함).
   // 객체가 도면 밖으로 나가면 잘려 보이지만 캔버스 비율은 안정적.
-  const [vb, setVb] = useState(() => computeViewBox(draft));
+  // 새로고침 후에도 동일한 viewBox 를 유지하기 위해 draft.id 별로 localStorage 캐싱.
+  const [vb, setVb] = useState(() => resolveInitialViewBox(draft));
   const [prevDraftId, setPrevDraftId] = useState(draft.id);
   if (prevDraftId !== draft.id) {
     setPrevDraftId(draft.id);
-    setVb(computeViewBox(draft));
+    setVb(resolveInitialViewBox(draft));
   }
+
+  // 핸들 크기는 현재 도형의 자연 크기에 비례 — viewBox 가 고정돼도 사용자가 그룹
+  // 리사이즈로 도형을 작게 만들면 핸들도 같이 작아짐.
+  const naturalSize = useMemo(() => {
+    const nb = computeViewBox(draft);
+    return Math.max(nb.w, nb.h);
+  }, [draft]);
+  const handleSize = Math.max(0.03, Math.min(0.08, naturalSize * 0.006));
+
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [creating, setCreating] = useState<CreatingState>(null);
   const [cursorPos, setCursorPos] = useState<Coord | null>(null);
   // 스냅 발생 시 표시할 위치 (초록 링). 스냅 안 되면 null.
   const [snapIndicator, setSnapIndicator] = useState<Coord | null>(null);
+  // 벽/문창 vertex 가 반대편 꼭짓점 기준 0°/90° 에 스냅된 순간의 가이드 정보.
+  // from = 고정된 반대편 꼭짓점, to = 스냅된 현재 꼭짓점, axis = 'h'(수평선)|'v'(수직선).
+  const [axisSnap, setAxisSnapState] = useState<{
+    axis: 'h' | 'v';
+    from: Coord;
+    to: Coord;
+  } | null>(null);
 
   // 단일 선택일 때의 primary ref. vertex/resize 핸들·라벨은 단일 선택 시에만 의미.
   const selectedRef: SelectedEntityRef | null =
@@ -719,8 +783,23 @@ export function DraftSceneCanvas({
           orig[1] + (raw[1] - drag.startSvg[1]),
         ];
         const excludeWallId = drag.ref.kind === 'wall' ? drag.ref.id : null;
-        const res = snapToWall(rawTarget, draft, wallAnchors, null, excludeWallId);
-        setSnapIndicator(res.snapped ? res.point : null);
+        // 벽/문창은 2-점 LineString — 반대편 꼭짓점을 axis 기준점으로 넘겨서
+        // 드래그 결과가 수평/수직에 가까우면 정확히 90° 로 스냅. (방=폴리곤은 제외)
+        let axisFrom: Coord | null = null;
+        if (drag.ref.kind === 'wall' || drag.ref.kind === 'opening') {
+          const otherIdx = drag.vertexIndex === 0 ? 1 : 0;
+          axisFrom = getEntityVertex(draft, drag.ref, otherIdx);
+        }
+        const res = snapToWall(rawTarget, draft, wallAnchors, axisFrom, excludeWallId);
+        // axis 스냅은 별도 가이드(점선+90°뱃지)로 표시 — 일반 초록 링은 숨김.
+        setSnapIndicator(res.snapped && res.kind !== 'axis' ? res.point : null);
+        if (res.kind === 'axis' && axisFrom) {
+          // axisFrom 과 같은 x → 수직, 같은 y → 수평
+          const axis: 'h' | 'v' = res.point[0] === axisFrom[0] ? 'v' : 'h';
+          setAxisSnapState({ axis, from: axisFrom, to: res.point });
+        } else {
+          setAxisSnapState(null);
+        }
         setDrag((prev) =>
           prev
             ? { ...prev, delta: [res.point[0] - orig[0], res.point[1] - orig[1]] }
@@ -733,12 +812,17 @@ export function DraftSceneCanvas({
     // ─ shape 드래그: 엔티티 통째 이동 — 기준점을 벽 끝점/선분에 스냅 ─
     {
       const rawDelta: Coord = [raw[0] - drag.startSvg[0], raw[1] - drag.startSvg[1]];
-      const { delta: snappedDelta, snapPoint } = computeShapeSnapDelta(
-        draft,
-        drag.ref,
-        rawDelta,
-        wallAnchors,
-      );
+      // 다중 선택 그룹 이동(드래그된 도형이 선택군에 속함)이면 스냅 비활성화 — 모든
+      // 선택 도형이 같이 움직여야 하는데 한 도형 기준 스냅이 걸리면 어색하고 시각적으로
+      // 초록 인디케이터가 거슬림.
+      const isGroupDrag =
+        (selectedRefs?.length ?? 0) > 1 &&
+        !!selectedRefs?.some(
+          (r) => r.kind === drag.ref.kind && r.id === drag.ref.id,
+        );
+      const { delta: snappedDelta, snapPoint } = isGroupDrag
+        ? { delta: rawDelta, snapPoint: null }
+        : computeShapeSnapDelta(draft, drag.ref, rawDelta, wallAnchors);
       // 객체(Point) 는 캔버스 viewBox 밖으로 못 나가도록 박스 모서리 기준 clamp.
       // 벽/방/문창 등은 사용자가 의도적으로 외곽으로 끌 수 있어 clamp 안 함.
       const delta = clampObjectDelta(snappedDelta, drag.ref, draft, vb);
@@ -782,6 +866,7 @@ export function DraftSceneCanvas({
     const captured = drag;
     setDrag(null);
     setSnapIndicator(null);
+    setAxisSnapState(null);
 
     // marquee: 박스 크기가 임계 이상이면 영역 안 도형 일괄 선택; 미만이면 단순 클릭으로 보고 선택 해제.
     if (captured.mode === 'marquee') {
@@ -975,6 +1060,7 @@ export function DraftSceneCanvas({
               room={room}
               selected={false}
               drag={matchDrag(drag, 'room', room.id)}
+              handleSize={handleSize}
               onShapePointerDown={(e) => startShapeDrag(e, { kind: 'room', id: room.id })}
               onVertexPointerDown={(e, idx) =>
                 startVertexDrag(e, { kind: 'room', id: room.id }, idx)
@@ -990,6 +1076,7 @@ export function DraftSceneCanvas({
               wall={wall}
               selected={false}
               drag={matchDrag(drag, 'wall', wall.id)}
+              handleSize={handleSize}
               onShapePointerDown={(e) => startShapeDrag(e, { kind: 'wall', id: wall.id })}
               onVertexPointerDown={(e, idx) =>
                 startVertexDrag(e, { kind: 'wall', id: wall.id }, idx)
@@ -1005,6 +1092,7 @@ export function DraftSceneCanvas({
               opening={op}
               selected={false}
               drag={matchDrag(drag, 'opening', op.id)}
+              handleSize={handleSize}
               onShapePointerDown={(e) => startShapeDrag(e, { kind: 'opening', id: op.id })}
               onVertexPointerDown={(e, idx) =>
                 startVertexDrag(e, { kind: 'opening', id: op.id }, idx)
@@ -1020,6 +1108,7 @@ export function DraftSceneCanvas({
               object={obj}
               selected={false}
               drag={matchDrag(drag, 'object', obj.id)}
+              handleSize={handleSize}
               onShapePointerDown={(e) => startShapeDrag(e, { kind: 'object', id: obj.id })}
               onResizePointerDown={(e, sign) =>
                 startResizeDrag(e, { kind: 'object', id: obj.id }, sign)
@@ -1037,6 +1126,7 @@ export function DraftSceneCanvas({
                 room={room}
                 selected
                 drag={groupDrag(drag, selectedRefs, 'room', room.id)}
+                handleSize={handleSize}
                 onShapePointerDown={(e) => startShapeDrag(e, { kind: 'room', id: room.id })}
                 onVertexPointerDown={(e, idx) =>
                   startVertexDrag(e, { kind: 'room', id: room.id }, idx)
@@ -1052,6 +1142,7 @@ export function DraftSceneCanvas({
                 wall={wall}
                 selected
                 drag={groupDrag(drag, selectedRefs, 'wall', wall.id)}
+                handleSize={handleSize}
                 onShapePointerDown={(e) => startShapeDrag(e, { kind: 'wall', id: wall.id })}
                 onVertexPointerDown={(e, idx) =>
                   startVertexDrag(e, { kind: 'wall', id: wall.id }, idx)
@@ -1067,6 +1158,7 @@ export function DraftSceneCanvas({
                 opening={op}
                 selected
                 drag={groupDrag(drag, selectedRefs, 'opening', op.id)}
+                handleSize={handleSize}
                 onShapePointerDown={(e) => startShapeDrag(e, { kind: 'opening', id: op.id })}
                 onVertexPointerDown={(e, idx) =>
                   startVertexDrag(e, { kind: 'opening', id: op.id }, idx)
@@ -1081,6 +1173,7 @@ export function DraftSceneCanvas({
               object={obj}
               selected
               drag={groupDrag(drag, selectedRefs, 'object', obj.id)}
+              handleSize={handleSize}
               onShapePointerDown={(e) => startShapeDrag(e, { kind: 'object', id: obj.id })}
               onResizePointerDown={(e, sign) =>
                 startResizeDrag(e, { kind: 'object', id: obj.id }, sign)
@@ -1122,6 +1215,7 @@ export function DraftSceneCanvas({
                     key={`gr-${c.sign[0]}-${c.sign[1]}`}
                     x={c.x}
                     y={c.y}
+                    size={handleSize}
                     onPointerDown={(e) => {
                       // 반대편 모서리가 고정점.
                       const fx = c.sign[0] === -1 ? b.x + b.w : b.x;
@@ -1290,7 +1384,7 @@ export function DraftSceneCanvas({
             <circle
               cx={snapIndicator[0]}
               cy={snapIndicator[1]}
-              r="0.14"
+              r={handleSize * 2.3}
               fill="none"
               stroke="oklch(0.72 0.19 145)"
               strokeWidth="2"
@@ -1299,9 +1393,66 @@ export function DraftSceneCanvas({
             <circle
               cx={snapIndicator[0]}
               cy={snapIndicator[1]}
-              r="0.04"
+              r={handleSize * 0.7}
               fill="oklch(0.72 0.19 145)"
             />
+          </g>
+        )}
+
+        {/* 축 스냅 가이드 — 벽/문창 vertex 가 반대편 꼭짓점 기준 정확히 수평/수직이 된 순간.
+            (a) 캔버스 전체에 cyan 점선, (b) 스냅된 vertex 위치에 cyan 도트, (c) 90° 뱃지. */}
+        {axisSnap && (
+          <g pointerEvents="none">
+            {axisSnap.axis === 'h' ? (
+              <line
+                x1={vb.x}
+                y1={axisSnap.from[1]}
+                x2={vb.x + vb.w}
+                y2={axisSnap.from[1]}
+                stroke="oklch(0.82 0.22 135)"
+                strokeWidth="1.5"
+                strokeDasharray="0.18 0.12"
+                vectorEffect="non-scaling-stroke"
+              />
+            ) : (
+              <line
+                x1={axisSnap.from[0]}
+                y1={vb.y}
+                x2={axisSnap.from[0]}
+                y2={vb.y + vb.h}
+                stroke="oklch(0.82 0.22 135)"
+                strokeWidth="1.5"
+                strokeDasharray="0.18 0.12"
+                vectorEffect="non-scaling-stroke"
+              />
+            )}
+            <circle
+              cx={axisSnap.to[0]}
+              cy={axisSnap.to[1]}
+              r={handleSize * 0.8}
+              fill="oklch(0.82 0.22 135)"
+            />
+            {/* 90° 뱃지 — 스냅된 vertex 우상단에 살짝 띄워서. */}
+            <g transform={`translate(${axisSnap.to[0] + handleSize * 1.6} ${axisSnap.to[1] - handleSize * 1.6})`}>
+              <rect
+                x={0}
+                y={-handleSize * 1.4}
+                width={handleSize * 4.2}
+                height={handleSize * 1.8}
+                rx={handleSize * 0.4}
+                fill="oklch(0.82 0.22 135)"
+              />
+              <text
+                x={handleSize * 2.1}
+                y={-handleSize * 0.45}
+                textAnchor="middle"
+                fontSize={handleSize * 1.2}
+                fontWeight="600"
+                fill="white"
+              >
+                90°
+              </text>
+            </g>
           </g>
         )}
       </svg>
@@ -1481,6 +1632,8 @@ function buildDraggedGeometry(drag: DragState, draft: SceneDraft): GeoJsonGeomet
 interface ShapeBaseProps {
   selected: boolean;
   drag: DragState | null;
+  /** vertex/resize 핸들 시각 크기 (반지름, 미터). 도면 크기에 비례해 부모가 계산. */
+  handleSize: number;
   onShapePointerDown: (e: React.PointerEvent) => void;
 }
 interface VertexAwareProps extends ShapeBaseProps {
@@ -1491,6 +1644,7 @@ function RoomShape({
   room,
   selected,
   drag,
+  handleSize,
   onShapePointerDown,
   onVertexPointerDown,
 }: { room: DraftRoom } & VertexAwareProps) {
@@ -1540,6 +1694,7 @@ function RoomShape({
             key={i}
             x={pt[0]}
             y={pt[1]}
+            size={handleSize}
             onPointerDown={(e) => onVertexPointerDown(e, i)}
           />
         ))}
@@ -1579,6 +1734,7 @@ function WallShape({
   wall,
   selected,
   drag,
+  handleSize,
   onShapePointerDown,
   onVertexPointerDown,
 }: { wall: DraftWall } & VertexAwareProps) {
@@ -1614,8 +1770,8 @@ function WallShape({
       />
       {selected && (
         <>
-          <VertexHandle x={start[0]} y={start[1]} onPointerDown={(e) => onVertexPointerDown(e, 0)} />
-          <VertexHandle x={end[0]} y={end[1]} onPointerDown={(e) => onVertexPointerDown(e, 1)} />
+          <VertexHandle x={start[0]} y={start[1]} size={handleSize} onPointerDown={(e) => onVertexPointerDown(e, 0)} />
+          <VertexHandle x={end[0]} y={end[1]} size={handleSize} onPointerDown={(e) => onVertexPointerDown(e, 1)} />
         </>
       )}
     </g>
@@ -1626,6 +1782,7 @@ function OpeningShape({
   opening,
   selected,
   drag,
+  handleSize,
   onShapePointerDown,
   onVertexPointerDown,
 }: { opening: DraftOpening } & VertexAwareProps) {
@@ -1678,7 +1835,7 @@ function OpeningShape({
         y={labelY}
         textAnchor="middle"
         dominantBaseline="middle"
-        fontSize={OPENING_LABEL_FONT_SIZE_M}
+        fontSize={computeOpeningLabelFontSize(label, len)}
         fontWeight="500"
         fill={baseColor}
         pointerEvents="none"
@@ -1688,18 +1845,27 @@ function OpeningShape({
       </text>
       {selected && (
         <>
-          <VertexHandle x={start[0]} y={start[1]} onPointerDown={(e) => onVertexPointerDown(e, 0)} />
-          <VertexHandle x={end[0]} y={end[1]} onPointerDown={(e) => onVertexPointerDown(e, 1)} />
+          <VertexHandle x={start[0]} y={start[1]} size={handleSize} onPointerDown={(e) => onVertexPointerDown(e, 0)} />
+          <VertexHandle x={end[0]} y={end[1]} size={handleSize} onPointerDown={(e) => onVertexPointerDown(e, 1)} />
         </>
       )}
     </g>
   );
 }
 
+/** 개구부 길이에 비례한 라벨 폰트 크기 (미터). 최대 0.13m, 최소 0.05m. */
+function computeOpeningLabelFontSize(label: string, lineLengthM: number): number {
+  const charCount = Math.max(1, label.length);
+  // 가로로 글자가 라인 길이의 약 70% 안에 들어가도록.
+  const widthFit = (lineLengthM * 0.7) / charCount;
+  return Math.max(0.05, Math.min(OPENING_LABEL_FONT_SIZE_M, widthFit));
+}
+
 function ObjectShape({
   object,
   selected,
   drag,
+  handleSize,
   onShapePointerDown,
   onResizePointerDown,
 }: { object: DraftObject } & ShapeBaseProps & {
@@ -1762,10 +1928,10 @@ function ObjectShape({
       )}
       {selected && onResizePointerDown && (
         <>
-          <ResizeCorner x={x - w / 2} y={y - h / 2} sign={[-1, -1]} onPointerDown={onResizePointerDown} />
-          <ResizeCorner x={x + w / 2} y={y - h / 2} sign={[1, -1]} onPointerDown={onResizePointerDown} />
-          <ResizeCorner x={x - w / 2} y={y + h / 2} sign={[-1, 1]} onPointerDown={onResizePointerDown} />
-          <ResizeCorner x={x + w / 2} y={y + h / 2} sign={[1, 1]} onPointerDown={onResizePointerDown} />
+          <ResizeCorner x={x - w / 2} y={y - h / 2} sign={[-1, -1]} size={handleSize} onPointerDown={onResizePointerDown} />
+          <ResizeCorner x={x + w / 2} y={y - h / 2} sign={[1, -1]} size={handleSize} onPointerDown={onResizePointerDown} />
+          <ResizeCorner x={x - w / 2} y={y + h / 2} sign={[-1, 1]} size={handleSize} onPointerDown={onResizePointerDown} />
+          <ResizeCorner x={x + w / 2} y={y + h / 2} sign={[1, 1]} size={handleSize} onPointerDown={onResizePointerDown} />
         </>
       )}
     </g>
@@ -1826,20 +1992,22 @@ function ResizeCorner({
   x,
   y,
   sign,
+  size,
   onPointerDown,
 }: {
   x: number;
   y: number;
   sign: [-1 | 1, -1 | 1];
+  size: number;
   onPointerDown: (e: React.PointerEvent, sign: [-1 | 1, -1 | 1]) => void;
 }) {
   return (
     <g onPointerDown={(e) => onPointerDown(e, sign)} className="cursor-nwse-resize">
-      <circle cx={x} cy={y} r="0.2" fill="transparent" />
+      <circle cx={x} cy={y} r={size * 4} fill="transparent" />
       <circle
         cx={x}
         cy={y}
-        r="0.05"
+        r={size}
         fill="white"
         stroke="oklch(0.55 0.22 264)"
         strokeWidth="1.5"
@@ -1881,20 +2049,24 @@ const OBJECT_TYPE_LABEL: Record<string, string> = {
 function GroupResizeHandle({
   x,
   y,
+  size,
   onPointerDown,
 }: {
   x: number;
   y: number;
+  size: number;
   onPointerDown: (e: React.PointerEvent) => void;
 }) {
+  const outer = size * 3.6;
+  const inner = size * 1.6;
   return (
     <g onPointerDown={onPointerDown} className="cursor-nwse-resize">
-      <rect x={x - 0.18} y={y - 0.18} width="0.36" height="0.36" fill="transparent" />
+      <rect x={x - outer / 2} y={y - outer / 2} width={outer} height={outer} fill="transparent" />
       <rect
-        x={x - 0.08}
-        y={y - 0.08}
-        width="0.16"
-        height="0.16"
+        x={x - inner / 2}
+        y={y - inner / 2}
+        width={inner}
+        height={inner}
         fill="white"
         stroke="oklch(0.55 0.22 264)"
         strokeWidth="2"
@@ -1907,20 +2079,21 @@ function GroupResizeHandle({
 function VertexHandle({
   x,
   y,
+  size,
   onPointerDown,
 }: {
   x: number;
   y: number;
+  size: number;
   onPointerDown: (e: React.PointerEvent) => void;
 }) {
   return (
     <g onPointerDown={onPointerDown} className="cursor-grab">
-      {/* 클릭 영역 확장 — 시각 크기보다 크게 잡아 클릭 편의성 유지 */}
-      <circle cx={x} cy={y} r="0.22" fill="transparent" />
+      <circle cx={x} cy={y} r={size * 3.7} fill="transparent" />
       <circle
         cx={x}
         cy={y}
-        r="0.06"
+        r={size}
         fill="white"
         stroke="oklch(0.55 0.22 264)"
         strokeWidth="1.5"
