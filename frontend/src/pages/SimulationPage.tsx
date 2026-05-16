@@ -200,7 +200,7 @@ export default function SimulationPage() {
               <div className="h-full p-6">
                 <SimulationVisualization
                   state={state}
-                  mapUrl={rfMapsQuery.data?.[0]?.storage_url}
+                  mapUrl={rfMapsQuery.data?.[0]?.url ?? rfMapsQuery.data?.[0]?.storage_url}
                 />
               </div>
             )}

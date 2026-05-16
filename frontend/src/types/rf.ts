@@ -62,6 +62,8 @@ export interface RfMap {
   map_type: string;
   resolution_cm: number;
   storage_url: string;
+  /** storage_url 이 s3:// 면 백엔드가 발급한 presigned GET URL. <img src> 로 바로 사용. */
+  url?: string | null;
   bounds_json: Record<string, unknown>;
   metrics_json: Record<string, unknown>;
   created_at: ISODateString;
