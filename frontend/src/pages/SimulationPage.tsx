@@ -673,14 +673,19 @@ function parseMetrics(
     toNum(rssDbm?.['mean']) ??
     pickNumber('avg_rssi_dbm', 'avg_dbm', 'rssi_avg', 'avg_rssi');
 
-  // 커버리지: 신규 구조 coverage_summary["ge_-67"] (0~1 비율) 우선 → 100 곱해 %.
-  // 없으면 옛 키들 (이미 % 단위로 가정).
+  // 면적 커버리지: 전체 셀 중 양호 (≥-67dBm) 신호가 잡힌 비율.
+  //   coverage_summary["ge_-67"]      = 데이터 있는 셀 중 양호 비율 (분모: valid_cell_count)
+  //   coverage_summary["valid_cell_ratio"] = 전체 셀 중 데이터 있는 비율 (분모: total_cell_count)
+  // → 둘을 곱해야 "전체 면적 중 양호 비율" 이 됨.
   const coverage = merged['coverage_summary'] as Record<string, unknown> | undefined;
   const ge67 = toNum(coverage?.['ge_-67']);
+  const validRatio = toNum(coverage?.['valid_cell_ratio']);
   const coveragePercent =
-    ge67 !== null
-      ? ge67 * 100
-      : pickNumber('coverage_percent', 'coverage', 'coverage_pct');
+    ge67 !== null && validRatio !== null
+      ? ge67 * validRatio * 100
+      : ge67 !== null
+        ? ge67 * 100 // valid_cell_ratio 없으면 옛 동작 (단순 양호 셀 비율)
+        : pickNumber('coverage_percent', 'coverage', 'coverage_pct');
 
   return { avgRssiDbm, coveragePercent };
 }
