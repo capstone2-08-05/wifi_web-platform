@@ -15,7 +15,7 @@ import {
   usePromoteDraft,
   useSceneVersion,
 } from '@/hooks/use-scene-version';
-import { useAsset, useFloorAssets } from '@/hooks/use-assets';
+import { useAssetDownloadUrl, useFloorAssets } from '@/hooks/use-assets';
 import {
   saveLocalFloorplanImage,
   useLocalFloorplanImage,
@@ -162,8 +162,8 @@ export default function EditorPage() {
   // 원본 도면 이미지(asset) — 캔버스 배경에 연하게 깔기 위해 가져옴.
   // 1순위: scene 의 source_asset_id (백엔드가 null 로 응답하는 경우 많음)
   // 2순위: 층의 floorplan 자산 중 가장 최근 것 (fallback).
+  // Asset.storage_url 이 s3:// URI 라서 직접 못 쓰고, /download-url 로 presigned 받음.
   const sourceAssetId = baseScene?.source_asset_id ?? null;
-  const sourceAssetQuery = useAsset(sourceAssetId);
   const floorAssetsQuery = useFloorAssets(floorId, 'floorplan');
   const fallbackAsset = useMemo(() => {
     const list = floorAssetsQuery.data ?? [];
@@ -171,13 +171,12 @@ export default function EditorPage() {
     // created_at 내림차순 정렬 후 첫 항목.
     return [...list].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
   }, [floorAssetsQuery.data]);
+  const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
+  const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
   // 3순위: 사용자가 업로드한 파일을 base64 로 캐시해둔 로컬 이미지 (백엔드 미지원 우회).
   const localImage = useLocalFloorplanImage(floorId);
   const backgroundImageUrl =
-    sourceAssetQuery.data?.storage_url ??
-    fallbackAsset?.storage_url ??
-    localImage ??
-    null;
+    assetUrlQuery.data?.url ?? localImage ?? null;
   const editingScene: SceneDraft | null = baseScene;
   const resolvedSelected = useMemo<SelectedEntityResolved | null>(() => {
     const scene = editingScene;
@@ -356,7 +355,18 @@ export default function EditorPage() {
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selectedRefs.length === 0) return;
         e.preventDefault();
-        handleDeleteSelected();
+        // handleDeleteSelected() 와 동일 로직. 후자가 useEffect 보다 뒤에 선언돼
+        // TDZ 회피 위해 인라인.
+        const onSuccess = () => setSelectedRefs([]);
+        selectedRefs.forEach((r, idx) => {
+          const last = idx === selectedRefs.length - 1;
+          const vars = { kind: r.kind, id: r.id };
+          if (isVersionEditing) {
+            deleteVersionEntity.mutate(vars, last ? { onSuccess } : undefined);
+          } else {
+            deleteEntity.mutate(vars, last ? { onSuccess } : undefined);
+          }
+        });
         return;
       }
     };

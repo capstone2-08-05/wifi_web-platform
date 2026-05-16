@@ -14,9 +14,9 @@ import {
 import { useMemo } from 'react';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
-import { useAsset, useFloorAssets } from '@/hooks/use-assets';
+import { useAssetDownloadUrl, useFloorAssets } from '@/hooks/use-assets';
 import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
-import { useCreateRfRun, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
+import { useCreateRfRun, useRfJob, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
 import {
   useApCandidates,
   useApLayouts,
@@ -49,6 +49,8 @@ export default function SimulationPage() {
     versionsQuery.data?.find((v) => v.is_current) ?? versionsQuery.data?.[0] ?? null;
 
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  // RfMap.storage_url 이 s3:// 라서 직접 못 쓰고, /rf-jobs/{job_id} 의 presigned heatmap.url 사용.
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
   // 사용자가 배치한 AP 목록 + 추가 모드(true 면 다음 클릭이 새 AP 추가).
   const [aps, setAps] = useState<PlacedAp[]>([]);
@@ -58,24 +60,26 @@ export default function SimulationPage() {
   const versionDetailQuery = useSceneVersion(currentVersion?.id ?? null);
 
   // 배경 도면 이미지 — EditorPage 와 동일한 3단계 fallback.
+  // Asset.storage_url 이 s3:// URI 라서 직접 못 쓰고, /download-url 로 presigned 받음.
   const sourceAssetId = versionDetailQuery.data?.source_asset_id ?? null;
-  const sourceAssetQuery = useAsset(sourceAssetId);
   const floorAssetsQuery = useFloorAssets(floorId, 'floorplan');
   const fallbackAsset = useMemo(() => {
     const list = floorAssetsQuery.data ?? [];
     if (list.length === 0) return null;
     return [...list].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
   }, [floorAssetsQuery.data]);
+  const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
+  const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
   const localImage = useLocalFloorplanImage(floorId);
   const backgroundImageUrl =
-    sourceAssetQuery.data?.storage_url ??
-    fallbackAsset?.storage_url ??
-    localImage ??
-    null;
+    assetUrlQuery.data?.url ?? localImage ?? null;
 
   const createRfRun = useCreateRfRun();
   const rfRunPoll = useRfRun(activeRunId);
   const rfMapsQuery = useRfMaps(activeRunId, rfRunPoll.isSucceeded);
+  // /rf-jobs 폴링은 presigned heatmap.url 을 받기 위해서만 필요 — succeeded 된 후에 활성화.
+  const rfJobPoll = useRfJob(rfRunPoll.isSucceeded ? activeJobId : null);
+  const heatmapUrl = rfJobPoll.rfJob?.heatmap?.url ?? null;
 
   // 백엔드 상태 → UI 상태 매핑
   const state: SimulationState = (() => {
@@ -111,12 +115,18 @@ export default function SimulationPage() {
           seed: 42,
         },
       },
-      { onSuccess: (data) => setActiveRunId(data.id) },
+      {
+        onSuccess: (data) => {
+          setActiveRunId(data.id);
+          setActiveJobId(data.job_id);
+        },
+      },
     );
   };
 
   const handleReset = () => {
     setActiveRunId(null);
+    setActiveJobId(null);
   };
 
   const handleAddAp = (ap: PlacedAp) => setAps((prev) => [...prev, ap]);
@@ -200,7 +210,7 @@ export default function SimulationPage() {
               <div className="h-full p-6">
                 <SimulationVisualization
                   state={state}
-                  mapUrl={rfMapsQuery.data?.[0]?.storage_url}
+                  mapUrl={heatmapUrl ?? undefined}
                 />
               </div>
             )}
