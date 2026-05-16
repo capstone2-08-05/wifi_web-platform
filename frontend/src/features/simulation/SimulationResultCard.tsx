@@ -19,7 +19,7 @@ export function SimulationResultCard({ avgRssiDbm, coveragePercent }: Props) {
 
       <Metric
         label="평균 신호 강도"
-        valueText={`${avgRssiDbm}`}
+        valueText={formatNum(avgRssiDbm)}
         unit="dBm"
         fillPct={rssiFillPct}
         barColor="bg-emerald-500"
@@ -28,7 +28,7 @@ export function SimulationResultCard({ avgRssiDbm, coveragePercent }: Props) {
       <div className="mt-5">
         <Metric
           label="면적 커버리지 (양호)"
-          valueText={`${coveragePercent}`}
+          valueText={formatNum(coveragePercent)}
           unit="%"
           fillPct={coveragePercent}
           barColor="bg-primary"
@@ -43,6 +43,11 @@ export function SimulationResultCard({ avgRssiDbm, coveragePercent }: Props) {
       </button>
     </section>
   );
+}
+
+/** 소수 셋째자리에서 반올림 → 둘째자리까지 표시. 정수면 "100" 같이 trailing 0 안 붙음. */
+function formatNum(n: number): string {
+  return Number(n.toFixed(2)).toString();
 }
 
 function Metric({
