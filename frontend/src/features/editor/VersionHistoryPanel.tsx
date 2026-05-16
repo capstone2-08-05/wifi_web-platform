@@ -28,13 +28,13 @@ export function VersionHistoryPanel({ versions, onSwitched }: Props) {
   // 최신순 정렬 (version_no DESC)
   const sorted = [...versions].sort((a, b) => b.version_no - a.version_no);
 
-  const handleDelete = (id: string, versionNo: number) => {
+  const handleDelete = (v: SceneVersion) => {
     if (
       window.confirm(
-        `버전 #${versionNo} 을(를) 정말 삭제하시겠습니까?\n관련된 시뮬레이션 결과와 변경 이력도 함께 삭제됩니다.`,
+        `버전 #${v.version_no} 을(를) 정말 삭제하시겠습니까?\n관련된 시뮬레이션 결과와 변경 이력도 함께 삭제됩니다.`,
       )
     ) {
-      remove.mutate(id);
+      remove.mutate({ versionId: v.id, sourceDraftId: v.source_draft_id });
     }
   };
 
@@ -60,7 +60,7 @@ export function VersionHistoryPanel({ versions, onSwitched }: Props) {
         <ul className="border-t">
           {sorted.map((v) => {
             const isSwitching = setCurrent.isPending && setCurrent.variables === v.id;
-            const isDeleting = remove.isPending && remove.variables === v.id;
+            const isDeleting = remove.isPending && remove.variables?.versionId === v.id;
             return (
               <li key={v.id} className={cn('flex items-center', v.is_current && 'bg-primary/5')}>
                 <button
@@ -98,7 +98,7 @@ export function VersionHistoryPanel({ versions, onSwitched }: Props) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleDelete(v.id, v.version_no)}
+                  onClick={() => handleDelete(v)}
                   disabled={isSwitching || isDeleting}
                   title="버전 삭제 (시뮬레이션·변경 이력 함께 삭제됨)"
                   aria-label={`버전 #${v.version_no} 삭제`}

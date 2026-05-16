@@ -4,6 +4,7 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
+import { sceneDraftApi } from '@/api/scene-draft';
 import { sceneVersionApi } from '@/api/scene-version';
 import type { UUID } from '@/types/common';
 import type { PromoteRequest } from '@/types/scene';
@@ -32,17 +33,39 @@ export function useSceneVersion(versionId: UUID | null) {
   });
 }
 
-/** DELETE /scene-versions/{id} — 버전 삭제 (백엔드 §7 명세에 없지만 관례적으로 시도). */
+/**
+ * DELETE /scene-versions/{id} — 버전 삭제.
+ *
+ * 추가로: 백엔드는 scene_versions.scene_draft_id 에 ON DELETE SET NULL 이 걸려있어
+ * 버전이 지워져도 source draft 는 status='draft' 인 채 DB 에 남는다. 그 결과
+ * 프론트의 activeDraftSummary 필터가 그 orphan draft 를 잡아 ReviewCard("확정 #N")
+ * 가 다시 떠버리는 부작용이 있음. 사용자 입장에선 "버전 지웠더니 확정 창이 뜬다" 라
+ * 혼란스러움 — 그래서 버전 삭제 직후 연결된 draft 도 같이 삭제한다.
+ */
+export interface DeleteSceneVersionVars {
+  versionId: UUID;
+  sourceDraftId?: UUID | null;
+}
+
 export function useDeleteSceneVersion() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (versionId: UUID) => sceneVersionApi.remove(versionId),
-    onSuccess: (_data, versionId) => {
-      // 삭제된 버전의 detail 캐시 자체를 제거 — invalidate 만 하면 stale 데이터가
-      // 다른 hook 의 placeholder 등에서 재사용될 수 있어 깨끗하게 지움.
+    mutationFn: async ({ versionId, sourceDraftId }: DeleteSceneVersionVars) => {
+      await sceneVersionApi.remove(versionId);
+      // orphan draft cleanup — 실패해도 버전 삭제는 이미 성공이라 무시 (404 등).
+      if (sourceDraftId) {
+        try {
+          await sceneDraftApi.remove(sourceDraftId);
+        } catch {
+          /* draft 가 이미 없거나 권한 문제 — 무시. */
+        }
+      }
+    },
+    onSuccess: (_data, { versionId }) => {
       qc.removeQueries({ queryKey: ['scene-version', versionId], exact: true });
       qc.invalidateQueries({ queryKey: ['scene-versions'] });
       qc.invalidateQueries({ queryKey: ['scene-version'] });
+      qc.invalidateQueries({ queryKey: ['scene-drafts'] });
       qc.invalidateQueries({ queryKey: ['rf-runs'] });
       qc.invalidateQueries({ queryKey: ['patch-logs'] });
       toast.info('버전 삭제됨');
