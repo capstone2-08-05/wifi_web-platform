@@ -33,6 +33,12 @@ interface Props {
   /** true 면 다음 캔버스 클릭이 새 AP 추가. false 면 기존 AP 드래그/삭제만. */
   pending: boolean;
   onClearPending: () => void;
+  /** RF 시뮬레이션 결과 히트맵 (presigned URL). 있으면 도면 위에 오버레이. */
+  heatmapUrl?: string | null;
+  /** 히트맵의 실제 미터 좌표 영역 (bounds_json 에서 파싱). */
+  heatmapBounds?: { minX: number; minY: number; maxX: number; maxY: number } | null;
+  /** true 면 AP 추가/드래그/삭제 모두 비활성화 — 결과 보기 전용. */
+  readOnly?: boolean;
 }
 
 interface Bounds {
@@ -100,6 +106,9 @@ export function SimulationCanvas({
   onRemove,
   pending,
   onClearPending,
+  heatmapUrl,
+  heatmapBounds,
+  readOnly = false,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   // viewBox 는 scene version id 가 바뀔 때만 재계산 → 같은 도면 안에서 도형이 변해도
@@ -122,6 +131,7 @@ export function SimulationCanvas({
   };
 
   const handleSvgPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (readOnly) return;
     if (dragId) return;
     if (!pending) return;
     if (e.target !== e.currentTarget) return; // AP 또는 도형 위 클릭은 새 AP 추가가 아님
@@ -138,6 +148,7 @@ export function SimulationCanvas({
   };
 
   const handleApPointerDown = (e: React.PointerEvent, ap: PlacedAp) => {
+    if (readOnly) return;
     e.stopPropagation();
     const pt = getSvgPoint(e);
     if (!pt) return;
@@ -163,7 +174,9 @@ export function SimulationCanvas({
     setDragId(null);
   };
 
-  const cursorClass = pending
+  const cursorClass = readOnly
+    ? 'cursor-default'
+    : pending
     ? 'cursor-crosshair'
     : dragId
     ? 'cursor-grabbing'
@@ -194,6 +207,26 @@ export function SimulationCanvas({
             pointerEvents="none"
             onError={() => {
               console.warn('[SimulationCanvas] 배경 도면 이미지 로드 실패:', backgroundImageUrl);
+            }}
+          />
+        )}
+        {/* RF 시뮬레이션 히트맵 오버레이 — 배경 도면 위, 도형 아래.
+            bounds_json 이 있으면 그 미터 좌표에 정확히 배치(도면과 1:1 정렬).
+            없으면(파싱 실패) fallback 으로 viewBox 영역에 fitting → 정렬은 안 맞아도
+            적어도 결과가 보이게는 함. */}
+        {heatmapUrl && (
+          <image
+            href={heatmapUrl}
+            xlinkHref={heatmapUrl}
+            x={heatmapBounds ? heatmapBounds.minX : vb.x}
+            y={heatmapBounds ? heatmapBounds.minY : vb.y}
+            width={heatmapBounds ? heatmapBounds.maxX - heatmapBounds.minX : vb.w}
+            height={heatmapBounds ? heatmapBounds.maxY - heatmapBounds.minY : vb.h}
+            preserveAspectRatio={heatmapBounds ? 'none' : 'xMidYMid meet'}
+            opacity={0.6}
+            pointerEvents="none"
+            onError={() => {
+              console.warn('[SimulationCanvas] 히트맵 이미지 로드 실패:', heatmapUrl);
             }}
           />
         )}
