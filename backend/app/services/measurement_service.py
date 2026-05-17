@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -20,10 +21,13 @@ from app.models.floor import Floor
 from app.models.measurement_link import MeasurementLink
 from app.models.measurement_point import MeasurementPoint
 from app.models.measurement_session import MeasurementSession
+from app.models.project import Project
 from app.models.scene_version import SceneVersion
+from app.models.user import User
 from app.schemas.measurement import (
     CoordinateSystemDTO,
     FloorBoundsDTO,
+    FloorPositionDTO,
     FloorplanInfoDTO,
     MeasurementLinkContextResponseDTO,
     MeasurementLinkCreateResponseDTO,
@@ -35,6 +39,8 @@ from app.schemas.measurement import (
     MeasurementSessionResponseDTO,
     RssiRangeDTO,
 )
+
+logger = logging.getLogger(__name__)
 
 FLOORPLAN_ASSET_TYPE = "floorplan_image"
 
@@ -191,13 +197,69 @@ def _bounds_from_floorplan(floorplan: FloorplanInfoDTO) -> FloorBoundsDTO:
     )
 
 
+def _session_floor_bounds(
+    db: Session, session_row: MeasurementSession
+) -> FloorBoundsDTO | None:
+    """업로드된 point 의 좌표 범위를 검증하기 위해 세션이 가리키는 floor 의 도면 bounds 를 계산.
+
+    세션 → measurement_link → asset_id 순으로 따라가 asset.metadata_json 의
+    width_px/height_px/scale_m_per_px 에서 bounds 를 만든다. 어디라도 결손이면
+    None 을 반환해 검증을 스킵 (False positive 방지).
+    """
+    link = (
+        db.query(MeasurementLink)
+        .filter(
+            MeasurementLink.project_id == session_row.project_id,
+            MeasurementLink.floor_id == session_row.floor_id,
+        )
+        .order_by(MeasurementLink.created_at.desc())
+        .first()
+    )
+    asset_id = link.asset_id if link is not None else None
+    if asset_id is None:
+        return None
+    floorplan = _floorplan_info_from_asset(db, asset_id)
+    bounds = _bounds_from_floorplan(floorplan)
+    if bounds.max_x <= bounds.min_x or bounds.max_y <= bounds.min_y:
+        return None
+    return bounds
+
+
+def _is_inside_bounds(pos: FloorPositionDTO, bounds: FloorBoundsDTO) -> bool:
+    return (
+        bounds.min_x <= pos.x <= bounds.max_x
+        and bounds.min_y <= pos.y <= bounds.max_y
+    )
+
+
 def create_measurement_link(
-    db: Session, floor_id: str
+    db: Session,
+    floor_id: str,
+    *,
+    current_user: User,
 ) -> MeasurementLinkCreateResponseDTO:
+    """QR 측정 링크 발급.
+
+    본인 소유 floor 만 허용 — 다른 사용자의 floor 로 임의 토큰을 만들 수 없게 한다.
+    floor → project.owner_user_id 체크.
+    """
     _validate_uuid(floor_id, "floor_id")
 
-    floor = db.query(Floor).filter(Floor.id == floor_id).one_or_none()
-    if floor is None:
+    row = (
+        db.query(Floor, Project)
+        .join(Project, Floor.project_id == Project.id)
+        .filter(Floor.id == floor_id)
+        .one_or_none()
+    )
+    if row is None:
+        raise AppError(
+            ErrorCode.INVALID_FLOOR_ID,
+            f"Floor not found: {floor_id}",
+            404,
+        )
+    floor, project = row
+    if project.owner_user_id != current_user.id:
+        # 권한 누설 막기 위해 404 와 동일한 메시지로 응답
         raise AppError(
             ErrorCode.INVALID_FLOOR_ID,
             f"Floor not found: {floor_id}",
@@ -307,13 +369,22 @@ def upload_measurement_points(
             409,
         )
 
+    # 세션이 가리키는 floor 의 도면 bounds — 점 좌표가 도면 밖이면 metadata 에 마킹.
+    # bounds 가 계산 안 되면 (asset metadata 없음) 검증 스킵 (None 처리).
+    bounds = _session_floor_bounds(db, session_row)
+
     inserted = 0
     duplicated = 0
+    outliers = 0
 
     for point in request.points:
         wkt_geom = func.ST_SetSRID(
             func.ST_MakePoint(point.floor_position.x, point.floor_position.y), 0
         )
+        metadata = dict(point.metadata_json or {})
+        if bounds is not None and not _is_inside_bounds(point.floor_position, bounds):
+            metadata["server_outlier"] = True
+            outliers += 1
         row = MeasurementPoint(
             session_id=session_row.id,
             point_geom=wkt_geom,
@@ -329,7 +400,7 @@ def upload_measurement_points(
             step_index=point.step_index,
             batch_id=request.batch_id,
             client_point_id=point.client_point_id,
-            metadata_json=point.metadata_json or {},
+            metadata_json=metadata,
         )
         try:
             with db.begin_nested():
@@ -341,6 +412,12 @@ def upload_measurement_points(
             inserted += 1
 
     db.commit()
+
+    if outliers > 0:
+        logger.warning(
+            "session %s: %d/%d points are outside floor bounds (server_outlier=true marked)",
+            session_row.id, outliers, len(request.points),
+        )
 
     return MeasurementPointBatchResponseDTO(
         inserted=inserted,

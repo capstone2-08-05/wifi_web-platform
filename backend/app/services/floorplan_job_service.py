@@ -48,7 +48,7 @@ JOB_STATUS_FAILED = "failed"
 async def submit_floorplan_analysis(
     db: Session,
     *,
-    image_bytes: bytes,
+    image_bytes: bytes | None,
     filename: str,
     content_type: str,
     real_width_m: float,
@@ -72,6 +72,13 @@ async def submit_floorplan_analysis(
         db, project_id, floor_id, current_user
     )
 
+    if source_asset_id is None and image_bytes is None:
+        raise AppError(
+            ErrorCode.INTERNAL_SERVER_ERROR,
+            "submit_floorplan_analysis requires image_bytes for raw upload flow.",
+            500,
+        )
+
     # raw upload 경로면 여기서 asset row 를 만들어 둔다. floor 단위 도면 자산이
     # 항상 존재해야 measurement_link 가 그걸 가리킬 수 있다.
     if source_asset_id is None:
@@ -85,6 +92,7 @@ async def submit_floorplan_analysis(
             uploaded_by=current_user.id,
         )
         source_asset_id = new_asset.id
+        asset_s3_uri = new_asset.storage_url
         # upload_metadata 에 실제 S3 좌표도 같이 보관 (참조 용이)
         if not upload_metadata.s3_uri:
             try:
@@ -96,13 +104,24 @@ async def submit_floorplan_analysis(
                 )
             except Exception:
                 pass
+    else:
+        # analyze_from_asset 처럼 이미 asset 이 있는 경우 — storage_url 조회
+        existing = db.get(Asset, source_asset_id)
+        asset_s3_uri = (
+            existing.storage_url
+            if existing is not None and (existing.storage_url or "").startswith("s3://")
+            else None
+        )
 
+    # SageMaker source 로 asset 객체를 그대로 가리켜 중복 PUT 방지.
+    # asset 이 S3 가 아닌 (옛 로컬 경로) 케이스만 legacy 업로드 폴백.
     submit_result = await sagemaker_inference_service.submit(
-        image_bytes=image_bytes,
+        image_bytes=image_bytes if asset_s3_uri is None else None,
         filename=filename,
         project_id=resolved_project_id,
         floor_id=resolved_floor_id,
         content_type=content_type,
+        source_s3_uri=asset_s3_uri,
     )
 
     input_json: dict[str, Any] = {

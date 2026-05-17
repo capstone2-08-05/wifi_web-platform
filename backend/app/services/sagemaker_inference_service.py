@@ -193,27 +193,50 @@ class SageMakerInferenceService:
     async def submit(
         self,
         *,
-        image_bytes: bytes,
+        image_bytes: bytes | None = None,
         filename: str,
         project_id: str,
         floor_id: str,
         content_type: str = "application/octet-stream",
+        source_s3_uri: str | None = None,
     ) -> SubmitResult:
         """source/input.json S3 업로드 + invoke_endpoint_async. **블록 안 함**.
+
+        source_s3_uri 가 주어지면 그 객체를 SageMaker input 으로 그대로 가리키고
+        source PUT 은 스킵한다 (Asset 의 storage_url 을 재사용해서 중복 저장 방지).
+        주어지지 않으면 image_bytes 를 새 source key 로 업로드 (legacy 동작).
 
         blocking I/O (boto3) 는 thread executor 로 우회.
         """
         self._check_configured()
 
+        if source_s3_uri is None and not image_bytes:
+            raise AppError(
+                ErrorCode.INTERNAL_SERVER_ERROR,
+                "submit requires either source_s3_uri or image_bytes.",
+                500,
+            )
+
         job_id = uuid.uuid4().hex
         ext = Path(filename).suffix.lower() or ".png"
-        source_key = f"projects/{project_id}/floors/{floor_id}/sources/{job_id}{ext}"
         input_key = f"ai-jobs/{job_id}/input/input.json"
         output_prefix_uri = f"s3://{self.bucket}/ai-jobs/{job_id}/output/"
         input_s3_uri = f"s3://{self.bucket}/{input_key}"
-        source_s3_uri = f"s3://{self.bucket}/{source_key}"
 
-        logger.info("SageMaker submit start job_id=%s source=%s", job_id, source_s3_uri)
+        if source_s3_uri is None:
+            # legacy: 새 source key 로 업로드
+            source_key: str | None = (
+                f"projects/{project_id}/floors/{floor_id}/sources/{job_id}{ext}"
+            )
+            effective_source_uri = f"s3://{self.bucket}/{source_key}"
+        else:
+            source_key = None
+            effective_source_uri = source_s3_uri
+
+        logger.info(
+            "SageMaker submit start job_id=%s source=%s reuse=%s",
+            job_id, effective_source_uri, source_s3_uri is not None,
+        )
 
         return await asyncio.to_thread(
             self._submit_blocking,
@@ -223,7 +246,7 @@ class SageMakerInferenceService:
             source_key=source_key,
             input_key=input_key,
             input_s3_uri=input_s3_uri,
-            source_s3_uri=source_s3_uri,
+            source_s3_uri=effective_source_uri,
             output_prefix_uri=output_prefix_uri,
             project_id=project_id,
             floor_id=floor_id,
@@ -233,9 +256,9 @@ class SageMakerInferenceService:
         self,
         *,
         job_id: str,
-        image_bytes: bytes,
+        image_bytes: bytes | None,
         content_type: str,
-        source_key: str,
+        source_key: str | None,
         input_key: str,
         input_s3_uri: str,
         source_s3_uri: str,
@@ -246,17 +269,18 @@ class SageMakerInferenceService:
         s3 = self._get_s3()
         smrt = self._get_smrt()
 
-        # 1) source 이미지 업로드
-        try:
-            s3.put_object(
-                Bucket=self.bucket, Key=source_key, Body=image_bytes, ContentType=content_type
-            )
-        except ClientError as exc:
-            raise AppError(
-                ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
-                f"S3 source upload failed: {exc}",
-                502,
-            ) from exc
+        # 1) source 이미지 업로드 (재사용 경로면 스킵)
+        if source_key is not None and image_bytes is not None:
+            try:
+                s3.put_object(
+                    Bucket=self.bucket, Key=source_key, Body=image_bytes, ContentType=content_type
+                )
+            except ClientError as exc:
+                raise AppError(
+                    ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
+                    f"S3 source upload failed: {exc}",
+                    502,
+                ) from exc
 
         # 2) input.json 업로드
         input_payload = {

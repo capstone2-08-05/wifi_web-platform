@@ -293,10 +293,8 @@ async def analyze_from_asset(
             status_code=500,
         )
 
-    # S3 에서 본문 다운로드. 이후 submit_floorplan_analysis 가 SageMaker 입력용으로
-    # 다시 S3 에 올린다 (현재 흐름 유지). 추후 source_s3_uri 직접 전달로 최적화 가능.
-    content = _s3.download_bytes(asset.storage_url)
-
+    # SageMaker submit 이 source_s3_uri 를 직접 받기 때문에 byte 를 다운받을 필요 없음.
+    # asset 의 storage_url 을 그대로 input.json 에 가리키게 한다 (중복 PUT 방지).
     filename = asset.storage_url.rsplit("/", 1)[-1] or f"{asset.id}.{asset.source_format or 'bin'}"
     s3_bucket, s3_key = _s3.split_s3_uri(asset.storage_url)
     upload_metadata = UploadStorageMetadataDTO(
@@ -311,7 +309,7 @@ async def analyze_from_asset(
 
     job = await submit_floorplan_analysis(
         db,
-        image_bytes=content,
+        image_bytes=None,
         filename=filename,
         content_type=asset.mime_type or "application/octet-stream",
         real_width_m=real_width_m,

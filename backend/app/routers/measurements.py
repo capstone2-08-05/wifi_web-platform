@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
 from app.db.session import get_db
+from app.models.user import User
 from app.schemas.measurement import (
     MeasurementLinkContextResponseDTO,
     MeasurementLinkCreateResponseDTO,
@@ -20,12 +22,16 @@ router = APIRouter(tags=["measurement"])
 @router.post(
     "/floors/{floor_id}/measurement-links",
     response_model=MeasurementLinkCreateResponseDTO,
+    summary="QR 측정 링크 발급 (인증 필요, 본인 소유 floor 만)",
 )
 def create_measurement_link(
     floor_id: str,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> MeasurementLinkCreateResponseDTO:
-    return measurement_service.create_measurement_link(db, floor_id)
+    return measurement_service.create_measurement_link(
+        db, floor_id, current_user=current_user
+    )
 
 
 @router.get(
