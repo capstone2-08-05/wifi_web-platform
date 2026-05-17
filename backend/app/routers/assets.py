@@ -38,7 +38,10 @@ assets_router = APIRouter(prefix="/assets", tags=["assets"])
 def upload_asset(
     floor_id: UUID = Path(..., description="자산을 추가할 층 ID"),
     file: UploadFile = File(..., description="png/jpg/jpeg/pdf"),
-    asset_type: str = Form(..., description="floorplan / photo / document"),
+    asset_type: str = Form(
+        ...,
+        description="허용된 AssetType 값. 현재 'floorplan_image' 만 지원.",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AssetResponse:
@@ -60,7 +63,7 @@ def upload_asset(
 def list_assets(
     floor_id: UUID = Path(...),
     asset_type: Optional[str] = Query(
-        None, description="필터: floorplan/photo/document"
+        None, description="필터: AssetType 값 (예: floorplan_image)"
     ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

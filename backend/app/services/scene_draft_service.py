@@ -320,6 +320,7 @@ async def analyze_from_asset(
         current_user=current_user,
         upload_metadata=upload_metadata,
         created_by=current_user.email,
+        source_asset_id=str(asset.id),
     )
 
     return AnalyzeFromAssetResponse(

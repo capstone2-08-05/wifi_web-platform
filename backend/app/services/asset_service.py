@@ -9,6 +9,7 @@ from fastapi import UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.enums import AssetType
 from app.core.errors import AppError, ErrorCode
 from app.core.settings import RF_PRESIGNED_URL_EXPIRES_SECONDS
 from app.models.asset import Asset
@@ -24,7 +25,10 @@ ALLOWED_EXTENSIONS: dict[str, str] = {
     "pdf": "application/pdf",
 }
 
-ALLOWED_ASSET_TYPES: set[str] = {"floorplan", "photo", "document"}
+# AssetType enum 과 1:1 매칭. measurement_service._latest_floorplan_asset 가
+# Asset.asset_type == "floorplan_image" 로 검색하므로 같은 문자열을 강제한다.
+# 새 종류(photo/document 등)는 먼저 AssetType enum 에 추가해야 함.
+ALLOWED_ASSET_TYPES: set[str] = {t.value for t in AssetType}
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +169,51 @@ def create_asset(
         _s3.delete_object(s3_uri)
         raise
 
+    return asset
+
+
+def create_floorplan_asset_from_bytes(
+    db: Session,
+    *,
+    project_id: str,
+    floor_id: str,
+    content: bytes,
+    filename: str,
+    content_type: Optional[str],
+    uploaded_by: str,
+) -> Asset:
+    """이미 byte 로 읽어둔 도면 이미지를 S3 + assets 에 저장.
+
+    /upload/floorplan/analyze 흐름처럼 UploadFile 을 한 번 read 한 뒤 같은 byte 를
+    SageMaker 와 asset 양쪽에 써야 할 때 사용한다. commit 은 호출자에게 위임
+    (보통 같은 트랜잭션에서 Job row 도 같이 commit).
+    """
+    asset_type = AssetType.FLOORPLAN_IMAGE.value
+    ext = _resolve_extension(filename)
+    asset_id = uuid4()
+    key = _build_s3_key(project_id, floor_id, asset_id, ext)
+    mime_type = content_type or ALLOWED_EXTENSIONS[ext]
+    s3_uri = _s3.upload_bytes(key, content, content_type=mime_type)
+
+    asset = Asset(
+        id=str(asset_id),
+        project_id=project_id,
+        floor_id=floor_id,
+        uploaded_by=uploaded_by,
+        asset_type=asset_type,
+        source_format=ext,
+        storage_url=s3_uri,
+        mime_type=mime_type,
+        file_size_bytes=len(content),
+        metadata_json={},
+    )
+    try:
+        db.add(asset)
+        db.flush()
+    except Exception:
+        db.rollback()
+        _s3.delete_object(s3_uri)
+        raise
     return asset
 
 
