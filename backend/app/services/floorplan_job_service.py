@@ -25,6 +25,7 @@ from app.schemas.scene_draft import (
     SaveSceneDraftRequestDTO,
     UploadStorageMetadataDTO,
 )
+from app.models.floor import Floor
 from app.services.asset_service import create_floorplan_asset_from_bytes
 from app.services.fusion_service import fusion_service
 from app.services.sagemaker_inference_service import (
@@ -286,6 +287,11 @@ async def _complete_floorplan_job(
         if source_asset_id:
             _backfill_asset_spatial_metadata(db, source_asset_id, scene)
 
+        # floor 단위 spatial_meta 가 비어 있다면 처음 분석 결과를 seed.
+        # 이후 도면 asset 이 교체되어도 floor 의 좌표계 정의는 보존됨 (#B-5).
+        if locked.floor_id:
+            _seed_floor_spatial_meta_if_empty(db, locked.floor_id, scene)
+
         request_dto = SaveSceneDraftRequestDTO(
             scene=scene,
             upload=UploadStorageMetadataDTO(**upload_meta) if upload_meta else UploadStorageMetadataDTO(),
@@ -466,6 +472,70 @@ def _backfill_asset_spatial_metadata(db: Session, asset_id: str, scene: Any) -> 
             "asset %s spatial metadata backfilled: w=%s h=%s scale=%s",
             asset_id, md.get("width_px"), md.get("height_px"), md.get("scale_m_per_px"),
         )
+
+
+def _seed_floor_spatial_meta_if_empty(db: Session, floor_id: str, scene: Any) -> None:
+    """floor.spatial_meta 가 비어 있을 때 첫 분석 결과로 seed.
+
+    한 번 채워진 뒤에는 도면 asset 이 교체되어도 floor 의 좌표계 정의가 유지된다.
+    (#B-5: spatial 정의 ↔ 도면 이미지 자산 분리)
+
+    저장 형태:
+      {
+        "bounds_m": {min_x, min_y, max_x, max_y},
+        "scale_m_per_px": float,
+        "coordinate_system": {unit, origin, x_axis, y_axis, z_axis,
+                              heading_zero_axis, heading_positive_direction}
+      }
+    """
+    floor = db.get(Floor, floor_id)
+    if floor is None:
+        logger.warning("spatial_meta seed skipped: floor %s not found", floor_id)
+        return
+
+    sm: dict[str, Any] = dict(floor.spatial_meta or {})
+    if sm.get("bounds_m"):
+        return  # 이미 정의됨 → 보존
+
+    image_meta = getattr(scene, "inference_metadata", None) or {}
+    if not isinstance(image_meta, dict):
+        image_meta = {}
+    image = image_meta.get("image") or {}
+    width = image.get("width_px")
+    height = image.get("height_px")
+    scale = getattr(scene, "scale_ratio", None)
+    if width is None or height is None or scale is None:
+        logger.info(
+            "spatial_meta seed skipped: missing image dims for floor %s", floor_id
+        )
+        return
+
+    try:
+        w = float(width) * float(scale)
+        h = float(height) * float(scale)
+    except (TypeError, ValueError):
+        return
+
+    sm["bounds_m"] = {"min_x": 0.0, "min_y": 0.0, "max_x": w, "max_y": h}
+    sm["scale_m_per_px"] = float(scale)
+    sm.setdefault(
+        "coordinate_system",
+        {
+            "unit": "meter",
+            "origin": "top_left",
+            "x_axis": "right",
+            "y_axis": "down",
+            "z_axis": "up",
+            "heading_zero_axis": "x",
+            "heading_positive_direction": "cw",
+        },
+    )
+    floor.spatial_meta = sm
+    flag_modified(floor, "spatial_meta")
+    logger.info(
+        "floor %s spatial_meta seeded: bounds=(%.2f x %.2f m) scale=%s",
+        floor_id, w, h, scale,
+    )
 
 
 def _get_owned_floorplan_job_or_404(

@@ -29,11 +29,21 @@ class FloorplanInfoDTO(BaseModel):
 
 
 class CoordinateSystemDTO(BaseModel):
+    """측정 좌표계 규약.
+
+    heading_zero_axis / heading_positive_direction 는 모바일이 입력하는
+    initial_heading_deg 의 의미를 명시한다 (이전엔 정의 없음).
+      - heading_zero_axis = "x"  → heading=0° 일 때 사용자 정면이 floor +x 방향
+      - heading_positive_direction = "cw" → heading 증가 시 시각적 시계방향
+        (y_axis=down 좌표계에서 +x → +y 로 회전)
+    """
     unit: str = "meter"
     origin: str = "top_left"
     x_axis: str = "right"
     y_axis: str = "down"
     z_axis: str = "up"
+    heading_zero_axis: str = "x"
+    heading_positive_direction: str = "cw"
 
 
 class FloorBoundsDTO(BaseModel):
@@ -41,6 +51,52 @@ class FloorBoundsDTO(BaseModel):
     min_y: float = 0.0
     max_x: float = 0.0
     max_y: float = 0.0
+
+
+class SceneGeometryRoomDTO(BaseModel):
+    id: str
+    room_name: str | None = None
+    room_type: str | None = None
+    polygon_geom: dict[str, Any] | None = None  # GeoJSON Polygon
+    centroid_geom: dict[str, Any] | None = None  # GeoJSON Point
+
+
+class SceneGeometryWallDTO(BaseModel):
+    id: str
+    wall_role: str
+    thickness_m: float | None = None
+    height_m: float | None = None
+    centerline_geom: dict[str, Any] | None = None  # GeoJSON LineString
+    polygon_geom: dict[str, Any] | None = None     # GeoJSON Polygon (있으면)
+
+
+class SceneGeometryOpeningDTO(BaseModel):
+    id: str
+    opening_type: str
+    width_m: float | None = None
+    height_m: float | None = None
+    sill_height_m: float | None = None
+    line_geom: dict[str, Any] | None = None        # GeoJSON LineString
+
+
+class SceneGeometryObjectDTO(BaseModel):
+    id: str
+    object_type: str
+    confidence: float | None = None
+    z_m: float | None = None
+    point_geom: dict[str, Any] | None = None       # GeoJSON Point
+
+
+class SceneGeometryDTO(BaseModel):
+    """SceneVersion 기준 분석 결과(방/벽/출입구/객체)를 도면 좌표계 위에 표현.
+
+    모든 좌표는 floor 좌표계 (origin=top_left, +x=right, +y=down, unit=meter).
+    값들은 GeoJSON 으로 직렬화되어 모바일/프론트가 그대로 도면 위에 그릴 수 있게 함.
+    """
+    rooms: list[SceneGeometryRoomDTO] = Field(default_factory=list)
+    walls: list[SceneGeometryWallDTO] = Field(default_factory=list)
+    openings: list[SceneGeometryOpeningDTO] = Field(default_factory=list)
+    objects: list[SceneGeometryObjectDTO] = Field(default_factory=list)
 
 
 class MeasurementLinkContextResponseDTO(BaseModel):
@@ -53,6 +109,7 @@ class MeasurementLinkContextResponseDTO(BaseModel):
     floorplan: FloorplanInfoDTO = Field(default_factory=FloorplanInfoDTO)
     coordinate_system: CoordinateSystemDTO = Field(default_factory=CoordinateSystemDTO)
     bounds: FloorBoundsDTO = Field(default_factory=FloorBoundsDTO)
+    geometry: SceneGeometryDTO = Field(default_factory=SceneGeometryDTO)
     anchor_points: list[dict[str, Any]] = Field(default_factory=list)
     existing_ap_layouts: list[dict[str, Any]] = Field(default_factory=list)
 

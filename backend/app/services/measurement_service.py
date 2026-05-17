@@ -8,9 +8,11 @@ from urllib.parse import urlencode, urlparse
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.errors import AppError, ErrorCode
+from app.core.geom import wkb_to_geojson
 from app.core.settings import (
     MEASUREMENT_DEEP_LINK_SCHEME,
     MEASUREMENT_LINK_TTL_SECONDS,
@@ -21,9 +23,13 @@ from app.models.floor import Floor
 from app.models.measurement_link import MeasurementLink
 from app.models.measurement_point import MeasurementPoint
 from app.models.measurement_session import MeasurementSession
+from app.models.object import SceneObject
+from app.models.opening import Opening
 from app.models.project import Project
+from app.models.room import Room
 from app.models.scene_version import SceneVersion
 from app.models.user import User
+from app.models.wall import Wall
 from app.schemas.measurement import (
     CoordinateSystemDTO,
     FloorBoundsDTO,
@@ -38,6 +44,11 @@ from app.schemas.measurement import (
     MeasurementSessionCreateRequestDTO,
     MeasurementSessionResponseDTO,
     RssiRangeDTO,
+    SceneGeometryDTO,
+    SceneGeometryObjectDTO,
+    SceneGeometryOpeningDTO,
+    SceneGeometryRoomDTO,
+    SceneGeometryWallDTO,
 )
 
 logger = logging.getLogger(__name__)
@@ -232,6 +243,110 @@ def _is_inside_bounds(pos: FloorPositionDTO, bounds: FloorBoundsDTO) -> bool:
     )
 
 
+def _spatial_from_floor(
+    floor: Floor,
+) -> tuple[FloorBoundsDTO | None, CoordinateSystemDTO | None]:
+    """floor.spatial_meta 에서 bounds + coordinate_system 추출.
+
+    값이 없으면 (None, None) 을 반환해 호출자가 asset.metadata_json 으로 폴백하게 한다.
+    """
+    sm = floor.spatial_meta or {}
+    bounds_raw = sm.get("bounds_m")
+    coord_raw = sm.get("coordinate_system")
+
+    bounds: FloorBoundsDTO | None = None
+    if isinstance(bounds_raw, dict):
+        try:
+            bounds = FloorBoundsDTO(
+                min_x=float(bounds_raw.get("min_x", 0.0)),
+                min_y=float(bounds_raw.get("min_y", 0.0)),
+                max_x=float(bounds_raw.get("max_x", 0.0)),
+                max_y=float(bounds_raw.get("max_y", 0.0)),
+            )
+            if bounds.max_x <= bounds.min_x or bounds.max_y <= bounds.min_y:
+                bounds = None
+        except (TypeError, ValueError):
+            bounds = None
+
+    coord: CoordinateSystemDTO | None = None
+    if isinstance(coord_raw, dict):
+        try:
+            coord = CoordinateSystemDTO(**coord_raw)
+        except Exception:
+            coord = None
+
+    return bounds, coord
+
+
+def _scene_geometry_for_version(
+    db: Session, scene_version_id: str | None
+) -> SceneGeometryDTO:
+    """SceneVersion 의 rooms/walls/openings/objects 를 GeoJSON 으로 변환해 응답에 채울 DTO 로."""
+    if not scene_version_id:
+        return SceneGeometryDTO()
+
+    sv = db.execute(
+        select(SceneVersion)
+        .options(
+            selectinload(SceneVersion.rooms),
+            selectinload(SceneVersion.walls),
+            selectinload(SceneVersion.openings),
+            selectinload(SceneVersion.objects),
+        )
+        .where(SceneVersion.id == scene_version_id)
+    ).scalar_one_or_none()
+    if sv is None:
+        return SceneGeometryDTO()
+
+    rooms = [
+        SceneGeometryRoomDTO(
+            id=r.id,
+            room_name=r.room_name,
+            room_type=r.room_type,
+            polygon_geom=wkb_to_geojson(r.polygon_geom),
+            centroid_geom=wkb_to_geojson(r.centroid_geom),
+        )
+        for r in sv.rooms
+    ]
+    walls = [
+        SceneGeometryWallDTO(
+            id=w.id,
+            wall_role=w.wall_role,
+            thickness_m=float(w.thickness_m) if w.thickness_m is not None else None,
+            height_m=float(w.height_m) if w.height_m is not None else None,
+            centerline_geom=wkb_to_geojson(w.centerline_geom),
+            polygon_geom=wkb_to_geojson(w.polygon_geom),
+        )
+        for w in sv.walls
+    ]
+    openings = [
+        SceneGeometryOpeningDTO(
+            id=o.id,
+            opening_type=o.opening_type,
+            width_m=float(o.width_m) if o.width_m is not None else None,
+            height_m=float(o.height_m) if o.height_m is not None else None,
+            sill_height_m=(
+                float(o.sill_height_m) if o.sill_height_m is not None else None
+            ),
+            line_geom=wkb_to_geojson(o.line_geom),
+        )
+        for o in sv.openings
+    ]
+    objects = [
+        SceneGeometryObjectDTO(
+            id=obj.id,
+            object_type=obj.object_type,
+            confidence=float(obj.confidence) if obj.confidence is not None else None,
+            z_m=float(obj.z_m) if obj.z_m is not None else None,
+            point_geom=wkb_to_geojson(obj.point_geom),
+        )
+        for obj in sv.objects
+    ]
+    return SceneGeometryDTO(
+        rooms=rooms, walls=walls, openings=openings, objects=objects
+    )
+
+
 def create_measurement_link(
     db: Session,
     floor_id: str,
@@ -309,8 +424,22 @@ def get_measurement_link_context(
         db.commit()
         db.refresh(link)
 
+    # 도면 이미지 정보는 항상 asset 에서 (그게 시각화의 source of truth).
     floorplan = _floorplan_info_from_asset(db, link.asset_id)
-    bounds = _bounds_from_floorplan(floorplan)
+
+    # bounds / coordinate_system 은 floor.spatial_meta 우선 → 없으면 asset 폴백.
+    # 분리 의도: 도면 asset 이 교체되어도 측정 좌표계는 floor 가 들고 있는다.
+    floor = db.get(Floor, link.floor_id)
+    bounds: FloorBoundsDTO | None = None
+    coord: CoordinateSystemDTO | None = None
+    if floor is not None:
+        bounds, coord = _spatial_from_floor(floor)
+    if bounds is None:
+        bounds = _bounds_from_floorplan(floorplan)
+    if coord is None:
+        coord = CoordinateSystemDTO()
+
+    geometry = _scene_geometry_for_version(db, link.scene_version_id)
 
     return MeasurementLinkContextResponseDTO(
         token=link.token,
@@ -320,8 +449,9 @@ def get_measurement_link_context(
         asset_id=link.asset_id,
         expires_at=link.expires_at,
         floorplan=floorplan,
-        coordinate_system=CoordinateSystemDTO(),
+        coordinate_system=coord,
         bounds=bounds,
+        geometry=geometry,
         anchor_points=[],
         existing_ap_layouts=[],
     )
