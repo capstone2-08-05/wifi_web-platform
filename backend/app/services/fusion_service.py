@@ -151,25 +151,20 @@ class FusionService:
                 det.id = f"furniture_{len(furniture_objects)}"
                 furniture_objects.append(det)
 
-        # 같은 문/창을 여러 번 탐지한 중복 제거 (NMS). score 높은 박스 유지.
-        # type 별로 따로 NMS — 가까이 겹친 door 와 window 가 서로를 제거하지 않도록.
+        # 중복 detection 제거 (NMS) — type 무관 단일 pass.
+        # 같은 위치에 door 와 window 가 동시 감지되면 score 1 등만 유지.
+        # (이전엔 type 별로 따로 NMS 였지만 사용자가 한 개만 보이길 원해 변경.)
         if opening_dets:
             before = len(opening_dets)
-            kept_set: set[int] = set()
-            for cls in ("door", "window"):
-                group = [i for i, d in enumerate(opening_dets) if d.class_name == cls]
-                if not group:
-                    continue
-                g_boxes = [
-                    tuple(float(v) for v in opening_dets[i].bbox_xyxy) for i in group
-                ]
-                g_scores = [float(opening_dets[i].score) for i in group]
-                for k in nms_filter_indices(g_boxes, g_scores):
-                    kept_set.add(group[k])
-            opening_dets = [d for i, d in enumerate(opening_dets) if i in kept_set]
+            all_boxes = [
+                tuple(float(v) for v in d.bbox_xyxy) for d in opening_dets
+            ]
+            all_scores = [float(d.score) for d in opening_dets]
+            kept_indices = nms_filter_indices(all_boxes, all_scores)
+            opening_dets = [opening_dets[i] for i in kept_indices]
             if len(opening_dets) < before:
                 logger.info(
-                    "opening NMS (per-type): %d → %d (removed %d duplicates)",
+                    "opening NMS (cross-type): %d → %d (removed %d duplicates)",
                     before, len(opening_dets), before - len(opening_dets),
                 )
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 import io
 import logging
 import mimetypes
+import os
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -35,6 +36,13 @@ from app.services.sagemaker_inference_service import InferenceResult
 
 logger = logging.getLogger(__name__)
 
+# 로컬 AI 추론은 sliding-window U-Net (CPU 기본) 으로, 1654×1169 도면 기준 patch
+# 30개 × 3~10s = 90~300s + 모델 첫 로드 5~10s 가 걸린다. 환경변수로 조정 가능.
+# 첫 호출은 모델 로드 포함이라 더 길게, 이후는 캐시되어 빠름.
+DEFAULT_LOCAL_INFERENCE_TIMEOUT_S = float(
+    os.getenv("LOCAL_INFERENCE_TIMEOUT_SECONDS", "600")
+)
+
 
 def run_local_inference(
     *,
@@ -42,7 +50,7 @@ def run_local_inference(
     filename: str,
     content_type: str,
     ai_service_url: str,
-    request_timeout_s: float = 120.0,
+    request_timeout_s: float = DEFAULT_LOCAL_INFERENCE_TIMEOUT_S,
 ) -> InferenceResult:
     """이미지 바이트 → 로컬 AI 두 endpoint 호출 → SageMaker 와 같은 `InferenceResult`.
 
@@ -185,6 +193,17 @@ def _post_inference(
             files={"file": (filename, io.BytesIO(image_bytes), content_type)},
             timeout=timeout,
         )
+    except requests.exceptions.ReadTimeout as exc:
+        raise AppError(
+            ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,
+            (
+                f"Local AI {url} read timeout after {timeout:.0f}s. "
+                f"Sliding-window U-Net on CPU 은 큰 이미지에서 수 분 걸릴 수 있음. "
+                f"LOCAL_INFERENCE_TIMEOUT_SECONDS env 로 늘리거나, AI 측 "
+                f"configs/unet_inference.yaml 에서 sliding_window: false 로 빠르게 (품질↓)."
+            ),
+            504,
+        ) from exc
     except requests.RequestException as exc:
         raise AppError(
             ErrorCode.EXTERNAL_SERVICE_REQUEST_FAILED,

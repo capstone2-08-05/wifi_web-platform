@@ -34,6 +34,11 @@ _UNIT_PATTERNS: tuple[tuple[re.Pattern, float], ...] = (
 _COMMA_INT_PATTERN = re.compile(r"^\s*(\d{1,3}(?:,\d{3})+)\s*$")
 # 단위 미명시 — 소수점 포함 ("3.5"): m 가정.
 _DECIMAL_PATTERN = re.compile(r"^\s*(\d+\.\d+)\s*$")
+# 단위 미명시 — 단순 정수 ("3500", "17500"): 한국 건축 도면은 mm 가 표준이라 mm 가정.
+# 너무 작거나 큰 값은 거부 (방 번호/연도 등 오인 방지). 범위: 300~50000 mm = 0.3~50m.
+_PLAIN_INT_PATTERN = re.compile(r"^\s*(\d{3,5})\s*$")
+_PLAIN_INT_MIN_MM = 300
+_PLAIN_INT_MAX_MM = 50000
 
 
 @dataclass(frozen=True)
@@ -90,6 +95,19 @@ def parse_dimension_to_meters(text: str) -> ParsedDimension | None:
         if v <= 0 or v > 30.0:  # 30m 초과는 도면 단일 치수로 비현실적
             return None
         return ParsedDimension(meters=v, confidence=0.5, unit_hint="m_decimal")
+
+    # 휴리스틱 3: 단순 정수 ("3500", "17500") → mm 가정 (한국 건축 표준).
+    # confidence 0.3 — 단위 추정이 강한 가정이라 가장 낮음. 다른 신호와 같이 쓰일 때
+    # outlier 로 떨어지면 estimate_scale_from_matches 의 MAD 필터가 걸러줌.
+    m = _PLAIN_INT_PATTERN.match(text)
+    if m:
+        try:
+            v = int(m.group(1))
+        except ValueError:
+            return None
+        if v < _PLAIN_INT_MIN_MM or v > _PLAIN_INT_MAX_MM:
+            return None
+        return ParsedDimension(meters=v / 1000.0, confidence=0.3, unit_hint="mm_int")
 
     return None
 

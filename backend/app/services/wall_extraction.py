@@ -19,6 +19,9 @@ class PostprocessMetadata:
     scores: list[dict] = field(default_factory=list)  # ThresholdScore.to_dict()
     ocr_regions_count: int = 0
     line_segments_count: int = 0
+    # OCR 진단용 원본 entries (각 항목: text/bbox/confidence/parsed_meters/parse_confidence).
+    # "OCR 자체 실패" vs "OCR 성공했지만 parser 가 거부" vs "parse 됐지만 매칭 실패" 분리용.
+    ocr_entries: list[dict] = field(default_factory=list)
     # 치수 OCR ↔ 벽 매칭 결과 (scoring 단계에서는 dim_entries 만 추출, 매칭은 후처리 후).
     dimension_entries_count: int = 0     # 치수로 파싱된 OCR 항목 수
     dimension_matches: list[dict] = field(default_factory=list)  # DimensionMatch.to_dict()
@@ -34,6 +37,7 @@ class PostprocessMetadata:
             "scores": list(self.scores),
             "ocr_regions_count": self.ocr_regions_count,
             "line_segments_count": self.line_segments_count,
+            "ocr_entries": list(self.ocr_entries),
             "dimension_entries_count": self.dimension_entries_count,
             "dimension_matches": list(self.dimension_matches),
             "scale_estimate": self.scale_estimate,
@@ -61,15 +65,29 @@ class WallExtractor:
 
     # ── 1. 전처리 ─────────────────────────────────────────────────────────
     def _preprocess(self, mask: np.ndarray, debug_dir: Path | None = None) -> np.ndarray:
+        """Open(작게)으로 노이즈만 제거 → 수평/수직 Close 따로 적용해 합집합.
+
+        이전엔 큰 정사각형(k*2) Close 로 인접 평행 벽을 뭉치게 했는데, 얇은 내부 벽이
+        사라지는 문제 있어서 H/V 분리:
+          - 수평 close (k_close, 1) → 가로 벽 안의 작은 끊김만 메움
+          - 수직 close (1, k_close) → 세로 벽 안의 작은 끊김만 메움
+          - 두 결과 OR → H/V 벽 모두 보존하되 perpendicular gap bridging 회피
+        """
         _, binary = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
         h, w = binary.shape
 
-        k_size = max(3, int(min(h, w) * 0.01))
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_size, k_size))
-        clean = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+        # Open: 노이즈 제거용 작은 커널 (이전 0.01 → 0.003 으로 축소).
+        k_open = max(2, int(min(h, w) * 0.003))
+        open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_open, k_open))
+        clean = cv2.morphologyEx(binary, cv2.MORPH_OPEN, open_kernel)
 
-        close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_size * 2, k_size * 2))
-        clean = cv2.morphologyEx(clean, cv2.MORPH_CLOSE, close_kernel)
+        # Close: H/V 분리해서 각자의 끊김만 메움.
+        k_close = max(5, int(min(h, w) * 0.008))
+        h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_close, 1))
+        v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, k_close))
+        h_close = cv2.morphologyEx(clean, cv2.MORPH_CLOSE, h_kernel)
+        v_close = cv2.morphologyEx(clean, cv2.MORPH_CLOSE, v_kernel)
+        clean = cv2.bitwise_or(h_close, v_close)
 
         out_dir = self._resolve_debug_dir(debug_dir)
         cv2.imwrite(str(out_dir / "debug_edges.png"), clean)
@@ -515,7 +533,24 @@ class WallExtractor:
 
         prob = np.load(str(prob_map_path))
 
+        # A. 좌표계 통일 — AI 가 prob_map 을 작은 해상도(예: 512×512)로 뱉으면
+        # OCR bbox(원본 이미지 좌표)와 wall 결과(prob_map 좌표) 가 어긋남.
+        # image_path 가 있으면 prob_map 을 원본 이미지 크기로 미리 resize 해서
+        # 모든 downstream 처리(mask, skeleton, walls, OCR, dimension match)가 동일
+        # 이미지 좌표계에서 동작하도록 보장.
+        if image_path is not None and Path(image_path).exists():
+            img_for_dims = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+            if img_for_dims is not None:
+                h_img, w_img = img_for_dims.shape
+                h_prob, w_prob = prob.shape
+                if (h_img, w_img) != (h_prob, w_prob):
+                    prob = cv2.resize(
+                        prob.astype(np.float32), (w_img, h_img),
+                        interpolation=cv2.INTER_LINEAR,
+                    )
+
         # 1. threshold 결정 (+ metadata 동시 빌드, OCR entries 보존)
+        # 이 시점의 prob 는 이미 image 좌표계에 정렬되어 있음.
         meta, ocr_entries = self._pick_threshold(prob, threshold, image_path)
         if meta.debug_dir is None and debug_dir is not None:
             meta.debug_dir = str(debug_dir)
@@ -674,11 +709,27 @@ class WallExtractor:
             import logging
             logging.getLogger(__name__).warning("OCR 추출 실패: %s", exc)
 
-        # 치수로 파싱되는 항목만 분리 — scoring 단계에서 dim_alignment 평가용.
-        dim_entries = [
-            e for e in ocr_entries
-            if dimension_matching.parse_dimension_to_meters(e.text) is not None
-        ]
+        # 진단용: 각 OCR entry 의 raw text + bbox + conf + parse 결과를 metadata 에 보관.
+        # "OCR 실패" / "parser 거부" / "parse 됐지만 매칭 실패" 를 분리해 추적 가능.
+        ocr_entries_dump: list[dict] = []
+        dim_entries = []
+        for e in ocr_entries:
+            parsed = dimension_matching.parse_dimension_to_meters(e.text)
+            ocr_entries_dump.append({
+                "text": e.text,
+                "bbox": list(e.bbox),
+                "confidence": round(float(e.confidence), 3),
+                "parsed_meters": (
+                    round(parsed.meters, 4) if parsed is not None else None
+                ),
+                "parse_confidence": (
+                    round(parsed.confidence, 2) if parsed is not None else None
+                ),
+                "unit_hint": parsed.unit_hint if parsed is not None else None,
+            })
+            if parsed is not None:
+                dim_entries.append(e)
+        meta.ocr_entries = ocr_entries_dump
         meta.dimension_entries_count = len(dim_entries)
 
         line_mask = None
