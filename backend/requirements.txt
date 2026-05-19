@@ -42,4 +42,6 @@ bcrypt==4.0.1
 email-validator==2.2.0
 # RF/Wall extraction OCR (#69)
 easyocr==1.7.2
+# GP regression for measurement coverage estimation (#81)
+scikit-learn>=1.6
 
