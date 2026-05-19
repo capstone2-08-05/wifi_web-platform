@@ -1,9 +1,10 @@
 """여러 threshold 후보 중 best 선택.
 
-각 threshold 마다 wall mask 만들고, 5가지 점수로 평가:
+각 threshold 마다 wall mask 만들고, 6가지 점수로 평가:
   + line_alignment_score : 추출된 직선 (Hough) 과 wall mask 의 겹침
   + connectivity_score   : mask 연결성 (큰 연결 컴포넌트 위주, 작은 노이즈 적을수록 ↑)
   + orthogonal_score     : 수평/수직 픽셀 비율 (대각선 노이즈 ↓)
+  + dimension_alignment  : OCR 치수 라벨 옆에 wall 픽셀 존재 비율 (라벨 ↔ 벽 정합)
   - ocr_penalty          : OCR 텍스트 bbox 안에 wall 픽셀이 얼마나 들어갔는지
   - noise_penalty        : 작은 isolated 컴포넌트 개수 (정규화)
 
@@ -31,7 +32,21 @@ class ThresholdScore:
     orthogonal: float
     ocr_penalty: float
     noise_penalty: float
+    dimension_alignment: float
     total: float
+
+    def to_dict(self) -> dict:
+        """JSON 직렬화용 (응답 / summary_json 영속화)."""
+        return {
+            "threshold": round(self.threshold, 4),
+            "line_alignment": round(self.line_alignment, 4),
+            "connectivity": round(self.connectivity, 4),
+            "orthogonal": round(self.orthogonal, 4),
+            "ocr_penalty": round(self.ocr_penalty, 4),
+            "noise_penalty": round(self.noise_penalty, 4),
+            "dimension_alignment": round(self.dimension_alignment, 4),
+            "total": round(self.total, 4),
+        }
 
 
 def _line_alignment_score(wall_mask: np.ndarray, line_mask: np.ndarray) -> float:
@@ -108,9 +123,14 @@ def score_threshold(
     threshold: float,
     line_mask: np.ndarray | None,
     text_mask: np.ndarray | None,
-    weights: tuple[float, float, float, float, float] = (1.0, 1.0, 1.0, 1.0, 0.5),
+    dim_entries=None,
+    weights: tuple[float, float, float, float, float, float] = (1.0, 1.0, 1.0, 1.0, 0.5, 1.0),
 ) -> ThresholdScore:
-    """단일 threshold 평가."""
+    """단일 threshold 평가.
+
+    weights: (line_alignment, connectivity, orthogonal, ocr_penalty, noise_penalty,
+    dimension_alignment). 디폴트는 dim_alignment 도 line_alignment 와 동급 1.0.
+    """
     wall_mask = (prob_map > threshold).astype(np.uint8) * 255
 
     la = _line_alignment_score(wall_mask, line_mask) if line_mask is not None else 0.0
@@ -118,9 +138,19 @@ def score_threshold(
     orth = _orthogonal_score(wall_mask)
     ocr_p = _ocr_penalty(wall_mask, text_mask) if text_mask is not None else 0.0
     np_pen = _noise_penalty(wall_mask)
+    dim = 0.0
+    if dim_entries:
+        # 지연 import — dimension_matching 이 ocr 모듈을 거치지 않도록.
+        from app.services.wall_extraction_helpers.dimension_matching import (
+            dimension_alignment_score,
+        )
+        dim = dimension_alignment_score(wall_mask, dim_entries)
 
-    w_la, w_cc, w_orth, w_ocr, w_np = weights
-    total = w_la * la + w_cc * cc + w_orth * orth - w_ocr * ocr_p - w_np * np_pen
+    w_la, w_cc, w_orth, w_ocr, w_np, w_dim = weights
+    total = (
+        w_la * la + w_cc * cc + w_orth * orth + w_dim * dim
+        - w_ocr * ocr_p - w_np * np_pen
+    )
 
     return ThresholdScore(
         threshold=float(threshold),
@@ -129,6 +159,7 @@ def score_threshold(
         orthogonal=orth,
         ocr_penalty=ocr_p,
         noise_penalty=np_pen,
+        dimension_alignment=dim,
         total=total,
     )
 
@@ -137,16 +168,19 @@ def pick_best_threshold(
     prob_map: np.ndarray,
     line_mask: np.ndarray | None,
     text_mask: np.ndarray | None,
+    dim_entries=None,
     candidates: tuple[float, ...] = DEFAULT_THRESHOLDS,
 ) -> tuple[float, list[ThresholdScore]]:
     """모든 후보 평가 후 best (threshold, scores 전체 리스트) 반환."""
     scores = [
-        score_threshold(prob_map, t, line_mask, text_mask) for t in candidates
+        score_threshold(prob_map, t, line_mask, text_mask, dim_entries=dim_entries)
+        for t in candidates
     ]
     best = max(scores, key=lambda s: s.total)
     logger.info(
-        "threshold scoring: best=%.2f total=%.3f (la=%.3f, cc=%.3f, orth=%.3f, ocr_p=%.3f, np=%.3f)",
+        "threshold scoring: best=%.2f total=%.3f "
+        "(la=%.3f, cc=%.3f, orth=%.3f, dim=%.3f, ocr_p=%.3f, np=%.3f)",
         best.threshold, best.total, best.line_alignment, best.connectivity,
-        best.orthogonal, best.ocr_penalty, best.noise_penalty,
+        best.orthogonal, best.dimension_alignment, best.ocr_penalty, best.noise_penalty,
     )
     return best.threshold, scores

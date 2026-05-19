@@ -55,3 +55,6 @@ class SceneSchema(BaseModel):
     # AI inference run metadata — fusion_service 가 SageMaker InferenceResult 에서 채움.
     # summary_json 으로 영속됨 (감사/디버깅용). 선택적이라 기존 caller 깨지지 않음.
     inference_metadata: Optional[dict] = None
+    # §69 wall postprocess metadata — adaptive threshold / OCR / line scoring 결과.
+    # WallExtractor.PostprocessMetadata.to_dict() 형태. summary_json["wall_postprocess"] 로 영속.
+    postprocess_metadata: Optional[dict] = None

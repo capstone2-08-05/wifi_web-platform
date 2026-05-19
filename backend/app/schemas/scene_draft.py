@@ -35,9 +35,14 @@ class SaveSceneDraftResultDTO(BaseModel):
 
 
 class AnalyzeFromAssetRequest(BaseModel):
+    """POST /assets/{asset_id}/analyze 본문.
+
+    real_width_m 은 제거됨 (백엔드의 OCR 치수 자동 추정으로 대체).
+    inference_mode 만 옵션으로 노출.
+    """
     model_config = ConfigDict(extra="forbid")
 
-    real_width_m: float = 10.0
+    inference_mode: Literal["sagemaker", "local"] = "sagemaker"
 
 
 class SceneDraftCreateRequest(BaseModel):

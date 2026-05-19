@@ -88,7 +88,7 @@ export default function DashboardPage() {
     : null;
   // Asset.storage_url 이 s3:// URI 라서 직접 못 쓰고, /download-url 로 presigned 받음.
   const sourceAssetId = versionAsDraft?.source_asset_id ?? null;
-  const floorAssetsQuery = useFloorAssets(floorId, 'floorplan');
+  const floorAssetsQuery = useFloorAssets(floorId, 'floorplan_image');
   const fallbackAsset = (floorAssetsQuery.data ?? [])
     .slice()
     .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
