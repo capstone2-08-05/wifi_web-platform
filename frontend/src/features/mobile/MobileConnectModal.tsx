@@ -143,7 +143,7 @@ function ReadyState({
   const copyDeepLink = async () => {
     try {
       await navigator.clipboard.writeText(deepLink);
-      toast.info('딥링크가 복사되었습니다');
+      toast.info('링크가 복사되었습니다');
     } catch {
       toast.error('복사에 실패했습니다', deepLink);
     }
@@ -171,7 +171,7 @@ function ReadyState({
           className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border bg-background px-3 py-2 text-xs font-medium hover:bg-accent"
         >
           <Copy className="h-3.5 w-3.5" />
-          딥링크 복사
+          링크 복사
         </button>
         <button
           type="button"
