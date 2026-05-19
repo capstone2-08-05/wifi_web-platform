@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Image as ImageIcon, Ruler, Upload } from 'lucide-react';
+import { FilePlus2, Image as ImageIcon, Ruler, Upload } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const ALLOWED_MIME = ['image/png', 'image/jpeg', 'application/pdf'];
@@ -18,6 +18,9 @@ interface CanvasAreaProps {
   errorMessage?: string;
   selectedFileName?: string | null;
   onFile: (file: File, realWidthM: number) => void;
+  /** "빈 도면으로 시작" — 이미지 없이 SceneDraft 생성. 미제공 시 버튼 숨김. */
+  onStartBlank?: () => void;
+  isStartingBlank?: boolean;
 }
 
 export function CanvasArea({
@@ -26,6 +29,8 @@ export function CanvasArea({
   errorMessage,
   selectedFileName,
   onFile,
+  onStartBlank,
+  isStartingBlank,
 }: CanvasAreaProps) {
   const [dragOver, setDragOver] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -92,15 +97,33 @@ export function CanvasArea({
           매장의 도면(JPG, PNG)을 업로드하여 와이파이 환경을 설계할 수
           있습니다.
         </p>
-        <button
-          type="button"
-          onClick={openPicker}
-          disabled={isPending}
-          className="mt-6 inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-50"
-        >
-          <Upload className="h-4 w-4" />
-          {isPending ? '분석 중…' : '컴퓨터에서 도면 찾기'}
-        </button>
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={openPicker}
+            disabled={isPending || isStartingBlank}
+            className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-50"
+          >
+            <Upload className="h-4 w-4" />
+            {isPending ? '분석 중…' : '컴퓨터에서 도면 찾기'}
+          </button>
+          {onStartBlank && (
+            <button
+              type="button"
+              onClick={onStartBlank}
+              disabled={isPending || isStartingBlank}
+              className="inline-flex items-center gap-2 rounded-lg border bg-background px-4 py-2.5 text-sm font-medium text-foreground shadow-sm transition-colors hover:bg-accent disabled:opacity-50"
+            >
+              <FilePlus2 className="h-4 w-4" />
+              {isStartingBlank ? '생성 중…' : '빈 도면으로 시작'}
+            </button>
+          )}
+        </div>
+        {onStartBlank && (
+          <p className="mt-2 max-w-md text-[11px] text-muted-foreground">
+            도면 이미지가 없어도 좌측 도구로 직접 벽·문·창·가구를 그릴 수 있어요.
+          </p>
+        )}
 
         <div className="mt-5 inline-flex items-center gap-2 rounded-lg border bg-background px-3 py-2 text-xs">
           <Ruler className="h-3.5 w-3.5 text-muted-foreground" />

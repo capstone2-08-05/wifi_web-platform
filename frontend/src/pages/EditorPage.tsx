@@ -5,6 +5,7 @@ import { useAppStore } from '@/stores/app-store';
 import { useEditorStore } from '@/stores/editor-store';
 import {
   useAnalyzeFloorplan,
+  useCreateEmptyDraft,
   useDeleteSceneDraft,
   useDraftsForFloor,
   useSceneDraft,
@@ -67,6 +68,7 @@ export default function EditorPage() {
   const versionsQuery = useFloorVersions(floorId);
 
   const analyze = useAnalyzeFloorplan();
+  const createEmptyDraft = useCreateEmptyDraft();
   const promote = usePromoteDraft();
   const removeDraft = useDeleteSceneDraft();
   const patchEntity = usePatchDraftEntity();
@@ -670,6 +672,12 @@ export default function EditorPage() {
     );
   };
 
+  const handleStartBlankDraft = () => {
+    if (!floorId) return;
+    setPendingFileName(null);
+    createEmptyDraft.mutate(floorId);
+  };
+
   const handleResetDraft = () => {
     const draftId = activeDraftSummary?.id ?? activeDraft?.id;
     if (!draftId) return;
@@ -792,9 +800,15 @@ export default function EditorPage() {
               <CanvasArea
                 fileInputRef={fileInputRef}
                 isPending={isAnalyzing}
-                errorMessage={readError(analyze.error) ?? undefined}
+                errorMessage={
+                  readError(analyze.error) ??
+                  readError(createEmptyDraft.error) ??
+                  undefined
+                }
                 selectedFileName={pendingFileName}
                 onFile={handleFile}
+                onStartBlank={floorId ? handleStartBlankDraft : undefined}
+                isStartingBlank={createEmptyDraft.isPending}
               />
             )}
 

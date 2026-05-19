@@ -66,6 +66,12 @@ export const sceneDraftApi = {
   // §6.2 GET /scene-drafts/{id}
   get: (id: UUID) => api.get<SceneDraft>(`/scene-drafts/${id}`).then((r) => r.data),
 
+  // POST /floors/{floor_id}/scene-drafts — 빈 Draft 생성 (이미지/AI 분석 없이 수동 도면 작성용).
+  createEmpty: (floorId: UUID) =>
+    api
+      .post<SceneDraft>(`/floors/${floorId}/scene-drafts`, { source_mode: 'manual' })
+      .then((r) => r.data),
+
   // §6.5 DELETE /scene-drafts/{id}
   remove: (id: UUID) => api.delete<void>(`/scene-drafts/${id}`).then((r) => r.data),
 
