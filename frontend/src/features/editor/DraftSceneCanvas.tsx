@@ -173,8 +173,60 @@ function useImageNaturalDimensions(
   return dims;
 }
 
+// real_width_m 를 localStorage 에 캐싱.
+// 분석 직후 draft 의 summary_json.storage.real_width_m 가 있을 때 저장 →
+// 이후 promote 되어 SceneVersion 으로 바뀌면 (summary_json={}) 이 캐시에서 복원.
+// → 확정 직후에도 imageExtent 가 살아있어 viewBox 가 안 흔들림.
+//
+// 저장은 source_asset_id / floor_id 둘 다 키로 → 백엔드가 둘 중 한쪽만 채워주는
+// 응답이어도 lookup 성공. 같은 floor 에 여러 도면이 올라가는 경우는 실무상 없음.
+const REAL_WIDTH_CACHE_PREFIX = 'asset-real-width-m:v1:';
+
+function loadCachedRealWidth(key: string): number | null {
+  try {
+    const raw = localStorage.getItem(REAL_WIDTH_CACHE_PREFIX + key);
+    if (!raw) return null;
+    const v = Number(raw);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveCachedRealWidth(key: string, w: number): void {
+  try {
+    localStorage.setItem(REAL_WIDTH_CACHE_PREFIX + key, String(w));
+  } catch {
+    // 캐시 실패는 무시 — 기능적 영향 없음 (summary_json 있을 때만 안 흔들림).
+  }
+}
+
 /**
- * draft.summary_json.storage.real_width_m + 이미지 natural 비율로 이미지의 실제 미터 크기 계산.
+ * draft 의 summary_json (있으면) 또는 캐시에서 real_width_m 조회. 순수함수.
+ * 캐시 lookup 은 source_asset_id / floor_id 양쪽 키를 모두 시도 — 백엔드가 draft 와
+ * version 에서 source_asset_id 를 다르게 (한쪽 null) 응답하는 경우에도 hit.
+ */
+function getRealWidthM(draft: SceneDraft): number | null {
+  const summary = (draft.summary_json ?? {}) as {
+    storage?: { real_width_m?: number };
+  };
+  const fromSummary = summary.storage?.real_width_m;
+  if (typeof fromSummary === 'number' && fromSummary > 0) return fromSummary;
+  if (draft.source_asset_id) {
+    const v = loadCachedRealWidth(draft.source_asset_id);
+    if (v != null) return v;
+  }
+  if (draft.floor_id) {
+    const v = loadCachedRealWidth(draft.floor_id);
+    if (v != null) return v;
+  }
+  return null;
+}
+
+/**
+ * real_width_m + 이미지 natural 비율로 이미지의 실제 미터 크기 계산.
+ * real_width_m 은 summary_json 우선, 없으면 localStorage 캐시(source_asset_id ?? floor_id 키).
+ * → promote 후 version-as-draft (summary_json={}) 에서도 캐시로 복원 → viewBox 안정.
  * 둘 중 하나라도 없으면 null → fallback 으로 도형 bounds 기준 viewBox 사용.
  */
 function deriveImageExtent(
@@ -182,11 +234,8 @@ function deriveImageExtent(
   imageDims: { w: number; h: number } | null,
 ): { w: number; h: number } | null {
   if (!imageDims || imageDims.w <= 0) return null;
-  const summary = (draft.summary_json ?? {}) as {
-    storage?: { real_width_m?: number };
-  };
-  const realWidthM = summary.storage?.real_width_m;
-  if (typeof realWidthM !== 'number' || realWidthM <= 0) return null;
+  const realWidthM = getRealWidthM(draft);
+  if (realWidthM == null) return null;
   return {
     w: realWidthM,
     h: realWidthM * (imageDims.h / imageDims.w),
@@ -677,6 +726,19 @@ export function DraftSceneCanvas({
   // 이미지 크기는 유지 → "도면 위에 그렸을 때 그림+도면 크기 저장 + 화면에 안 늘어남".
   // 이미지가 없거나 real_width_m 가 없으면 fallback 으로 캐시된 도형 bounds viewBox.
   const imageDims = useImageNaturalDimensions(backgroundImageUrl ?? null);
+  // 부수효과: draft 의 summary_json 에 real_width_m 이 있으면 캐시에 저장.
+  // 이후 promote → version-as-draft (summary_json={}) 가 되면 이 캐시로 복원 → viewBox 안정.
+  // source_asset_id 와 floor_id 두 키 모두로 저장 — 백엔드 응답이 둘 중 하나만
+  // 채워주는 케이스(promote 전후로 source_asset_id 가 한쪽만 null 등) 에서도 lookup 성공.
+  useEffect(() => {
+    const summary = (draft.summary_json ?? {}) as {
+      storage?: { real_width_m?: number };
+    };
+    const v = summary.storage?.real_width_m;
+    if (typeof v !== 'number' || v <= 0) return;
+    if (draft.source_asset_id) saveCachedRealWidth(draft.source_asset_id, v);
+    if (draft.floor_id) saveCachedRealWidth(draft.floor_id, v);
+  }, [draft]);
   const imageExtent = useMemo(
     () => deriveImageExtent(draft, imageDims),
     [draft, imageDims],
@@ -685,10 +747,12 @@ export function DraftSceneCanvas({
   const [vb, setVb] = useState(() =>
     imageExtent ? computeViewBox(draft, imageExtent) : resolveInitialViewBox(draft),
   );
-  const [prevDraftId, setPrevDraftId] = useState(draft.id);
+  // viewBox 리셋은 floor 가 바뀔 때만. draft.id 가 바뀌어도 (promote → version-as-draft)
+  // 같은 floor 면 viewBox 유지 → 확정 전후로 객체 크기 일정.
+  const [prevFloorId, setPrevFloorId] = useState(draft.floor_id);
   const [prevExtent, setPrevExtent] = useState(imageExtent);
-  if (prevDraftId !== draft.id) {
-    setPrevDraftId(draft.id);
+  if (prevFloorId !== draft.floor_id) {
+    setPrevFloorId(draft.floor_id);
     setPrevExtent(imageExtent);
     setVb(imageExtent ? computeViewBox(draft, imageExtent) : resolveInitialViewBox(draft));
   } else if (prevExtent !== imageExtent) {
@@ -1078,31 +1142,33 @@ export function DraftSceneCanvas({
     }
 
     // ─ 방 (다중 클릭 Polygon, 시작점 클릭 또는 Enter 로 닫기) ─
-    if (tool === 'polygon') {
-      const pt = getSvgPoint(e);
-      if (!pt) return;
-      if (!creating || creating.kind !== 'polygon') {
-        setCreating({ kind: 'polygon', points: [pt] });
-        return;
-      }
-      const pts = creating.points;
-      // 3 점 이상일 때 시작점 근처 클릭 → 닫기
-      if (pts.length >= 3 && distance(pt, pts[0]) < POLYGON_CLOSE_THRESHOLD_M) {
-        const ring = [...pts, pts[0]];
-        const centroid = polygonCentroid(pts);
-        onCreate?.('room', {
-          room_type: 'general',
-          source_method: 'user_drawn',
-          polygon_geom: { type: 'Polygon', coordinates: [ring] },
-          centroid_geom: { type: 'Point', coordinates: centroid },
-        });
-        setCreating(null);
-        return;
-      }
-      // 그 외 → 점 추가
-      setCreating({ kind: 'polygon', points: [...pts, pt] });
-      return;
-    }
+    // [room 비활성화] AP 후보 알고리즘이 room 정보를 강제로 쓰지 않기로 결정 → UI 노출 제거.
+    // 데이터 모델·API 는 유지하므로 도구만 막음. 다시 켜려면 아래 블록 주석 해제.
+    // if (tool === 'polygon') {
+    //   const pt = getSvgPoint(e);
+    //   if (!pt) return;
+    //   if (!creating || creating.kind !== 'polygon') {
+    //     setCreating({ kind: 'polygon', points: [pt] });
+    //     return;
+    //   }
+    //   const pts = creating.points;
+    //   // 3 점 이상일 때 시작점 근처 클릭 → 닫기
+    //   if (pts.length >= 3 && distance(pt, pts[0]) < POLYGON_CLOSE_THRESHOLD_M) {
+    //     const ring = [...pts, pts[0]];
+    //     const centroid = polygonCentroid(pts);
+    //     onCreate?.('room', {
+    //       room_type: 'general',
+    //       source_method: 'user_drawn',
+    //       polygon_geom: { type: 'Polygon', coordinates: [ring] },
+    //       centroid_geom: { type: 'Point', coordinates: centroid },
+    //     });
+    //     setCreating(null);
+    //     return;
+    //   }
+    //   // 그 외 → 점 추가
+    //   setCreating({ kind: 'polygon', points: [...pts, pt] });
+    //   return;
+    // }
 
     // select 모드: 빈 영역 → marquee 드래그 시작 (작은 움직임이면 pointerUp 에서 선택 해제로 처리).
     if (e.target === e.currentTarget) {
@@ -1153,6 +1219,9 @@ export function DraftSceneCanvas({
           />
         )}
         {/* 일반 렌더: 선택된 항목은 제외하고 그린 뒤, 마지막에 다시 위에 올림. */}
+        {/* [room 비활성화] room 렌더링 제거 — 시뮬레이션·AP 후보에 필수 입력 아님.
+            다시 켜려면 아래 블록 주석 해제. */}
+        {/*
         {draft.rooms
           .filter((r) => !isSelected('room', r.id))
           .map((room) => (
@@ -1168,6 +1237,7 @@ export function DraftSceneCanvas({
               }
             />
           ))}
+        */}
 
         {draft.walls
           .filter((w) => !isSelected('wall', w.id))
@@ -1219,22 +1289,24 @@ export function DraftSceneCanvas({
 
         {/* 선택된 항목들 — 항상 맨 위에 렌더 (단일/다중 모두). */}
         {(selectedRefs ?? []).map((ref) => {
-          if (ref.kind === 'room') {
-            const room = draft.rooms.find((r) => r.id === ref.id);
-            return room ? (
-              <RoomShape
-                key={`sel-${room.id}`}
-                room={room}
-                selected
-                drag={groupDrag(drag, selectedRefs, 'room', room.id)}
-                handleSize={handleSize}
-                onShapePointerDown={(e) => startShapeDrag(e, { kind: 'room', id: room.id })}
-                onVertexPointerDown={(e, idx) =>
-                  startVertexDrag(e, { kind: 'room', id: room.id }, idx)
-                }
-              />
-            ) : null;
-          }
+          // [room 비활성화] 선택된 room 도 렌더 스킵.
+          // if (ref.kind === 'room') {
+          //   const room = draft.rooms.find((r) => r.id === ref.id);
+          //   return room ? (
+          //     <RoomShape
+          //       key={`sel-${room.id}`}
+          //       room={room}
+          //       selected
+          //       drag={groupDrag(drag, selectedRefs, 'room', room.id)}
+          //       handleSize={handleSize}
+          //       onShapePointerDown={(e) => startShapeDrag(e, { kind: 'room', id: room.id })}
+          //       onVertexPointerDown={(e, idx) =>
+          //         startVertexDrag(e, { kind: 'room', id: room.id }, idx)
+          //       }
+          //     />
+          //   ) : null;
+          // }
+          if (ref.kind === 'room') return null;
           if (ref.kind === 'wall') {
             const wall = draft.walls.find((w) => w.id === ref.id);
             return wall ? (
@@ -1684,9 +1756,15 @@ function effectivePoint(p: Coord, drag: DragState | null): Coord {
   return [p[0] + dx, p[1] + dy];
 }
 
-/** drag 종료 시 적용할 새 GeoJSON 생성. resize 모드는 geometry 변경 없음(metadata 갱신). */
-function buildDraggedGeometry(drag: DragState, draft: SceneDraft): GeoJsonGeometry | null {
-  if (drag.mode === 'resize') return null;
+/**
+ * drag 종료 시 적용할 새 GeoJSON 생성.
+ * 호출 측에서 resize / marquee / group-resize 는 이미 분기 처리해 early return → 여기로
+ * 들어오는 drag 는 shape 또는 vertex 뿐이라 타입으로 좁혀 받음 (TS narrowing 일관).
+ */
+function buildDraggedGeometry(
+  drag: Extract<DragState, { mode: 'shape' | 'vertex' }>,
+  draft: SceneDraft,
+): GeoJsonGeometry | null {
   const { ref } = drag;
   if (ref.kind === 'wall') {
     const w = draft.walls.find((x) => x.id === ref.id);

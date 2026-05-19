@@ -342,7 +342,8 @@ export default function EditorPage() {
         if (!editingScene) return;
         const all: SelectedEntityRef[] = [
           ...editingScene.walls.map((w) => ({ kind: 'wall' as const, id: w.id })),
-          ...editingScene.rooms.map((r) => ({ kind: 'room' as const, id: r.id })),
+          // [room 비활성화] 전체 선택에서 room 제외. 다시 켜려면 아래 줄 주석 해제.
+          // ...editingScene.rooms.map((r) => ({ kind: 'room' as const, id: r.id })),
           ...editingScene.openings.map((o) => ({ kind: 'opening' as const, id: o.id })),
           ...editingScene.objects.map((o) => ({ kind: 'object' as const, id: o.id })),
         ];
