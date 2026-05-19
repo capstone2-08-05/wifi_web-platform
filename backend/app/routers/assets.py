@@ -90,7 +90,7 @@ def get_asset(
 @assets_router.get(
     "/{asset_id}/download-url",
     response_model=AssetDownloadUrlResponse,
-    summary="자산 파일 presigned GET URL 발급 (S3)",
+    summary="자산 파일 다운로드 URL 발급 (S3 presigned 또는 로컬 스트리밍)",
 )
 def get_asset_download_url(
     asset_id: UUID = Path(...),
@@ -101,6 +101,22 @@ def get_asset_download_url(
         db=db, asset_id=asset_id, user=current_user
     )
     return AssetDownloadUrlResponse(url=url, expires_in=expires_in)
+
+
+@assets_router.get(
+    "/{asset_id}/raw",
+    summary="로컬 자산 파일 스트리밍 (file:// storage 전용)",
+)
+def stream_asset_raw(
+    asset_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from fastapi.responses import FileResponse
+    path, mime = asset_service.open_asset_local_file(
+        db=db, asset_id=asset_id, user=current_user
+    )
+    return FileResponse(str(path), media_type=mime, filename=path.name)
 
 
 @assets_router.delete(
@@ -124,14 +140,14 @@ def delete_asset(
     summary="Asset 도면 분석 Job 등록 (비동기). job_id 받아서 GET /floorplan-jobs/{job_id} 폴링.",
 )
 async def analyze_asset(
-    payload: AnalyzeFromAssetRequest,
     asset_id: UUID = Path(...),
+    payload: AnalyzeFromAssetRequest = AnalyzeFromAssetRequest(),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyzeFromAssetResponse:
     return await scene_draft_service.analyze_from_asset(
         db=db,
         asset_id=asset_id,
-        real_width_m=payload.real_width_m,
         current_user=current_user,
+        inference_mode=payload.inference_mode,
     )

@@ -53,9 +53,9 @@ def test_wi_twin_logic():
     # 2. GeometryService 단독 테스트 (좌표 변환 확인)
     print("\n[STEP 2] GeometryService 변환 테스트 (2000px -> 10m 가정)")
     geo_service = GeometryService(
-        pixel_width=ai_output.meta.original_width, 
-        pixel_height=ai_output.meta.original_height, 
-        real_width_m=10.0
+        pixel_width=ai_output.meta.original_width,
+        pixel_height=ai_output.meta.original_height,
+        scale_ratio=10.0 / max(1, ai_output.meta.original_width),
     )
     
     # 문(door)의 중심점 좌표 하나만 변환해보기

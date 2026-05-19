@@ -9,12 +9,21 @@ EasyOCR 모델은 최초 호출 시 ~64MB 다운로드 (한국어 + 영어). 캐
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class OCREntry:
+    """OCR 결과 한 항목. room label / 치수 / scale calibration 확장용."""
+    bbox: tuple[int, int, int, int]  # (x1, y1, x2, y2)
+    text: str
+    confidence: float
 
 
 @lru_cache(maxsize=1)
@@ -26,10 +35,13 @@ def _get_reader():
     return easyocr.Reader(["ko", "en"], gpu=False, verbose=False)
 
 
-def detect_text_bboxes(image_path: Path) -> list[tuple[int, int, int, int]]:
-    """이미지에서 OCR 로 텍스트 영역만 추출. 결과는 (x1, y1, x2, y2) 리스트.
+def detect_text_entries(image_path: Path) -> list[OCREntry]:
+    """이미지에서 OCR 로 텍스트 영역 + 문자열 + 신뢰도 추출.
 
-    인식한 문자열 자체는 버림 (위치만 필요). 인식 실패한 영역도 무시.
+    문자열까지 같이 반환 — room label 자동 부여, 치수 OCR, scale calibration 같은
+    후속 기능에서 활용. threshold scoring 만 필요한 호출자는 `detect_text_bboxes`
+    를 쓰면 됨 (위치만 추출).
+
     실패 시 빈 리스트 반환 (벽 추출 흐름 계속 진행).
     """
     try:
@@ -46,19 +58,36 @@ def detect_text_bboxes(image_path: Path) -> list[tuple[int, int, int, int]]:
         logger.warning("OCR 실행 실패: %s", exc)
         return []
 
-    bboxes: list[tuple[int, int, int, int]] = []
+    entries: list[OCREntry] = []
     for entry in results:
         # entry = (bbox_4_points, text, confidence)
-        bbox_pts = entry[0]
+        if len(entry) < 3:
+            continue
+        bbox_pts, text, conf = entry[0], entry[1], entry[2]
         try:
             xs = [int(p[0]) for p in bbox_pts]
             ys = [int(p[1]) for p in bbox_pts]
-            bboxes.append((min(xs), min(ys), max(xs), max(ys)))
+            bbox = (min(xs), min(ys), max(xs), max(ys))
         except (TypeError, IndexError):
             continue
+        try:
+            confidence = float(conf)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        entries.append(OCREntry(bbox=bbox, text=str(text), confidence=confidence))
 
-    logger.info("OCR detected %d text bboxes from %s", len(bboxes), image_path.name)
-    return bboxes
+    logger.info("OCR detected %d text entries from %s", len(entries), image_path.name)
+    return entries
+
+
+def detect_text_bboxes(image_path: Path) -> list[tuple[int, int, int, int]]:
+    """텍스트 위치 bbox 만 추출 (threshold scoring 용 경량 진입점).
+
+    문자열/신뢰도가 필요하면 `detect_text_entries` 를 사용. 둘은 동일한 OCR
+    실행을 거치므로 중복 호출이 필요하면 호출자가 `detect_text_entries` 결과를
+    재사용해서 bbox 만 골라 쓰는 게 효율적.
+    """
+    return [e.bbox for e in detect_text_entries(image_path)]
 
 
 def build_text_mask(

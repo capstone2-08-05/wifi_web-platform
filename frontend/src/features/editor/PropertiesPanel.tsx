@@ -35,6 +35,8 @@ interface PropertiesPanelProps {
   onRotate?: () => void;
   /** 벽의 material_label 변경. 백엔드 PATCH /draft-walls/{id}. */
   onUpdateMaterial?: (next: string) => void;
+  /** 벽의 실측 길이(m) 변경 — metadata_json.dimension_match.user_meters 갱신. */
+  onUpdateWallDimension?: (meters: number | null) => void;
   /** 객체의 object_type 변경. 백엔드 PATCH /draft-objects/{id}. */
   onUpdateObjectType?: (next: string) => void;
   /** 객체 위치(X/Y) 변경 — 보류 편집에 저장. */
@@ -59,6 +61,7 @@ export function PropertiesPanel({
   onDelete,
   onRotate,
   onUpdateMaterial,
+  onUpdateWallDimension,
   onUpdateObjectType,
   onUpdateObjectPosition,
   onUpdateObjectSize,
@@ -84,6 +87,7 @@ export function PropertiesPanel({
           onDelete={onDelete}
           onRotate={onRotate}
           onUpdateMaterial={onUpdateMaterial}
+          onUpdateWallDimension={onUpdateWallDimension}
           onUpdateObjectType={onUpdateObjectType}
           onUpdateObjectPosition={onUpdateObjectPosition}
           onUpdateObjectSize={onUpdateObjectSize}
@@ -140,6 +144,7 @@ function SelectedBody({
   onDelete,
   onRotate,
   onUpdateMaterial,
+  onUpdateWallDimension,
   onUpdateObjectType,
   onUpdateObjectPosition,
   onUpdateObjectSize,
@@ -150,6 +155,7 @@ function SelectedBody({
   onDelete?: () => void;
   onRotate?: () => void;
   onUpdateMaterial?: (next: string) => void;
+  onUpdateWallDimension?: (meters: number | null) => void;
   onUpdateObjectType?: (next: string) => void;
   onUpdateObjectPosition?: (ref: SelectedEntityRef, x: number, y: number) => void;
   onUpdateObjectSize?: (ref: SelectedEntityRef, widthM: number, heightM: number) => void;
@@ -168,6 +174,16 @@ function SelectedBody({
           {/* [room 비활성화] room 속성 패널 숨김. 다시 켜려면 아래 줄 주석 해제. */}
           {/* {selected.kind === 'room' && <RoomFields room={selected.data} />} */}
           {selected.kind === 'opening' && <OpeningFields opening={selected.data} />}
+        </Section>
+      )}
+
+      {selected.kind === 'wall' && (
+        <Section label="실측 길이">
+          <WallDimensionSection
+            wall={selected.data}
+            onUpdate={onUpdateWallDimension}
+            disabled={isSaving}
+          />
         </Section>
       )}
 
@@ -288,6 +304,126 @@ function WallFields({ wall }: { wall: DraftWall }) {
       <Row label="재질" value={materialLabel(wall.material_label)} />
       <Row label="신뢰도" value={fmtConfidence(wall.confidence)} />
     </Grid>
+  );
+}
+
+/**
+ * 벽의 OCR 치수 매칭 결과 표시 + 사용자 실측값 편집.
+ * - 백엔드가 도면 OCR 로 자동 매칭한 dimension_match 가 있으면 텍스트/추정 m 표시
+ * - 사용자가 입력한 user_meters 가 있으면 그 값 prefill, 없으면 parsed_meters
+ * - Enter / blur 시 `onUpdate(meters | null)` 호출 → 부모(EditorPage)가 PATCH 처리
+ */
+function WallDimensionSection({
+  wall,
+  onUpdate,
+  disabled,
+}: {
+  wall: DraftWall;
+  onUpdate?: (meters: number | null) => void;
+  disabled?: boolean;
+}) {
+  const meta = (wall.metadata_json ?? {}) as Record<string, unknown>;
+  const dim = (meta.dimension_match ?? null) as
+    | {
+        text?: string;
+        parsed_meters?: number;
+        matched_wall_px_len?: number | null;
+        user_meters?: number | null;
+        ocr_confidence?: number;
+      }
+    | null;
+
+  // 입력값 초기값: user_meters 우선, 없으면 OCR parsed_meters.
+  const initialInput =
+    dim?.user_meters != null
+      ? String(dim.user_meters)
+      : dim?.parsed_meters != null
+        ? String(dim.parsed_meters)
+        : '';
+
+  const [input, setInput] = useState(initialInput);
+
+  // wall 바뀔 때 입력값 동기화 (다른 벽 선택 시 stale state 방지).
+  // wall.id 가 키이므로 별도 effect 없이 controlled input 재마운트되도록
+  // key 를 부모 Section 에서 제공해도 되지만, 이 컴포넌트는 selected 가 바뀌면
+  // 새 wall prop 으로 재렌더 → useState 초기값은 첫 마운트에만 적용됨.
+  // 명시적 동기화를 위해 wall.id 가 바뀌면 입력 reset (간단히 effect 사용).
+  // 의존성 추가 효과는 PropertiesPanel 의 selected 단위 unmount/remount 으로도 됨.
+  // 여기선 effect 없이 두고, EditorPage 에서 selected 변경 시 PropertiesPanel 이
+  // 재마운트되는 흐름에 의존.
+
+  const commit = () => {
+    if (!onUpdate) return;
+    const trimmed = input.trim();
+    if (trimmed === '') {
+      onUpdate(null);
+      return;
+    }
+    const v = Number(trimmed);
+    if (!Number.isFinite(v) || v <= 0) return;
+    onUpdate(v);
+  };
+
+  return (
+    <div className="space-y-2.5">
+      {dim ? (
+        <div className="rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+          <div className="flex items-center justify-between gap-2">
+            <span>OCR 인식</span>
+            <span className="font-mono text-foreground">{dim.text ?? '-'}</span>
+          </div>
+          <div className="mt-1 flex items-center justify-between gap-2">
+            <span>자동 추정</span>
+            <span className="font-mono text-foreground">
+              {dim.parsed_meters != null ? `${dim.parsed_meters.toFixed(2)} m` : '-'}
+            </span>
+          </div>
+        </div>
+      ) : (
+        <p className="rounded-md border border-dashed bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
+          이 벽에 자동 매칭된 도면 치수가 없습니다. 아래에 직접 입력해 보정할 수 있어요.
+        </p>
+      )}
+
+      <div className="flex items-center gap-2">
+        <label className="text-xs text-muted-foreground">실측값</label>
+        <input
+          type="number"
+          step="0.01"
+          min="0"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
+          disabled={disabled || !onUpdate}
+          placeholder={dim?.parsed_meters != null ? String(dim.parsed_meters) : '예: 3.5'}
+          className="w-24 rounded-md border bg-background px-2 py-1.5 text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-70"
+        />
+        <span className="text-xs text-muted-foreground">m</span>
+        {dim?.user_meters != null && (
+          <button
+            type="button"
+            onClick={() => {
+              setInput('');
+              onUpdate?.(null);
+            }}
+            disabled={disabled}
+            className="ml-auto text-[11px] text-muted-foreground underline hover:text-foreground disabled:opacity-50"
+          >
+            초기화
+          </button>
+        )}
+      </div>
+
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        실측값을 입력하면 이 벽의 길이 기준으로 scale 보정에 활용됩니다.
+      </p>
+    </div>
   );
 }
 

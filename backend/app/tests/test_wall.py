@@ -27,7 +27,7 @@ def run_opencv_unit_test():
     test_mask_path = backend_dir / "outputs" / "test_wall_mask.png"
     create_test_mask(test_mask_path)
     
-    service = GeometryService(pixel_width=1000, pixel_height=1000, real_width_m=10.0)
+    service = GeometryService(pixel_width=1000, pixel_height=1000, scale_ratio=0.01)
 
     print("\n[단계 1] 이미지 읽기 및 좌표 추출 중...")
     try:
