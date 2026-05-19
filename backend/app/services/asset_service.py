@@ -11,12 +11,11 @@ from sqlalchemy.orm import Session
 
 from app.core.enums import AssetType
 from app.core.errors import AppError, ErrorCode
-from app.core.settings import RF_PRESIGNED_URL_EXPIRES_SECONDS
 from app.models.asset import Asset
 from app.models.floor import Floor
 from app.models.project import Project
 from app.models.user import User
-from app.services import _s3
+from app.services import _local_storage as _storage
 
 ALLOWED_EXTENSIONS: dict[str, str] = {
     "png": "image/png",
@@ -111,9 +110,9 @@ def _validate_asset_type(asset_type: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# S3 키 빌더
+# Storage key 빌더 (이전엔 S3 key. 지금은 local://{key} 형태로 보관)
 # ---------------------------------------------------------------------------
-def _build_s3_key(
+def _build_storage_key(
     project_id: str, floor_id: str, asset_id: UUID, ext: str
 ) -> str:
     return f"assets/{project_id}/{floor_id}/{asset_id}.{ext}"
@@ -136,15 +135,15 @@ def create_asset(
     # 2. 권한 체크 (project_id 확보)
     floor, project = _get_owned_floor_or_404(db, floor_id, user)
 
-    # 3. 본문 읽기 + S3 업로드
+    # 3. 본문 읽기 + 로컬 저장
     asset_id = uuid4()
-    key = _build_s3_key(project.id, floor.id, asset_id, ext)
+    key = _build_storage_key(project.id, floor.id, asset_id, ext)
     mime_type = ALLOWED_EXTENSIONS[ext]
     try:
         body = upload.file.read()
     finally:
         upload.file.close()
-    s3_uri = _s3.upload_bytes(key, body, content_type=mime_type)
+    storage_uri = _storage.upload_bytes(key, body, content_type=mime_type)
 
     # 4. DB row 생성
     asset = Asset(
@@ -154,7 +153,7 @@ def create_asset(
         uploaded_by=user.id,
         asset_type=asset_type,
         source_format=ext,
-        storage_url=s3_uri,
+        storage_url=storage_uri,
         mime_type=mime_type,
         file_size_bytes=len(body),
         metadata_json={},
@@ -165,8 +164,8 @@ def create_asset(
         db.refresh(asset)
     except Exception:
         db.rollback()
-        # DB 실패 시 업로드된 S3 객체 정리
-        _s3.delete_object(s3_uri)
+        # DB 실패 시 업로드된 파일 정리
+        _storage.delete_object(storage_uri)
         raise
 
     return asset
@@ -182,18 +181,18 @@ def create_floorplan_asset_from_bytes(
     content_type: Optional[str],
     uploaded_by: str,
 ) -> Asset:
-    """이미 byte 로 읽어둔 도면 이미지를 S3 + assets 에 저장.
+    """이미 byte 로 읽어둔 도면 이미지를 로컬 저장소 + assets 에 저장.
 
     /upload/floorplan/analyze 흐름처럼 UploadFile 을 한 번 read 한 뒤 같은 byte 를
-    SageMaker 와 asset 양쪽에 써야 할 때 사용한다. commit 은 호출자에게 위임
+    ai_api 호출과 asset 양쪽에 써야 할 때 사용한다. commit 은 호출자에게 위임
     (보통 같은 트랜잭션에서 Job row 도 같이 commit).
     """
     asset_type = AssetType.FLOORPLAN_IMAGE.value
     ext = _resolve_extension(filename)
     asset_id = uuid4()
-    key = _build_s3_key(project_id, floor_id, asset_id, ext)
+    key = _build_storage_key(project_id, floor_id, asset_id, ext)
     mime_type = content_type or ALLOWED_EXTENSIONS[ext]
-    s3_uri = _s3.upload_bytes(key, content, content_type=mime_type)
+    storage_uri = _storage.upload_bytes(key, content, content_type=mime_type)
 
     asset = Asset(
         id=str(asset_id),
@@ -202,7 +201,7 @@ def create_floorplan_asset_from_bytes(
         uploaded_by=uploaded_by,
         asset_type=asset_type,
         source_format=ext,
-        storage_url=s3_uri,
+        storage_url=storage_uri,
         mime_type=mime_type,
         file_size_bytes=len(content),
         metadata_json={},
@@ -212,7 +211,7 @@ def create_floorplan_asset_from_bytes(
         db.flush()
     except Exception:
         db.rollback()
-        _s3.delete_object(s3_uri)
+        _storage.delete_object(storage_uri)
         raise
     return asset
 
@@ -242,28 +241,35 @@ def get_asset(db: Session, asset_id: UUID, user: User) -> Asset:
 def get_asset_download_url(
     db: Session, asset_id: UUID, user: User
 ) -> tuple[str, int]:
-    """presigned GET URL + 만료 초 반환."""
+    """다운로드 URL + 만료 초 반환. 로컬 저장소는 만료 개념 없어 0 반환."""
     asset, _floor, _project = _get_owned_asset_or_404(db, asset_id, user)
-    if not asset.storage_url or not asset.storage_url.startswith("s3://"):
+    if not asset.storage_url:
         raise AppError(
             ErrorCode.UPLOADED_FILE_NOT_FOUND,
-            "Asset is not on S3 (legacy local path).",
+            "Asset storage_url missing.",
             status_code=404,
         )
-    url = _s3.presigned_get_url(
-        asset.storage_url, expires_seconds=RF_PRESIGNED_URL_EXPIRES_SECONDS
+    # 로컬 저장소: 영구 URL
+    if _storage.is_local_uri(asset.storage_url):
+        return _storage.static_url(asset.storage_url), 0
+    # 구 데이터 (s3://) 는 외부에서 못 푸므로 404 — 회귀 시 _s3.presigned_get_url 로 부활
+    raise AppError(
+        ErrorCode.UPLOADED_FILE_NOT_FOUND,
+        "Asset is on legacy storage (s3://) — AWS path is disabled.",
+        status_code=404,
     )
-    return url, RF_PRESIGNED_URL_EXPIRES_SECONDS
 
 
 def delete_asset(db: Session, asset_id: UUID, user: User) -> None:
     asset, _floor, _project = _get_owned_asset_or_404(db, asset_id, user)
-    s3_uri = asset.storage_url if asset.storage_url else None
+    storage_uri = asset.storage_url if asset.storage_url else None
 
-    # S3 먼저 — 실패 시 (예: AccessDenied) DB 행 유지해서 재시도 가능.
-    # 성공 시 idempotent (S3 객체 없어도 200) 라 DB 만 남은 상태에서도 안전.
-    if s3_uri and s3_uri.startswith("s3://"):
-        _s3.delete_object(s3_uri)
+    # 파일 먼저 — 실패해도 DB 삭제는 진행 (idempotent).
+    if storage_uri:
+        try:
+            _storage.delete_object(storage_uri)
+        except AppError:
+            pass
 
     try:
         db.delete(asset)

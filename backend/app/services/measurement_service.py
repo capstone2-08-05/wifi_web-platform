@@ -166,14 +166,14 @@ def _floorplan_info_from_asset(db: Session, asset_id: str | None) -> FloorplanIn
     if asset is None:
         return FloorplanInfoDTO()
     metadata = asset.metadata_json or {}
-    # S3 객체면 presigned URL 발급 (모바일이 직접 다운로드 가능하게).
-    # 비-S3 (옛 로컬 경로) 면 그대로 노출 — 어차피 외부 접근 불가지만 fallback.
+    # 로컬 저장소면 /storage/... 정적 URL 로 변환.
+    # 옛 s3:// 데이터는 외부 접근 불가 → None.
     url = asset.storage_url
-    if url and url.startswith("s3://"):
-        from app.services import _s3
-        try:
-            url = _s3.presigned_get_url(url)
-        except Exception:
+    if url:
+        from app.services import _local_storage as _storage
+        if _storage.is_local_uri(url):
+            url = _storage.static_url(url)
+        elif url.startswith("s3://"):
             url = None
     return FloorplanInfoDTO(
         url=url,
@@ -586,7 +586,7 @@ def estimate_session_coverage(
         EstimatedCoverageResponseDTO,
         EstimatedRssiRangeDTO,
     )
-    from app.services._s3 import presigned_get_url
+    from app.services._local_storage import static_url
     from app.services.measurement_estimation.gp_estimator import estimate_coverage
     from app.services.measurement_estimation.heatmap import render_and_upload
 
@@ -642,8 +642,8 @@ def estimate_session_coverage(
     mean_uri, std_uri = render_and_upload(estimate, str(session_row.id), points)
 
     return EstimatedCoverageResponseDTO(
-        heatmap_url=presigned_get_url(mean_uri),
-        uncertainty_url=presigned_get_url(std_uri),
+        heatmap_url=static_url(mean_uri),
+        uncertainty_url=static_url(std_uri),
         bounds=bounds_dto,
         grid_shape=list(estimate.mean_grid.shape),
         grid_resolution_m=grid_resolution_m,

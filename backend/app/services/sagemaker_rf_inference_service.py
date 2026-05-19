@@ -1,21 +1,17 @@
-"""백엔드 ↔ SageMaker Async RF Inference 컨테이너 클라이언트.
+"""[DEPRECATED] 백엔드 ↔ SageMaker Async RF Inference 컨테이너 클라이언트.
 
-`sagemaker_inference_service` 의 RF 버전. AI 와 동일한 4-method API:
-  1. submit(...) — scene.json/input.json S3 업로드 + invoke_endpoint_async
-  2. check_status(output_prefix) — S3 head_object 로 result/failure 존재 확인
-  3. download_result(...) — result.json 파싱 (heatmap/radio_map URI 만 사용; raw 다운로드 X)
-  4. download_failure(...) — failure.json 파싱
+⚠️ AWS 회귀 시 복원: 이 모듈의 클래스 메서드들은 모두 비활성화됐다.
+   현재 RF 시뮬 흐름은 app/services/ai_inference_client.simulate_rf 가 사용한다.
 
-AI 와 차이:
-  - 입력 페이로드가 다름 (scene_s3_uri + simulation + access_points)
-  - 출력 raw 파일 (radio_map.npy, heatmap.png) 은 백엔드가 직접 다운받지 않고 S3 URI 만 보관
-  - presigned URL 생성 헬퍼 추가
+복원 절차:
+  1. SageMakerRfInferenceService 의 각 메서드에서 raise 줄 제거
+  2. boto3 / botocore import 복원
+  3. rf_job_service.submit_rf_simulation 의 ai_inference_client 호출을 sagemaker
+     호출로 교체 (_run_rf_pipeline_in_background → 옛 _complete_rf_job 흐름)
+  4. AWS_REGION / AWS_S3_BUCKET / SAGEMAKER_RF_ENDPOINT_NAME env 재설정
 
-실패 케이스:
-  - 컨테이너 측 application-level 실패 → failure.json → SageMakerRfInferenceFailure
-  - SageMaker 인프라 실패 → S3FailurePath/{id}.out → INTERNAL_SERVER_ERROR
-
-계약 문서: docs/contracts/rf-inference/
+dataclass (RfSubmitResult, RfInferenceResult, SageMakerRfInferenceFailure) 는 보존.
+ai_inference_client 가 SageMakerRfInferenceFailure 를 재사용한다.
 """
 from __future__ import annotations
 
@@ -26,10 +22,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-import boto3
-from botocore.exceptions import ClientError
-
-from app.core.aws import BOTO_CONFIG
+# boto3 / botocore 는 lazy import (AWS 회귀 시 모듈 레벨로 복원)
 from app.core.errors import AppError, ErrorCode
 from app.core.settings import (
     AWS_REGION,
@@ -142,14 +135,18 @@ class SageMakerRfInferenceService:
         self._s3 = None
         self._smrt = None
 
-    # ----- lazy clients (bounded timeout — hang 방지) -----
+    # ----- lazy clients (DEPRECATED: AWS 회귀 시 boto3 import 를 모듈 레벨로) -----
     def _get_s3(self):
         if self._s3 is None:
+            import boto3
+            from app.core.aws import BOTO_CONFIG
             self._s3 = boto3.client("s3", region_name=self.region, config=BOTO_CONFIG)
         return self._s3
 
     def _get_smrt(self):
         if self._smrt is None:
+            import boto3
+            from app.core.aws import BOTO_CONFIG
             self._smrt = boto3.client(
                 "sagemaker-runtime", region_name=self.region, config=BOTO_CONFIG
             )
@@ -181,11 +178,9 @@ class SageMakerRfInferenceService:
         access_points: list[dict[str, Any]],
         metadata: dict[str, Any] | None = None,
     ) -> RfSubmitResult:
-        """scene.json/input.json S3 업로드 + invoke_endpoint_async. **블록 안 함**.
-
-        blocking I/O 는 thread executor 로 우회.
-        """
-        self._check_configured()
+        """[DEPRECATED] AWS 회귀 시 raise 줄 제거. ai_inference_client.simulate_rf 가 대체."""
+        raise NotImplementedError("SageMaker RF path disabled.")
+        self._check_configured()  # type: ignore[unreachable]
 
         job_id = uuid.uuid4().hex
         scene_key = f"rf-jobs/{job_id}/input/scene.json"
@@ -308,6 +303,8 @@ class SageMakerRfInferenceService:
         output_prefix: str,
         sagemaker_failure_location: str = "",
     ) -> RfInferenceStatus:
+        """[DEPRECATED]"""
+        raise NotImplementedError("SageMaker RF path disabled.")
         """S3 head_object 로 결과 존재 확인 (cheap call).
 
         - result.json 보이면 → "completed"
@@ -328,8 +325,9 @@ class SageMakerRfInferenceService:
 
     # ----- 3. download_result -----
     def download_result(self, job_id: str, output_prefix: str) -> RfInferenceResult:
-        """result.json 만 파싱. raw 파일들은 URI 로만 보관."""
-        bucket, prefix_key = _split_s3_uri(output_prefix)
+        """[DEPRECATED] AWS 회귀 시 raise 줄 제거."""
+        raise NotImplementedError("SageMaker RF path disabled.")
+        bucket, prefix_key = _split_s3_uri(output_prefix)  # type: ignore[unreachable]
         s3 = self._get_s3()
 
         try:
@@ -352,7 +350,9 @@ class SageMakerRfInferenceService:
 
     # ----- 4. download_failure -----
     def download_failure(self, output_prefix: str) -> SageMakerRfInferenceFailure:
-        bucket, prefix_key = _split_s3_uri(output_prefix)
+        """[DEPRECATED]"""
+        raise NotImplementedError("SageMaker RF path disabled.")
+        bucket, prefix_key = _split_s3_uri(output_prefix)  # type: ignore[unreachable]
         s3 = self._get_s3()
         failure_payload = json.loads(_s3_get_bytes(s3, bucket, prefix_key + "failure.json"))
         return self._parse_failure(failure_payload, str(failure_payload.get("job_id") or ""))
@@ -373,8 +373,9 @@ class SageMakerRfInferenceService:
     def presigned_url(
         self, s3_uri: str, expires_seconds: int = RF_PRESIGNED_URL_EXPIRES_SECONDS
     ) -> str:
-        """프론트가 직접 접근 가능한 presigned GET URL."""
-        if not s3_uri:
+        """[DEPRECATED] 로컬 흐름에선 _local_storage.static_url 사용."""
+        raise NotImplementedError("SageMaker RF presigned URL disabled. Use _local_storage.static_url.")
+        if not s3_uri:  # type: ignore[unreachable]
             return ""
         bucket, key = _split_s3_uri(s3_uri)
         s3 = self._get_s3()

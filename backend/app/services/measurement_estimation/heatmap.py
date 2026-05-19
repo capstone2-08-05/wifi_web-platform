@@ -15,7 +15,7 @@ matplotlib.use("Agg")  # 서버 환경 — GUI backend 비활성
 import matplotlib.pyplot as plt
 import numpy as np
 
-from app.services import _s3
+from app.services import _local_storage as _storage
 from .gp_estimator import CoverageEstimate
 
 logger = logging.getLogger(__name__)
@@ -114,15 +114,15 @@ def render_and_upload(
         overlay_points=overlay,
     )
 
-    # S3 업로드
+    # 로컬 저장
     job_uuid = uuid.uuid4().hex
     mean_key = f"measurement-estimates/{session_id}/{job_uuid}-mean.png"
     std_key = f"measurement-estimates/{session_id}/{job_uuid}-uncertainty.png"
-    mean_uri = _s3.upload_bytes(mean_key, mean_png, content_type="image/png")
-    std_uri = _s3.upload_bytes(std_key, std_png, content_type="image/png")
+    mean_uri = _storage.upload_bytes(mean_key, mean_png, content_type="image/png")
+    std_uri = _storage.upload_bytes(std_key, std_png, content_type="image/png")
 
     logger.info(
-        "GP coverage PNGs uploaded session=%s mean=%s std=%s",
+        "GP coverage PNGs saved session=%s mean=%s std=%s",
         session_id, mean_uri, std_uri,
     )
     return mean_uri, std_uri

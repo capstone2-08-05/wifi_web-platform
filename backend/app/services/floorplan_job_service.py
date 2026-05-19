@@ -1,18 +1,21 @@
 """도면 분석 Job (job_type='floorplan_analyze') 오케스트레이션.
 
-비동기 Job 패턴:
-  - submit_floorplan_analysis: SageMaker invoke + Job row 생성 (status=running)
-  - poll_floorplan_job: Job 조회 + (running 이면 S3 확인) + 완료 시 변환/저장
+흐름 (ai_api 동기 호출 + background task):
+  - submit_floorplan_analysis: Job row 생성 (status=running) + 백그라운드 태스크 스폰
+  - 백그라운드 태스크가 ai_api UNet/YOLO → fusion → save_scene_draft → Job 마무리
+  - poll_floorplan_job: Job 조회만 (실제 폴링은 background task 가 끝나면 자연히 done)
 
-폴링은 호출자(=백엔드 GET 엔드포인트 또는 background task) 가 주기적으로 한다.
+기존 SageMaker 비동기 패턴 (S3 polling) 은 제거됨. job_poller 는 floorplan 분기에서
+즉시 반환 (background task 가 책임).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -20,17 +23,18 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.errors import AppError, ErrorCode
+from app.db.session import SessionLocal
 from app.models import Asset, Floor, Job, Project, User
 from app.schemas.scene_draft import (
     SaveSceneDraftRequestDTO,
     UploadStorageMetadataDTO,
 )
+from app.services import ai_inference_client
 from app.services.asset_service import create_floorplan_asset_from_bytes
 from app.services.fusion_service import fusion_service
 from app.services.sagemaker_inference_service import (
     SageMakerInferenceFailure,
     map_failure_to_app_error,
-    sagemaker_inference_service,
 )
 from app.services.scene_draft_service import _resolve_project_floor, save_scene_draft
 
@@ -97,14 +101,7 @@ async def submit_floorplan_analysis(
             except Exception:
                 pass
 
-    submit_result = await sagemaker_inference_service.submit(
-        image_bytes=image_bytes,
-        filename=filename,
-        project_id=resolved_project_id,
-        floor_id=resolved_floor_id,
-        content_type=content_type,
-    )
-
+    file_id = uuid.uuid4().hex
     input_json: dict[str, Any] = {
         "filename": filename,
         "content_type": content_type,
@@ -112,13 +109,8 @@ async def submit_floorplan_analysis(
         "created_by": created_by or current_user.email,
         "source_asset_id": source_asset_id,
         "upload": upload_metadata.model_dump(),
-        "sagemaker": {
-            "inference_id": submit_result.sagemaker_inference_id,
-            "source_s3_uri": submit_result.source_s3_uri,
-            "input_s3_uri": submit_result.input_s3_uri,
-            "output_prefix": submit_result.output_prefix,
-            "sagemaker_output_location": submit_result.sagemaker_output_location,
-            "sagemaker_failure_location": submit_result.sagemaker_failure_location,
+        "ai_api": {
+            "file_id": file_id,
         },
     }
 
@@ -144,16 +136,89 @@ async def submit_floorplan_analysis(
             500,
         ) from exc
 
+    # ai_api 호출은 sync (long-poll, 수십 초~분). HTTP 요청 자체는 빨리 끝나야 하므로
+    # background task 로 분리. 끝나면 자체 세션에서 Job 마무리.
+    asyncio.create_task(
+        _run_pipeline_in_background(
+            job_id=str(job.id),
+            owner_user_id=str(current_user.id),
+            image_bytes=image_bytes,
+            filename=filename,
+            file_id=file_id,
+            real_width_m=real_width_m,
+        )
+    )
+
     logger.info(
-        "Floorplan job submitted job_id=%s sagemaker_inference_id=%s",
-        job.id,
-        submit_result.sagemaker_inference_id,
+        "Floorplan job submitted job_id=%s file_id=%s",
+        job.id, file_id,
     )
     return job
 
 
+async def _run_pipeline_in_background(
+    *,
+    job_id: str,
+    owner_user_id: str,
+    image_bytes: bytes,
+    filename: str,
+    file_id: str,
+    real_width_m: float,
+) -> None:
+    """submit 호출 후 비동기로 ai_api 호출 + fusion + Job 마무리. 자체 세션."""
+    db = SessionLocal()
+    try:
+        owner = db.get(User, owner_user_id)
+        if owner is None:
+            logger.warning("Floorplan background: owner %s not found, mark fail", owner_user_id)
+            job = db.get(Job, job_id)
+            if job is not None:
+                _mark_job_failed(
+                    db, job,
+                    code=ErrorCode.INTERNAL_SERVER_ERROR,
+                    stage="background_lookup",
+                    message=f"Owner user {owner_user_id} not found",
+                )
+            return
+        try:
+            inference = await ai_inference_client.analyze_floorplan(
+                image_bytes=image_bytes,
+                filename=filename,
+                file_id=file_id,
+            )
+        except AppError as exc:
+            job = db.get(Job, job_id)
+            if job is not None:
+                _mark_job_failed(
+                    db, job,
+                    code=exc.code, stage="ai_api_call", message=exc.message,
+                )
+            return
+        except Exception as exc:
+            logger.exception("ai_api call failed for job %s", job_id)
+            job = db.get(Job, job_id)
+            if job is not None:
+                _mark_job_failed(
+                    db, job,
+                    code=ErrorCode.INTERNAL_SERVER_ERROR,
+                    stage="ai_api_call",
+                    message=f"Unexpected ai_api error: {exc}",
+                )
+            return
+
+        job = db.get(Job, job_id)
+        if job is None:
+            inference.cleanup()
+            return
+        await _complete_floorplan_job_from_inference(
+            db, job, owner, inference, real_width_m, filename,
+        )
+    finally:
+        db.close()
+
+
 # ============================================================
-# Poll & complete
+# Poll (ai_api 흐름에서는 background task 가 끝나면 자연히 done — 폴링은 단순 조회)
 # ============================================================
 async def poll_floorplan_job(
     db: Session,
@@ -161,90 +226,26 @@ async def poll_floorplan_job(
     job_id: str,
     current_user: User,
 ) -> Job:
-    """Job 조회. status=running 이면 S3 결과 확인 → 완료/실패 시 본 트랜잭션에서 마무리.
+    """Job 조회만. ai_api 흐름은 background task 가 마무리하므로 폴링 측에서 할 일 없음.
 
-    동시 폴링 안전성:
-      - 비싼 S3/CPU 작업은 lock 없이 진행 (race window 허용)
-      - 최종 DB write 직전에 `with_for_update()` 로 row lock 잡고 status 재확인
-      - 이미 다른 poller 가 완료/실패 처리했다면 그 결과를 그대로 반환 (idempotent)
+    옛 SageMaker 흐름에서는 S3 폴링 → 완료 처리까지 같이 했지만, 이제는 단순 조회.
     """
-    job = _get_owned_floorplan_job_or_404(db, job_id, current_user)
-
-    if job.status != JOB_STATUS_RUNNING:
-        return job
-
-    sagemaker_meta = (job.input_json or {}).get("sagemaker") or {}
-    output_prefix = sagemaker_meta.get("output_prefix")
-    sagemaker_failure_location = sagemaker_meta.get("sagemaker_failure_location") or ""
-    if not output_prefix:
-        # 잘못 등록된 Job — 진행 불가
-        return _mark_job_failed(
-            db,
-            job,
-            code=ErrorCode.INTERNAL_SERVER_ERROR,
-            stage="validate_input",
-            message="Job.input_json.sagemaker.output_prefix missing",
-        )
-
-    # boto3 는 blocking → threadpool 로 이벤트 루프 보호
-    status = await run_in_threadpool(
-        sagemaker_inference_service.check_status,
-        output_prefix,
-        sagemaker_failure_location=sagemaker_failure_location,
-    )
-
-    if status == "running":
-        return job
-
-    if status == "infra_failed":
-        return _claim_and_finalize(
-            db,
-            job_id,
-            current_user,
-            finalize=lambda locked: _mark_job_failed(
-                db,
-                locked,
-                code=ErrorCode.INTERNAL_SERVER_ERROR,
-                stage="sagemaker_infra",
-                message=f"SageMaker infrastructure error (see {sagemaker_failure_location})",
-            ),
-        )
-
-    if status == "failed":
-        failure = await run_in_threadpool(
-            sagemaker_inference_service.download_failure, output_prefix
-        )
-        return _claim_and_finalize(
-            db,
-            job_id,
-            current_user,
-            finalize=lambda locked: _mark_job_failed_from_container(db, locked, failure),
-        )
-
-    # status == "completed"
-    return await _complete_floorplan_job(db, job, current_user, output_prefix)
+    return _get_owned_floorplan_job_or_404(db, job_id, current_user)
 
 
 # ============================================================
 # Internal: 완료 처리 / 실패 처리
 # ============================================================
-async def _complete_floorplan_job(
+async def _complete_floorplan_job_from_inference(
     db: Session,
     job: Job,
     current_user: User,
-    output_prefix: str,
+    inference,
+    real_width_m: float,
+    filename: str,
 ) -> Job:
-    source_s3_uri = (job.input_json or {}).get("sagemaker", {}).get("source_s3_uri")
-    inference = await run_in_threadpool(
-        sagemaker_inference_service.download_result,
-        str(job.id),
-        output_prefix,
-        source_s3_uri,
-    )
-
+    """ai_api 응답 (InferenceResult) 으로 fusion + scene 저장 + Job done."""
     input_meta = job.input_json or {}
-    real_width_m = float(input_meta.get("real_width_m", 10.0))
-    filename = str(input_meta.get("filename") or "floorplan.png")
     upload_meta = input_meta.get("upload") or {}
     created_by = input_meta.get("created_by")
 

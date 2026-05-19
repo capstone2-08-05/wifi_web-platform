@@ -197,15 +197,13 @@ def list_by_floor(
 
 
 def _rf_map_to_response(m: RfMap) -> RfMapResponse:
-    """storage_url 이 s3:// 면 presigned URL 도 같이 채워서 반환."""
+    """storage_url 이 local:// 면 정적 URL 생성. s3:// 는 외부 접근 불가 → None."""
     resp = RfMapResponse.model_validate(m, from_attributes=True)
-    if m.storage_url and m.storage_url.startswith("s3://"):
-        from app.services import _s3
-        try:
-            resp = resp.model_copy(update={"url": _s3.presigned_get_url(m.storage_url)})
-        except Exception:
-            # presigned 발급 실패 시 url=None 유지 (storage_url 은 남음)
-            pass
+    if m.storage_url:
+        from app.services import _local_storage as _storage
+        if _storage.is_local_uri(m.storage_url):
+            resp = resp.model_copy(update={"url": _storage.static_url(m.storage_url)})
+        # s3:// 는 url=None 유지 (구 데이터 호환)
     return resp
 
 

@@ -147,8 +147,10 @@ async def _poll_single(
             return
 
         if job_type == "floorplan_analyze":
+            # ai_api 흐름: background task 가 마무리. 폴러는 단순 조회.
             await floorplan_poll(db, job_id=job_id, current_user=owner)
         elif job_type == "rf_simulate":
+            # 동일.
             await rf_poll(db, job_id=job_id, current_user=owner)
         elif job_type == "calibration":
             await calibration_poll(db, job_id=job_id, current_user=owner)

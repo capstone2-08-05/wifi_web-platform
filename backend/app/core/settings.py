@@ -57,25 +57,22 @@ INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "dev-internal-key-change-me")
 
 
 # ============================================
-# AWS / SageMaker (도면 분석 inference)
+# [DEPRECATED] AWS / SageMaker — AWS 회귀 시 재사용
 # ============================================
+# refactor/no-aws 에서 비활성화됨. 코드 경로는 ai_api HTTP (AI_SERVICE_URL) 로 통합됐다.
+# 회귀 시 sagemaker_inference_service / sagemaker_rf_inference_service / _s3 의
+# raise NotImplementedError 줄을 제거하면 다시 사용 가능.
 AWS_REGION = os.getenv("AWS_REGION", "ap-northeast-2").strip()
 AWS_S3_BUCKET = os.getenv("AWS_S3_BUCKET", "").strip()
 SAGEMAKER_ENDPOINT_NAME = os.getenv("SAGEMAKER_ENDPOINT_NAME", "ai-inference-endpoint").strip()
 SAGEMAKER_POLL_INTERVAL_SECONDS = float(os.getenv("SAGEMAKER_POLL_INTERVAL_SECONDS", "5"))
 SAGEMAKER_POLL_TIMEOUT_SECONDS = float(os.getenv("SAGEMAKER_POLL_TIMEOUT_SECONDS", "900"))
-
-# RF 시뮬 inference 는 별도 endpoint. bucket/region 은 AI 와 공유.
 SAGEMAKER_RF_ENDPOINT_NAME = os.getenv(
     "SAGEMAKER_RF_ENDPOINT_NAME", "rf-inference-async-endpoint-v1"
 ).strip()
-# 결과 presigned URL 만료 (초). 기본 1시간.
 RF_PRESIGNED_URL_EXPIRES_SECONDS = int(
     os.getenv("RF_PRESIGNED_URL_EXPIRES_SECONDS", "3600")
 )
-
-# boto3 client 타임아웃 — AWS 호출이 무한정 hang 해서 DB 세션/스레드를 잡고 있는 것 방지.
-# connect 는 짧게, read 는 S3 업로드/다운로드 고려해 넉넉히. 재시도는 2회.
 AWS_CONNECT_TIMEOUT_SECONDS = float(os.getenv("AWS_CONNECT_TIMEOUT_SECONDS", "5"))
 AWS_READ_TIMEOUT_SECONDS = float(os.getenv("AWS_READ_TIMEOUT_SECONDS", "30"))
 AWS_MAX_RETRY_ATTEMPTS = int(os.getenv("AWS_MAX_RETRY_ATTEMPTS", "2"))

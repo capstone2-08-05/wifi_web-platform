@@ -1,20 +1,18 @@
-"""백엔드 ↔ SageMaker Async Inference 컨테이너 클라이언트.
+"""[DEPRECATED] 백엔드 ↔ SageMaker Async Inference 컨테이너 클라이언트.
 
-Job 비동기 패턴용 4-단계 API:
-  1. `submit(...)` — S3 source/input.json 업로드 + invoke_endpoint_async + SubmitResult 반환 (블록 X)
-  2. `check_status(output_prefix)` — S3 head_object 로 result/failure 존재 확인 → "running"/"completed"/"failed"
-  3. `download_result(job_id, output_prefix)` — result.json + raw outputs (npy/png/detections) 다운로드
-  4. `download_failure(output_prefix)` — failure.json 파싱
+⚠️ AWS 회귀 시 복원: 이 모듈의 클래스 메서드들은 모두 비활성화됐다 (raise NotImplementedError).
+   현재 도면분석 흐름은 app/services/ai_inference_client.py 의 ai_api HTTP 호출을 사용한다.
 
-기존 `invoke_and_wait(...)` 는 호출자가 폴링을 의식하지 않아도 되지만, HTTP 요청을 5-15분 블록함.
-새 API 는 폴링 책임을 호출자(`floorplan_job_service`)에게 위임.
+복원 절차:
+  1. SageMakerInferenceService 의 각 메서드에서 raise 줄 제거
+  2. boto3 / botocore import 복원 (lazy import 가 lazy 가 아닌 모듈 레벨)
+  3. floorplan_job_service.submit_floorplan_analysis 의 ai_inference_client 호출을
+     sagemaker_inference_service.submit 호출로 교체
+  4. AWS_REGION / AWS_S3_BUCKET / SAGEMAKER_ENDPOINT_NAME env 재설정
 
-실패 케이스:
-  - 컨테이너 측 application-level 실패 → output_prefix/failure.json → SageMakerInferenceFailure (code 보유)
-  - SageMaker 인프라 실패 → S3FailurePath/{id}.out → INTERNAL_SERVER_ERROR 로 raise
-  - 폴링 timeout 은 호출자 정책 (Job.created_at 으로부터 N 분 경과 시 cleanup 등)
-
-계약 문서: docs/contracts/ai-inference/
+dataclass (SubmitResult, InferenceResult, SageMakerInferenceFailure) 는 그대로 보존.
+fusion_service / floorplan_job_service / ai_inference_client 가 InferenceResult 를
+재사용하기 때문에 데이터 컨테이너로서 계속 살아있다.
 """
 from __future__ import annotations
 
@@ -27,10 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-import boto3
-from botocore.exceptions import ClientError
-
-from app.core.aws import BOTO_CONFIG
+# boto3 / botocore 는 lazy import (회귀 시에만 import) — AWS 회귀 시 모듈 레벨로 복원
 from app.core.errors import AppError, ErrorCode
 from app.core.settings import (
     AWS_REGION,
@@ -163,13 +158,18 @@ class SageMakerInferenceService:
         self._smrt = None
 
     # ----- lazy clients (bounded timeout — hang 방지) -----
+    # DEPRECATED (AWS 회귀 시 복원): boto3 import 를 모듈 레벨로 올리고 BOTO_CONFIG 사용
     def _get_s3(self):
         if self._s3 is None:
+            import boto3
+            from app.core.aws import BOTO_CONFIG
             self._s3 = boto3.client("s3", region_name=self.region, config=BOTO_CONFIG)
         return self._s3
 
     def _get_smrt(self):
         if self._smrt is None:
+            import boto3
+            from app.core.aws import BOTO_CONFIG
             self._smrt = boto3.client(
                 "sagemaker-runtime", region_name=self.region, config=BOTO_CONFIG
             )
@@ -199,11 +199,15 @@ class SageMakerInferenceService:
         floor_id: str,
         content_type: str = "application/octet-stream",
     ) -> SubmitResult:
-        """source/input.json S3 업로드 + invoke_endpoint_async. **블록 안 함**.
+        """[DEPRECATED] source/input.json S3 업로드 + invoke_endpoint_async.
 
-        blocking I/O (boto3) 는 thread executor 로 우회.
+        AWS 회귀 시 아래 raise 줄 제거하면 원복.
+        현재는 ai_inference_client.analyze_floorplan 이 대체한다.
         """
-        self._check_configured()
+        raise NotImplementedError(
+            "SageMaker path disabled. Use ai_inference_client.analyze_floorplan."
+        )
+        self._check_configured()  # type: ignore[unreachable]
 
         job_id = uuid.uuid4().hex
         ext = Path(filename).suffix.lower() or ".png"
@@ -321,6 +325,8 @@ class SageMakerInferenceService:
         output_prefix: str,
         sagemaker_failure_location: str = "",
     ) -> InferenceStatus:
+        """[DEPRECATED] AWS 회귀 시 raise 줄 제거."""
+        raise NotImplementedError("SageMaker path disabled.")
         """S3 head_object 로 결과 존재 확인 (cheap call).
 
         - result.json 보이면 → "completed"
@@ -346,6 +352,8 @@ class SageMakerInferenceService:
         output_prefix: str,
         source_s3_uri: str | None = None,
     ) -> InferenceResult:
+        """[DEPRECATED] AWS 회귀 시 raise 줄 제거."""
+        raise NotImplementedError("SageMaker path disabled.")
         """result.json + raw outputs 를 temp 디렉토리로 다운로드.
 
         source_s3_uri 가 주어지면 원본 도면 이미지도 같이 다운 (OCR/선분 검출용).
@@ -409,8 +417,9 @@ class SageMakerInferenceService:
 
     # ----- 4. download_failure -----
     def download_failure(self, output_prefix: str) -> SageMakerInferenceFailure:
-        """failure.json 파싱."""
-        bucket, prefix_key = _split_s3_uri(output_prefix)
+        """[DEPRECATED] AWS 회귀 시 raise 줄 제거. failure.json 파싱."""
+        raise NotImplementedError("SageMaker path disabled.")
+        bucket, prefix_key = _split_s3_uri(output_prefix)  # type: ignore[unreachable]
         s3 = self._get_s3()
         failure_payload = json.loads(_s3_get_bytes(s3, bucket, prefix_key + "failure.json"))
         return self._parse_failure(failure_payload, str(failure_payload.get("job_id") or ""))

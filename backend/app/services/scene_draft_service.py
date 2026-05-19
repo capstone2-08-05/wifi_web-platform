@@ -280,33 +280,29 @@ async def analyze_from_asset(
     /upload/floorplan/analyze 와 동일하게 Job 패턴 사용 → 202 응답 + job_id.
     완료 조회는 GET /floorplan-jobs/{job_id}.
     """
-    from app.services import _s3
+    from app.services import _local_storage as _storage
     from app.services.asset_service import _get_owned_asset_or_404
     from app.services.floorplan_job_service import submit_floorplan_analysis
 
     asset, _floor, _project = _get_owned_asset_or_404(db, asset_id, current_user)
 
-    if not asset.storage_url or not asset.storage_url.startswith("s3://"):
+    if not asset.storage_url:
         raise AppError(
             ErrorCode.UPLOADED_FILE_NOT_FOUND,
-            f"Asset is not on S3: {asset.storage_url}",
+            "Asset storage_url missing.",
             status_code=500,
         )
 
-    # S3 에서 본문 다운로드. 이후 submit_floorplan_analysis 가 SageMaker 입력용으로
-    # 다시 S3 에 올린다 (현재 흐름 유지). 추후 source_s3_uri 직접 전달로 최적화 가능.
-    content = _s3.download_bytes(asset.storage_url)
+    # 로컬 저장소에서 본문 다운로드. 이후 submit_floorplan_analysis 가 ai_api 로 직접 전송.
+    content = _storage.download_bytes(asset.storage_url)
 
     filename = asset.storage_url.rsplit("/", 1)[-1] or f"{asset.id}.{asset.source_format or 'bin'}"
-    s3_bucket, s3_key = _s3.split_s3_uri(asset.storage_url)
     upload_metadata = UploadStorageMetadataDTO(
-        provider="s3",
+        provider="local",
         original_filename=filename,
         content_type=asset.mime_type,
         size_bytes=asset.file_size_bytes,
-        s3_uri=asset.storage_url,
-        s3_bucket=s3_bucket,
-        s3_key=s3_key,
+        s3_uri=asset.storage_url,  # 호환: 필드명은 s3_uri 지만 local:// URI 도 담는다
     )
 
     job = await submit_floorplan_analysis(
@@ -329,7 +325,7 @@ async def analyze_from_asset(
         project_id=str(job.project_id) if job.project_id else None,
         floor_id=str(job.floor_id) if job.floor_id else None,
         job_status=job.status,
-        sagemaker_inference_id=(job.input_json or {}).get("sagemaker", {}).get("inference_id"),
+        sagemaker_inference_id=(job.input_json or {}).get("ai_api", {}).get("file_id"),
         poll_url=f"/floorplan-jobs/{job.id}",
     )
 
