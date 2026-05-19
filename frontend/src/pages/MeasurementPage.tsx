@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -7,18 +7,30 @@ import {
   MapPin,
   Smartphone,
   TrendingUp,
+  Wifi,
+  X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { HelpFab } from '@/components/HelpFab';
 import { MobileConnectModal } from '@/features/mobile/MobileConnectModal';
 import { Popover } from '@/components/ui/Popover';
 import { useAppStore } from '@/stores/app-store';
-import type { MeasurementSession } from '@/types/measurement-session';
+import type {
+  DetectedAp,
+  MeasurementPoint as ApiPoint,
+  MeasurementSession,
+} from '@/types/measurement-session';
+import type { ApLayout } from '@/types/ap-layout';
+import type { RfMap } from '@/types/rf';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
 import {
+  useDetectedAps,
   useFloorMeasurementSessions,
   useMeasurementPoints,
 } from '@/hooks/use-measurement-session';
+import { useFloorRfRuns, useRfMaps } from '@/hooks/use-rf-run';
+import { useApLayouts } from '@/hooks/use-ap-layouts';
+import { parseGeometry } from '@/features/editor/geometry-utils';
 import {
   MeasurementCanvas,
   type MeasurementPoint as CanvasPoint,
@@ -26,7 +38,6 @@ import {
   type MeasurementViewMode,
   type PlacedApSimple,
 } from '@/features/measurement/MeasurementCanvas';
-import type { MeasurementPoint as ApiPoint } from '@/types/measurement-session';
 
 export default function MeasurementPage() {
   const floorId = useAppStore((s) => s.selectedFloorId);
@@ -49,8 +60,28 @@ export default function MeasurementPage() {
 
   const canvasPoints = useMemo(() => apiPointsToCanvas(points), [points]);
 
+  // 가장 최근 succeeded RF Run → AP layouts + RF Map metrics.
+  const rfRunsQuery = useFloorRfRuns(floorId, { status: 'succeeded', page_size: 5 });
+  const latestRfRunId = rfRunsQuery.data?.items?.[0]?.id ?? null;
+  const apLayoutsQuery = useApLayouts(latestRfRunId);
+  const canvasAps = useMemo(
+    () => apLayoutsToCanvas(apLayoutsQuery.data ?? []),
+    [apLayoutsQuery.data],
+  );
+  const rfMapsQuery = useRfMaps(latestRfRunId, !!latestRfRunId);
+  const predictedAvgDbm = useMemo(
+    () => extractPredictedAvgDbm(rfMapsQuery.data ?? []),
+    [rfMapsQuery.data],
+  );
+  const measuredAvgDbm = useMemo(() => computeMeasuredAvg(points), [points]);
+
+  // §10.5 발견된 AP 목록.
+  const detectedApsQuery = useDetectedAps(activeSession?.id ?? null);
+  const detectedAps = detectedApsQuery.data ?? [];
+
   const [mode, setMode] = useState<MeasurementViewMode>('route');
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [actionGuideOpen, setActionGuideOpen] = useState(false);
 
   const hasVersion = versions.length > 0;
   const hasMeasurement = points.length > 0;
@@ -84,7 +115,7 @@ export default function MeasurementPage() {
                 <MeasurementCanvas
                   sceneVersion={sceneVersion}
                   points={canvasPoints}
-                  aps={[] as PlacedApSimple[]}
+                  aps={canvasAps}
                   mode={mode}
                 />
                 {!hasMeasurement && <CanvasEmptyOverlay loading={pointsQuery.isFetching} />}
@@ -93,13 +124,22 @@ export default function MeasurementPage() {
           </section>
 
           <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto">
-            <DiagnosticCard points={canvasPoints} />
-            <CauseAnalysisCard hasData={hasMeasurement} />
+            <DiagnosticCard
+              points={canvasPoints}
+              predictedAvgDbm={predictedAvgDbm}
+              measuredAvgDbm={measuredAvgDbm}
+            />
+            <CauseAnalysisCard
+              hasData={hasMeasurement}
+              onOpenGuide={() => setActionGuideOpen(true)}
+            />
+            {detectedAps.length > 0 && <DetectedApsCard aps={detectedAps} />}
           </aside>
         </div>
       )}
 
       <MobileConnectModal open={mobileOpen} onClose={() => setMobileOpen(false)} />
+      <ActionGuideModal open={actionGuideOpen} onClose={() => setActionGuideOpen(false)} />
       <HelpFab />
     </div>
   );
@@ -125,6 +165,45 @@ function apiPointsToCanvas(points: ApiPoint[]): CanvasPoint[] {
     quality: qualityFromRssi(p.rssi_dbm),
     order: p.step_index ?? idx + 1,
   }));
+}
+
+/** ApLayout.point_geom → 캔버스 AP 마커. 파싱 실패한 건 제외. */
+function apLayoutsToCanvas(layouts: ApLayout[]): PlacedApSimple[] {
+  const result: PlacedApSimple[] = [];
+  for (const l of layouts) {
+    const g = parseGeometry(l.point_geom);
+    if (g?.type !== 'Point') continue;
+    const [x, y] = g.coordinates;
+    result.push({ id: l.id, x_m: x, y_m: y, label: l.ap_name });
+  }
+  return result;
+}
+
+/** RfMap.metrics_json.rss_dbm.mean 추출 (없으면 옛 avg_rssi_dbm fallback). */
+function extractPredictedAvgDbm(maps: RfMap[]): number | null {
+  for (const m of maps) {
+    const v = readRssMean(m.metrics_json);
+    if (v != null) return v;
+  }
+  return null;
+}
+
+function readRssMean(metrics: Record<string, unknown> | null | undefined): number | null {
+  if (!metrics) return null;
+  const rss = metrics['rss_dbm'];
+  if (rss && typeof rss === 'object') {
+    const mean = (rss as Record<string, unknown>)['mean'];
+    if (typeof mean === 'number' && Number.isFinite(mean)) return mean;
+  }
+  const legacy = metrics['avg_rssi_dbm'];
+  if (typeof legacy === 'number' && Number.isFinite(legacy)) return legacy;
+  return null;
+}
+
+function computeMeasuredAvg(points: ApiPoint[]): number | null {
+  const vals = points.map((p) => p.rssi_dbm).filter((v): v is number => v != null);
+  if (vals.length === 0) return null;
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
 }
 
 // ============================================
@@ -341,11 +420,19 @@ function CanvasEmptyOverlay({ loading }: { loading: boolean }) {
 // 우측 진단 카드
 // ============================================
 
-function DiagnosticCard({ points }: { points: CanvasPoint[] }) {
+function DiagnosticCard({
+  points,
+  predictedAvgDbm,
+  measuredAvgDbm,
+}: {
+  points: CanvasPoint[];
+  predictedAvgDbm: number | null;
+  measuredAvgDbm: number | null;
+}) {
   // 가장 신호가 약한 (불량 > 주의 > 양호) 포인트를 우선 노출.
-  const worst = useMemo(() => pickWorstPoint(points), [points]);
+  const worst = useMemo(() => (points.length > 0 ? pickWorstPoint(points) : null), [points]);
 
-  if (points.length === 0) {
+  if (!worst) {
     return (
       <div className="rounded-xl border bg-card p-4 shadow-sm">
         <h2 className="flex items-center gap-1.5 text-sm font-semibold">
@@ -393,11 +480,84 @@ function DiagnosticCard({ points }: { points: CanvasPoint[] }) {
         </span>
       </div>
 
-      <p className="mt-3 text-[11px] text-muted-foreground">
+      <p className="mt-1 text-[11px] text-muted-foreground">
         좌표 {worst.x_m.toFixed(2)}, {worst.y_m.toFixed(2)} m
       </p>
 
-      {/* 예측치(시뮬레이션) 비교는 RF Run 결과와 매칭이 필요 — calibration-runs API 연결 후 노출 예정. */}
+      {/* 예측 vs 실측 평균 비교. RF Run 결과(예측 평균 dBm) + 측정 평균 RSSI. */}
+      <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg border bg-muted/40 p-3">
+        <DbmCell label="예측 평균 (시뮬레이션)" value={predictedAvgDbm} tone="muted" />
+        <DbmCell
+          label="실측 평균"
+          value={measuredAvgDbm}
+          tone={
+            predictedAvgDbm != null && measuredAvgDbm != null && measuredAvgDbm - predictedAvgDbm < -8
+              ? 'danger'
+              : 'normal'
+          }
+        />
+      </div>
+
+      <DiffNote predicted={predictedAvgDbm} measured={measuredAvgDbm} />
+    </div>
+  );
+}
+
+function DiffNote({
+  predicted,
+  measured,
+}: {
+  predicted: number | null;
+  measured: number | null;
+}) {
+  if (predicted == null) {
+    return (
+      <p className="mt-2 text-[11px] text-muted-foreground">
+        비교 가능한 시뮬레이션 결과가 없습니다. 먼저 시뮬레이션을 실행해주세요.
+      </p>
+    );
+  }
+  if (measured == null) return null;
+  const diff = measured - predicted;
+  const tone =
+    diff < -8 ? 'text-destructive' : diff < -3 ? 'text-amber-700' : 'text-muted-foreground';
+  const tail = diff < -8 ? ' — 예상보다 크게 약합니다.' : diff < -3 ? ' — 일부 약화.' : '';
+  return (
+    <p className={cn('mt-2 text-[11px]', tone)}>
+      예측 대비 실측 {diff >= 0 ? '+' : ''}
+      {diff.toFixed(1)} dBm{tail}
+    </p>
+  );
+}
+
+function DbmCell({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number | null;
+  tone: 'normal' | 'muted' | 'danger';
+}) {
+  return (
+    <div>
+      <p className="text-[11px] text-muted-foreground">{label}</p>
+      <p
+        className={cn(
+          'mt-0.5 text-2xl font-bold tabular-nums',
+          tone === 'danger' && 'text-destructive',
+          tone !== 'danger' && 'text-foreground',
+        )}
+      >
+        {value == null ? (
+          <span className="text-base text-muted-foreground">—</span>
+        ) : (
+          <>
+            {value.toFixed(1)}
+            <span className="ml-0.5 text-xs font-medium text-muted-foreground">dBm</span>
+          </>
+        )}
+      </p>
     </div>
   );
 }
@@ -411,7 +571,13 @@ function pickWorstPoint(points: CanvasPoint[]): CanvasPoint {
   return [...points].sort((a, b) => rank[a.quality] - rank[b.quality])[0];
 }
 
-function CauseAnalysisCard({ hasData }: { hasData: boolean }) {
+function CauseAnalysisCard({
+  hasData,
+  onOpenGuide,
+}: {
+  hasData: boolean;
+  onOpenGuide: () => void;
+}) {
   return (
     <div className="rounded-xl border bg-card p-4 shadow-sm">
       <h3 className="flex items-center gap-1.5 text-sm font-semibold">
@@ -429,13 +595,126 @@ function CauseAnalysisCard({ hasData }: { hasData: boolean }) {
       )}
       <button
         type="button"
-        disabled={!hasData}
-        className="mt-3 inline-flex w-full items-center justify-center gap-1 rounded-md border bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-accent disabled:opacity-50"
+        onClick={onOpenGuide}
+        className="mt-3 inline-flex w-full items-center justify-center gap-1 rounded-md border bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-accent"
       >
         조치 방법 확인하기
         <ChevronRight className="h-3.5 w-3.5" />
       </button>
     </div>
+  );
+}
+
+// ============================================
+// 발견된 AP 목록 카드
+// ============================================
+
+function DetectedApsCard({ aps }: { aps: DetectedAp[] }) {
+  // RSSI 강한 순(절댓값 작은 순)으로 정렬.
+  const sorted = useMemo(
+    () =>
+      [...aps].sort((a, b) => (b.rssi_avg ?? -200) - (a.rssi_avg ?? -200)),
+    [aps],
+  );
+  return (
+    <div className="rounded-xl border bg-card p-4 shadow-sm">
+      <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+        <Wifi className="h-4 w-4 text-primary" />
+        발견된 AP ({sorted.length})
+      </h3>
+      <ul className="mt-2 space-y-1.5">
+        {sorted.map((ap) => (
+          <li
+            key={ap.ap_bssid}
+            className="flex items-center justify-between gap-2 rounded-md border bg-background px-2.5 py-1.5 text-xs"
+          >
+            <div className="min-w-0">
+              <p className="truncate font-medium">{ap.ap_ssid ?? '(SSID 없음)'}</p>
+              <p className="truncate text-[10px] text-muted-foreground">
+                {ap.ap_bssid}
+                {ap.channel != null && ` · ch ${ap.channel}`}
+                {ap.frequency_mhz != null && ` · ${(ap.frequency_mhz / 1000).toFixed(1)}GHz`}
+              </p>
+            </div>
+            <div className="text-right tabular-nums">
+              <p className="text-xs font-semibold">
+                {ap.rssi_avg != null ? `${ap.rssi_avg.toFixed(0)} dBm` : '—'}
+              </p>
+              <p className="text-[10px] text-muted-foreground">{ap.point_count}회</p>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ============================================
+// 조치 방법 모달
+// ============================================
+
+function ActionGuideModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="relative w-full max-w-md rounded-2xl border bg-card p-6 shadow-xl"
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="닫기"
+          className="absolute right-3 top-3 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <X className="h-4 w-4" />
+        </button>
+        <h2 className="flex items-center gap-1.5 text-base font-semibold">
+          <AlertTriangle className="h-4 w-4 text-amber-500" />
+          신호 약화 조치 가이드
+        </h2>
+        <p className="mt-1.5 text-xs text-muted-foreground">
+          예측보다 실측이 크게 낮은 지점에서 시도해볼 수 있는 일반적인 조치들입니다.
+        </p>
+        <ol className="mt-4 space-y-3">
+          <GuideStep n={1} title="AP 위치 재배치" body="해당 지점과 가까운 위치로 AP 를 옮기거나, 벽·금속 구조물에서 떨어뜨려 보세요. 시뮬레이션 페이지에서 후보 위치를 재생성할 수 있습니다." />
+          <GuideStep n={2} title="벽 재질 확인" body="콘크리트·금속 가벽은 전파 흡수가 큽니다. 도면 편집에서 해당 벽의 재질을 실제와 맞게 수정하면 시뮬레이션 정확도가 올라갑니다." />
+          <GuideStep n={3} title="채널·대역 점검" body="2.4GHz 대역은 간섭이 심합니다. 발견된 AP 목록에서 동일 채널이 많이 잡히면 AP 채널을 변경하거나 5GHz 우선 사용을 검토하세요." />
+          <GuideStep n={4} title="송신 출력 조정" body="AP 송신 출력이 너무 낮으면 외곽 커버리지가 부족합니다. 시뮬레이션 파라미터의 tx_power_dbm 을 올려 재시뮬레이션 해보세요." />
+        </ol>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-5 w-full rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          확인
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function GuideStep({ n, title, body }: { n: number; title: string; body: string }) {
+  return (
+    <li className="flex gap-3">
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+        {n}
+      </span>
+      <div>
+        <p className="text-sm font-semibold">{title}</p>
+        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{body}</p>
+      </div>
+    </li>
   );
 }
 

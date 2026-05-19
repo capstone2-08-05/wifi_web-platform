@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { rfJobApi, rfRunApi } from '@/api/rf-run';
+import { rfJobApi, rfRunApi, type ListRfRunsParams } from '@/api/rf-run';
 import type { HttpError } from '@/api/client';
 import { toast } from '@/stores/toast-store';
 import type { UUID } from '@/types/common';
@@ -71,6 +71,19 @@ export function useRfRun(rfRunId: UUID | null) {
     isSucceeded: isJobSucceeded(status),
     isFailed: isJobFailed(status),
   };
+}
+
+/**
+ * GET /floors/{floor_id}/rf-runs — 층의 RF Run 목록 (최신순).
+ * 기본 status 필터 없음 — 호출 측에서 'succeeded' 등으로 좁힐 수 있음.
+ */
+export function useFloorRfRuns(floorId: UUID | null, params?: ListRfRunsParams) {
+  return useQuery({
+    queryKey: ['rf-runs', floorId, params ?? null] as const,
+    queryFn: () => rfRunApi.listByFloor(floorId as UUID, params),
+    enabled: !!floorId,
+    staleTime: 30_000,
+  });
 }
 
 /** GET /rf-runs/{id}/maps — RF Run 이 succeeded 된 후에만 활성화 */

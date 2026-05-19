@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Check, ChevronDown, Plus } from 'lucide-react';
+import { Check, ChevronDown, Plus, Trash2 } from 'lucide-react';
 import { Popover } from '@/components/ui/Popover';
-import { useCreateFloor, useFloors } from '@/hooks/use-floors';
+import { useCreateFloor, useDeleteFloor, useFloors } from '@/hooks/use-floors';
 import { useAppStore } from '@/stores/app-store';
 import { cn } from '@/lib/utils';
 import type { Floor } from '@/types/floor';
@@ -59,6 +59,13 @@ export function FloorSelector() {
             setFloor(f.id);
             close();
           }}
+          onDeleted={(deletedId) => {
+            // 현재 선택된 층이 삭제됐으면, 남은 첫 층으로 자동 전환 (없으면 null).
+            if (deletedId === selectedFloorId) {
+              const remaining = floors.filter((f) => f.id !== deletedId);
+              setFloor(remaining[0]?.id ?? null);
+            }
+          }}
         />
       )}
     </Popover>
@@ -71,40 +78,84 @@ function FloorMenu({
   projectId,
   onSelect,
   onCreated,
+  onDeleted,
 }: {
   floors: Floor[];
   selectedFloorId: string | null;
   projectId: string;
   onSelect: (id: string) => void;
   onCreated: (f: Floor) => void;
+  onDeleted: (deletedId: string) => void;
 }) {
   const [creating, setCreating] = useState(false);
+  // 인라인 삭제 확인 상태. 두 번째 클릭에 진짜 삭제 — 모달 없이 가볍게.
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  const deleteFloor = useDeleteFloor(projectId);
   const sorted = [...floors].sort((a, b) => a.floor_order - b.floor_order);
+
+  const handleDeleteClick = (e: React.MouseEvent, floorId: string) => {
+    e.stopPropagation();
+    if (confirmingDeleteId !== floorId) {
+      setConfirmingDeleteId(floorId);
+      return;
+    }
+    deleteFloor.mutate(floorId, {
+      onSuccess: () => {
+        setConfirmingDeleteId(null);
+        onDeleted(floorId);
+      },
+      onError: () => setConfirmingDeleteId(null),
+    });
+  };
+
   return (
     <div>
       <ul className="max-h-72 overflow-y-auto py-1">
         {sorted.length === 0 && !creating && (
           <li className="px-3 py-3 text-xs text-muted-foreground">층이 없습니다.</li>
         )}
-        {sorted.map((f) => (
-          <li key={f.id}>
-            <button
-              onClick={() => onSelect(f.id)}
-              className={cn(
-                'flex w-full items-center justify-between gap-2 px-3 py-2 text-sm hover:bg-accent',
-                f.id === selectedFloorId && 'bg-accent/60 font-medium',
-              )}
-            >
-              <div className="flex flex-col items-start">
-                <span className="truncate">{f.floor_name}</span>
-                <span className="text-[10px] text-muted-foreground">
-                  높이 {f.height_m}m
-                </span>
-              </div>
-              {f.id === selectedFloorId && <Check className="h-3.5 w-3.5 text-primary" />}
-            </button>
-          </li>
-        ))}
+        {sorted.map((f) => {
+          const confirming = confirmingDeleteId === f.id;
+          const deleting = deleteFloor.isPending && confirmingDeleteId === f.id;
+          return (
+            <li key={f.id} className="group flex items-center">
+              <button
+                onClick={() => onSelect(f.id)}
+                className={cn(
+                  'flex flex-1 items-center justify-between gap-2 px-3 py-2 text-sm hover:bg-accent',
+                  f.id === selectedFloorId && 'bg-accent/60 font-medium',
+                )}
+              >
+                <div className="flex flex-col items-start">
+                  <span className="truncate">{f.floor_name}</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    높이 {f.height_m}m
+                  </span>
+                </div>
+                {f.id === selectedFloorId && <Check className="h-3.5 w-3.5 text-primary" />}
+              </button>
+              <button
+                type="button"
+                onClick={(e) => handleDeleteClick(e, f.id)}
+                disabled={deleting}
+                aria-label={confirming ? '삭제 확인' : '층 삭제'}
+                title={confirming ? '한 번 더 누르면 삭제됩니다' : '층 삭제'}
+                className={cn(
+                  'mr-1 inline-flex h-7 items-center justify-center rounded-md px-2 text-[10px] font-medium transition-colors disabled:opacity-50',
+                  confirming
+                    ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90'
+                    : 'text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100',
+                )}
+              >
+                {confirming ? (
+                  deleting ? '삭제 중…' : '확인'
+                ) : (
+                  <Trash2 className="h-3.5 w-3.5" />
+                )}
+              </button>
+            </li>
+          );
+        })}
       </ul>
       <div className="border-t p-2">
         {creating ? (

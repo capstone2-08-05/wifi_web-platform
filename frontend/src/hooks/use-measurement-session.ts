@@ -32,3 +32,13 @@ export function useMeasurementPoints(sessionId: UUID | null, pageSize = 500) {
     retry: false,
   });
 }
+
+/** §10.5 — 세션에서 발견된 고유 AP 목록 (envelope 없이 list 직접 반환). */
+export function useDetectedAps(sessionId: UUID | null) {
+  return useQuery({
+    queryKey: ['detected-aps', sessionId] as const,
+    queryFn: () => measurementSessionApi.listDetectedAps(sessionId as UUID),
+    enabled: !!sessionId,
+    retry: false,
+  });
+}

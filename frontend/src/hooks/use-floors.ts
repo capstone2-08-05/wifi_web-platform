@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { floorApi } from '@/api/floor';
+import type { HttpError } from '@/api/client';
+import { toast } from '@/stores/toast-store';
 import type { UUID } from '@/types/common';
 import type { CreateFloorRequest } from '@/types/floor';
 
@@ -23,6 +25,21 @@ export function useCreateFloor(projectId: UUID | null) {
     },
     onSuccess: () => {
       if (projectId) qc.invalidateQueries({ queryKey: floorsKey(projectId) });
+    },
+  });
+}
+
+export function useDeleteFloor(projectId: UUID | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (floorId: UUID) => floorApi.remove(floorId),
+    onSuccess: () => {
+      if (projectId) qc.invalidateQueries({ queryKey: floorsKey(projectId) });
+      toast.info('층이 삭제되었습니다');
+    },
+    onError: (err) => {
+      const e = err as HttpError | null;
+      toast.error('층 삭제 실패', e?.message ?? '잠시 후 다시 시도해주세요.');
     },
   });
 }
