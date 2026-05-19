@@ -5,6 +5,7 @@ import { useAppStore } from '@/stores/app-store';
 import { useEditorStore } from '@/stores/editor-store';
 import {
   useAnalyzeFloorplan,
+  useCreateEmptyDraft,
   useDeleteSceneDraft,
   useDraftsForFloor,
   useSceneDraft,
@@ -67,6 +68,7 @@ export default function EditorPage() {
   const versionsQuery = useFloorVersions(floorId);
 
   const analyze = useAnalyzeFloorplan();
+  const createEmptyDraft = useCreateEmptyDraft();
   const promote = usePromoteDraft();
   const removeDraft = useDeleteSceneDraft();
   const patchEntity = usePatchDraftEntity();
@@ -342,7 +344,8 @@ export default function EditorPage() {
         if (!editingScene) return;
         const all: SelectedEntityRef[] = [
           ...editingScene.walls.map((w) => ({ kind: 'wall' as const, id: w.id })),
-          ...editingScene.rooms.map((r) => ({ kind: 'room' as const, id: r.id })),
+          // [room 비활성화] 전체 선택에서 room 제외. 다시 켜려면 아래 줄 주석 해제.
+          // ...editingScene.rooms.map((r) => ({ kind: 'room' as const, id: r.id })),
           ...editingScene.openings.map((o) => ({ kind: 'opening' as const, id: o.id })),
           ...editingScene.objects.map((o) => ({ kind: 'object' as const, id: o.id })),
         ];
@@ -669,6 +672,12 @@ export default function EditorPage() {
     );
   };
 
+  const handleStartBlankDraft = () => {
+    if (!floorId) return;
+    setPendingFileName(null);
+    createEmptyDraft.mutate(floorId);
+  };
+
   const handleResetDraft = () => {
     const draftId = activeDraftSummary?.id ?? activeDraft?.id;
     if (!draftId) return;
@@ -791,9 +800,15 @@ export default function EditorPage() {
               <CanvasArea
                 fileInputRef={fileInputRef}
                 isPending={isAnalyzing}
-                errorMessage={readError(analyze.error) ?? undefined}
+                errorMessage={
+                  readError(analyze.error) ??
+                  readError(createEmptyDraft.error) ??
+                  undefined
+                }
                 selectedFileName={pendingFileName}
                 onFile={handleFile}
+                onStartBlank={floorId ? handleStartBlankDraft : undefined}
+                isStartingBlank={createEmptyDraft.isPending}
               />
             )}
 

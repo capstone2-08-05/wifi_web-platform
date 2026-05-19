@@ -165,7 +165,8 @@ function SelectedBody({
       {selected.kind !== 'object' && (
         <Section label="속성">
           {selected.kind === 'wall' && <WallFields wall={selected.data} />}
-          {selected.kind === 'room' && <RoomFields room={selected.data} />}
+          {/* [room 비활성화] room 속성 패널 숨김. 다시 켜려면 아래 줄 주석 해제. */}
+          {/* {selected.kind === 'room' && <RoomFields room={selected.data} />} */}
           {selected.kind === 'opening' && <OpeningFields opening={selected.data} />}
         </Section>
       )}

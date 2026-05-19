@@ -230,9 +230,10 @@ export function SimulationCanvas({
             }}
           />
         )}
-        {(sceneVersion?.rooms ?? []).map((r) => (
+        {/* [room 비활성화] 시뮬레이션 캔버스에서 room 영역 렌더 제거. 다시 켜려면 아래 블록 주석 해제. */}
+        {/* {(sceneVersion?.rooms ?? []).map((r) => (
           <RoomShape key={r.id} room={r} />
-        ))}
+        ))} */}
         {(sceneVersion?.walls ?? []).map((w) => (
           <WallShape key={w.id} wall={w} />
         ))}

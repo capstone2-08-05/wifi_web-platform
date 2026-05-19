@@ -37,7 +37,8 @@ export function ReviewCard({
         <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />
         <span className="text-sm font-semibold">분석 완료</span>
         <span className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          <Stat label="방" value={counts.rooms} />
+          {/* [room 비활성화] '방' 카운트 숨김. 다시 켜려면 아래 줄 주석 해제. */}
+          {/* <Stat label="방" value={counts.rooms} /> */}
           <Stat label="벽" value={counts.walls} />
           <Stat label="문·창" value={counts.openings} />
           <Stat label="객체" value={counts.objects} />

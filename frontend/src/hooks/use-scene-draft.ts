@@ -72,6 +72,27 @@ export function useAnalyzeFromAsset() {
   });
 }
 
+/**
+ * 빈 SceneDraft 생성 — 이미지·AI 분석 없이 사용자가 처음부터 그릴 때.
+ * 성공하면 해당 floor 의 draft 목록을 무효화 → useDraftsForFloor 가 즉시 새 draft 인식.
+ */
+export function useCreateEmptyDraft() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (floorId: UUID) => sceneDraftApi.createEmpty(floorId),
+    onSuccess: (created) => {
+      qc.invalidateQueries({ queryKey: ['scene-drafts'] });
+      // 새로 만든 draft detail 도 미리 캐시에 채워둠 → 이어지는 useSceneDraft 즉시 hit.
+      qc.setQueryData(['scene-draft', created.id], created);
+      toast.info('빈 도면을 만들었어요', '이제 좌측 도구로 도면을 그려보세요.');
+    },
+    onError: (err) => {
+      const e = err as HttpError | null;
+      toast.error('빈 도면 생성 실패', e?.message ?? '잠시 후 다시 시도해주세요.');
+    },
+  });
+}
+
 export function useDeleteSceneDraft() {
   const qc = useQueryClient();
   return useMutation({
