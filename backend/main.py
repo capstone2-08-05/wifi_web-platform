@@ -6,7 +6,10 @@ from app.routers.measurements import router as measurements_router
 from app.routers.auth import router as auth_router
 from app.routers.projects import router as projects_router
 from app.routers.floors import router as floors_router
-from app.routers.scene_drafts import router as scene_drafts_router
+from app.routers.scene_drafts import (
+    router as scene_drafts_router,
+    floor_scene_drafts_router,
+)
 from app.core.errors import AppError, ErrorCode
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -38,6 +41,7 @@ from app.routers.ap_layouts import (
     router as ap_layouts_router,
     rf_run_router as rf_run_ap_layouts_router,
 )
+from app.routers.calibration_runs import router as calibration_runs_router
 from app.routers.jobs import router as jobs_router
 from app.routers.floorplan_jobs import router as floorplan_jobs_router
 from app.services.job_poller import job_poller_lifespan
@@ -98,6 +102,7 @@ app.include_router(auth_router)
 app.include_router(projects_router)
 app.include_router(floors_router)
 app.include_router(scene_drafts_router)
+app.include_router(floor_scene_drafts_router)
 app.include_router(floor_assets_router)
 app.include_router(assets_router)
 app.include_router(scene_draft_rooms_router)
@@ -123,5 +128,6 @@ app.include_router(rf_runs_router)
 app.include_router(rf_jobs_router)
 app.include_router(ap_layouts_router)
 app.include_router(rf_run_ap_layouts_router)
+app.include_router(calibration_runs_router)
 app.include_router(jobs_router)
 app.include_router(floorplan_jobs_router)

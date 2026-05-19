@@ -67,6 +67,9 @@ class ErrorCode(StrEnum):
 
     AP_LAYOUT_NOT_FOUND = "AP_LAYOUT_NOT_FOUND"
 
+    CALIBRATION_RUN_NOT_FOUND = "CALIBRATION_RUN_NOT_FOUND"
+    INVALID_CALIBRATION_STATUS = "INVALID_CALIBRATION_STATUS"
+
 
 class AppError(Exception):
     def __init__(self, code: ErrorCode, message: str, status_code: int):

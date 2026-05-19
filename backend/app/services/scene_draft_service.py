@@ -320,6 +320,7 @@ async def analyze_from_asset(
         current_user=current_user,
         upload_metadata=upload_metadata,
         created_by=current_user.email,
+        source_asset_id=str(asset.id),
     )
 
     return AnalyzeFromAssetResponse(
@@ -442,6 +443,68 @@ def _draft_object_to_response(o: DraftObject) -> DraftObjectResponse:
         metadata_json=o.metadata_json or {},
         created_at=o.created_at,
     )
+
+def create_empty_draft(
+    db: Session,
+    floor_id: UUID,
+    source_mode: str,
+    current_user: User,
+) -> SceneDraftDetailResponse:
+    """이미지/AI 분석 없이 빈 SceneDraft 생성. 사용자가 직접 도면 그릴 때 사용."""
+    floor = (
+        db.query(Floor)
+        .join(Project, Floor.project_id == Project.id)
+        .filter(
+            Floor.id == str(floor_id),
+            Project.owner_user_id == current_user.id,
+        )
+        .first()
+    )
+    if floor is None:
+        raise AppError(
+            ErrorCode.FLOOR_NOT_FOUND,
+            "Floor not found.",
+            status_code=404,
+        )
+
+    scene_draft = SceneDraft(
+        project_id=floor.project_id,
+        floor_id=floor.id,
+        source_mode=source_mode,
+        source_method=source_mode,
+        summary_json={},
+        status="draft",
+        created_by=current_user.email,
+    )
+    try:
+        db.add(scene_draft)
+        db.commit()
+        db.refresh(scene_draft)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise AppError(
+            ErrorCode.SCENE_DRAFT_SAVE_FAILED,
+            f"Failed to create empty scene draft: {exc}",
+            500,
+        ) from exc
+
+    return SceneDraftDetailResponse(
+        id=scene_draft.id,
+        project_id=scene_draft.project_id,
+        floor_id=scene_draft.floor_id,
+        source_mode=scene_draft.source_mode,
+        source_asset_id=scene_draft.source_asset_id,
+        source_method=scene_draft.source_method,
+        summary_json=scene_draft.summary_json,
+        status=scene_draft.status,
+        rooms=[],
+        walls=[],
+        openings=[],
+        objects=[],
+        created_at=scene_draft.created_at,
+        updated_at=scene_draft.updated_at,
+    )
+
 
 def delete_scene_draft(
     db: Session, scene_draft_id: str, current_user: User

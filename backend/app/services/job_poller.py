@@ -77,6 +77,10 @@ async def run_job_poller_forever() -> None:
 async def _poll_once() -> None:
     """한 사이클: running job 조회 → 오래된 건 스킵 → 상한만큼만 폴링."""
     # 임포트는 lazy — 순환 import 회피
+    from app.services.calibration_worker import (
+        JOB_TYPE_CALIBRATION,
+        poll_calibration_job,
+    )
     from app.services.floorplan_job_service import (
         JOB_TYPE_FLOORPLAN_ANALYZE,
         poll_floorplan_job,
@@ -95,7 +99,9 @@ async def _poll_once() -> None:
             .join(Project, Job.project_id == Project.id)
             .where(
                 Job.status == "running",
-                Job.job_type.in_([JOB_TYPE_FLOORPLAN_ANALYZE, JOB_TYPE_RF_SIMULATE]),
+                Job.job_type.in_(
+                    [JOB_TYPE_FLOORPLAN_ANALYZE, JOB_TYPE_RF_SIMULATE, JOB_TYPE_CALIBRATION]
+                ),
                 Job.created_at >= min_created,
             )
             .order_by(Job.created_at.asc())
@@ -119,6 +125,7 @@ async def _poll_once() -> None:
             owner_user_id=str(owner_user_id),
             floorplan_poll=poll_floorplan_job,
             rf_poll=poll_rf_job,
+            calibration_poll=poll_calibration_job,
         )
 
 
@@ -129,6 +136,7 @@ async def _poll_single(
     owner_user_id: str,
     floorplan_poll: Any,
     rf_poll: Any,
+    calibration_poll: Any,
 ) -> None:
     """단일 Job 폴링. 각 호출마다 새 세션. 권한 체크용 owner User 객체 재구성."""
     db: Session = SessionLocal()
@@ -142,6 +150,8 @@ async def _poll_single(
             await floorplan_poll(db, job_id=job_id, current_user=owner)
         elif job_type == "rf_simulate":
             await rf_poll(db, job_id=job_id, current_user=owner)
+        elif job_type == "calibration":
+            await calibration_poll(db, job_id=job_id, current_user=owner)
         else:
             logger.warning("Job %s: unknown job_type=%s, skip", job_id, job_type)
     except Exception:

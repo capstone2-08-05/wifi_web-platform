@@ -125,13 +125,18 @@ def _resolve_scene_and_asset(
 ) -> tuple[str | None, str | None]:
     """Pick the scene_version + asset that this measurement link should anchor to.
 
-    Preference: latest scene_version for the floor (and its source_asset_id);
-    fall back to the latest floorplan_image asset on the floor when no scene
-    version exists yet.
+    Preference: latest **confirmed** scene_version for the floor (and its
+    source_asset_id); fall back to the latest floorplan_image asset on the
+    floor when no confirmed scene version exists yet. Draft (is_confirmed=False)
+    versions are ignored — measurement links must anchor to a stable, user-
+    approved scene so that downstream coordinates stay consistent.
     """
     scene = db.execute(
         select(SceneVersion)
-        .where(SceneVersion.floor_id == floor_id)
+        .where(
+            SceneVersion.floor_id == floor_id,
+            SceneVersion.is_confirmed.is_(True),
+        )
         .order_by(SceneVersion.version_no.desc())
         .limit(1)
     ).scalar_one_or_none()
