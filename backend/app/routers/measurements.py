@@ -1,17 +1,22 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
 from app.db.session import get_db
+from app.models.user import User
 from app.schemas.measurement import (
+    DetectedApResponseDTO,
     MeasurementLinkContextResponseDTO,
     MeasurementLinkCreateResponseDTO,
     MeasurementPointBatchRequestDTO,
     MeasurementPointBatchResponseDTO,
+    MeasurementPointResponseDTO,
     MeasurementSessionCompleteRequestDTO,
     MeasurementSessionCompleteResponseDTO,
     MeasurementSessionCreateRequestDTO,
     MeasurementSessionResponseDTO,
 )
+from app.schemas.pagination import PaginatedResponse
 from app.services import measurement_service
 
 router = APIRouter(tags=["measurement"])
@@ -72,3 +77,67 @@ def complete_measurement_session(
     db: Session = Depends(get_db),
 ) -> MeasurementSessionCompleteResponseDTO:
     return measurement_service.complete_measurement_session(db, session_id, body)
+
+
+# ============================================================
+# §10.4 / §10.5 — 웹에서 조회 (JWT, owner check)
+# ============================================================
+@router.get(
+    "/measurement-sessions/{session_id}",
+    response_model=MeasurementSessionResponseDTO,
+    summary="측정 세션 단건 조회 (§10.4)",
+)
+def get_measurement_session(
+    session_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> MeasurementSessionResponseDTO:
+    return measurement_service.get_session(db, session_id, current_user)
+
+
+@router.get(
+    "/measurement-sessions/{session_id}/points",
+    response_model=PaginatedResponse[MeasurementPointResponseDTO],
+    summary="세션 내 측정 포인트 목록 (§10.4, 페이지네이션)",
+)
+def list_measurement_points(
+    session_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> PaginatedResponse[MeasurementPointResponseDTO]:
+    return measurement_service.list_points(
+        db, session_id, current_user, page=page, page_size=page_size
+    )
+
+
+@router.get(
+    "/floors/{floor_id}/measurement-sessions",
+    response_model=PaginatedResponse[MeasurementSessionResponseDTO],
+    summary="층의 측정 세션 목록 (§10.4)",
+)
+def list_floor_measurement_sessions(
+    floor_id: str,
+    status: str | None = Query(default=None, description="in_progress|completed 등 필터"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> PaginatedResponse[MeasurementSessionResponseDTO]:
+    return measurement_service.list_sessions_by_floor(
+        db, floor_id, current_user, page=page, page_size=page_size, status=status
+    )
+
+
+@router.get(
+    "/measurement-sessions/{session_id}/detected-aps",
+    response_model=list[DetectedApResponseDTO],
+    summary="세션 내 발견된 AP 목록 (§10.5)",
+)
+def list_detected_aps(
+    session_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[DetectedApResponseDTO]:
+    return measurement_service.list_detected_aps(db, session_id, current_user)
