@@ -19,6 +19,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+import os
+
 from app.core.errors import AppError, ErrorCode
 from app.core.settings import DATA_DIR
 
@@ -53,9 +55,16 @@ def is_local_uri(uri: str | None) -> bool:
 
 
 def static_url(key_or_uri: str) -> str:
-    """프론트에게 주는 URL (백에드 상대경로). presigned 대체."""
+    """프론트에게 주는 URL (절대경로). presigned 대체.
+
+    `BACKEND_PUBLIC_URL` env 가 있으면 그걸 prefix 로, 없으면 BACKEND_PORT 기반 localhost.
+    """
     key = parse_uri(key_or_uri)
-    return f"/storage/{key.lstrip('/')}"
+    base = os.getenv("BACKEND_PUBLIC_URL", "").rstrip("/")
+    if not base:
+        port = os.getenv("BACKEND_PORT", "8000")
+        base = f"http://localhost:{port}"
+    return f"{base}/storage/{key.lstrip('/')}"
 
 
 def resolve_path(key_or_uri: str) -> Path:

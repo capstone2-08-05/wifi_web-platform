@@ -169,22 +169,17 @@ async def _run_rf_pipeline_in_background(
                     "RF simulation requires at least 1 access point.",
                     400,
                 )
-            # ai_api 는 단일 AP 만 받음 — 첫 AP 사용. multi-AP 는 추후 N회 호출 + 합성.
-            ap_dict = access_points[0]
-            ai_ap = _convert_ap_to_ai_api(ap_dict)
             ai_plane = _build_measurement_plane(scene_json, simulation)
             ai_sim = _build_sionna_sim_section(simulation)
 
-            inputs = _SionnaCallInputs(
-                scene=ai_scene,
-                access_point=ai_ap,
-                measurement_plane=ai_plane,
-                simulation=ai_sim,
+            # ai_api 는 단일 AP 만 받음 — AP 마다 한 번씩 호출해서 셀당 max (best AP) 로 합침.
+            artifacts, full_response = await _simulate_multi_ap(
+                job_id=job_id,
+                ai_scene=ai_scene,
+                access_points=access_points,
+                ai_plane=ai_plane,
+                ai_sim=ai_sim,
                 floor_id=floor_id,
-                run_type="run",
-            )
-            _, artifacts = await ai_inference_client.simulate_rf(
-                job_id=job_id, inputs=inputs,
             )
         except SageMakerRfInferenceFailure as failure:
             job = db.get(Job, job_id)
@@ -210,10 +205,10 @@ async def _run_rf_pipeline_in_background(
                 )
             return
 
-        # values_dbm → PNG + RfMap row
+        # values_dbm → PNG + RfMap row (scene_json 도 넘겨서 방 폴리곤 마스크 적용)
         try:
             heatmap_uri, radio_map_uri, render_meta = _render_and_save_rf_outputs(
-                artifacts, rf_run_id
+                artifacts, rf_run_id, scene_json=scene_json,
             )
         except Exception as exc:
             logger.exception("RF render failed for job %s", job_id)
@@ -232,12 +227,125 @@ async def _run_rf_pipeline_in_background(
             job_id=job_id,
             rf_run_id=rf_run_id,
             artifacts=artifacts,
+            ai_api_metrics=full_response.get("metrics") or {},
             heatmap_uri=heatmap_uri,
             radio_map_uri=radio_map_uri,
             render_meta=render_meta,
         )
     finally:
         db.close()
+
+
+# ----- 멀티 AP 시뮬 (ai_api 는 단일 AP 만 받아 N번 호출 + max 합성) -----
+async def _simulate_multi_ap(
+    *,
+    job_id: str,
+    ai_scene: dict[str, Any],
+    access_points: list[dict[str, Any]],
+    ai_plane: dict[str, Any],
+    ai_sim: dict[str, Any],
+    floor_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """AP 마다 ai_api 호출 → 셀당 max RSSI (best AP coverage) 로 합성.
+
+    합성 응답 구조는 단일 AP 응답과 동일하게 맞춰서 _finalize / _render 가 그대로 동작.
+    """
+    combined_values: np.ndarray | None = None
+    combined_valid: np.ndarray | None = None
+    bounds: dict[str, Any] | None = None
+    first_response: dict[str, Any] | None = None
+
+    for i, ap_dict in enumerate(access_points):
+        ai_ap = _convert_ap_to_ai_api(ap_dict)
+        inputs = _SionnaCallInputs(
+            scene=ai_scene,
+            access_point=ai_ap,
+            measurement_plane=ai_plane,
+            simulation=ai_sim,
+            floor_id=floor_id,
+            run_type="run",
+        )
+        rf_result, artifacts = await ai_inference_client.simulate_rf(
+            job_id=f"{job_id}-ap{i}", inputs=inputs,
+        )
+        radiomap = artifacts.get("radiomap") or {}
+        values = radiomap.get("values_dbm")
+        if not values:
+            logger.warning("AP %s response missing radiomap.values_dbm — skipped", ai_ap.get("id"))
+            continue
+        arr = np.asarray(values, dtype=np.float32)
+        valid = np.isfinite(arr) & (arr > -200)
+
+        if combined_values is None:
+            combined_values = np.where(valid, arr, -np.inf)
+            combined_valid = valid
+            bounds = radiomap.get("bounds_m") or {}
+            first_response = rf_result.result_payload
+        else:
+            # 셀당 max RSSI
+            ap_arr = np.where(valid, arr, -np.inf)
+            combined_values = np.maximum(combined_values, ap_arr)
+            combined_valid = combined_valid | valid
+
+    if combined_values is None:
+        raise AppError(
+            ErrorCode.RF_SIMULATION_FAILED,
+            "All AP simulations failed (no valid radiomap returned).",
+            502,
+        )
+
+    # 합성 결과를 단일 AP 응답 형식으로 패킹
+    finite_mask = np.isfinite(combined_values)
+    final_values = np.where(finite_mask, combined_values, -300.0)  # -inf → very low dBm
+
+    grid_shape = list(combined_values.shape)
+    combined_artifacts: dict[str, Any] = {
+        "radiomap": {
+            "values_dbm": final_values.tolist(),
+            "grid_shape": grid_shape,
+            "bounds_m": bounds or {},
+        },
+        "rssi": {
+            "min": float(combined_values[combined_valid].min()) if combined_valid.any() else None,
+            "max": float(combined_values[combined_valid].max()) if combined_valid.any() else None,
+            "mean": float(combined_values[combined_valid].mean()) if combined_valid.any() else None,
+            "valid": {},
+        },
+        "valid_ratio": float(combined_valid.mean()) if combined_valid.size else 0.0,
+    }
+
+    # 평균 RSSI / 커버리지 계산 (프론트가 metrics_json.rss_dbm / coverage_summary 읽음)
+    valid_arr = combined_values[combined_valid]
+    rssi_mean = float(valid_arr.mean()) if valid_arr.size else None
+    rssi_min = float(valid_arr.min()) if valid_arr.size else None
+    rssi_max = float(valid_arr.max()) if valid_arr.size else None
+
+    total_cells = combined_valid.size
+    valid_cells = int(combined_valid.sum())
+    ge_67 = float((valid_arr >= -67).mean()) if valid_arr.size else 0.0
+    ge_70 = float((valid_arr >= -70).mean()) if valid_arr.size else 0.0
+    ge_75 = float((valid_arr >= -75).mean()) if valid_arr.size else 0.0
+    valid_cell_ratio = float(valid_cells / total_cells) if total_cells else 0.0
+
+    combined_metrics: dict[str, Any] = {
+        "rssi_summary": {"min": rssi_min, "max": rssi_max, "mean": rssi_mean},
+        "coverage_summary": {
+            "ge_-67": ge_67,
+            "ge_-70": ge_70,
+            "ge_-75": ge_75,
+            "valid_cell_count": valid_cells,
+            "total_cell_count": total_cells,
+            "valid_cell_ratio": valid_cell_ratio,
+        },
+        "valid_ratio": valid_cell_ratio,
+        "n_access_points": len(access_points),
+    }
+
+    full_response = dict(first_response or {})
+    full_response["metrics"] = combined_metrics
+    full_response["artifacts"] = combined_artifacts
+
+    return combined_artifacts, full_response
 
 
 # ----- 변환 헬퍼 (legacy scene.json → ai_api FloorScene) -----
@@ -274,14 +382,20 @@ def _convert_scene_to_ai_api(scene_json: dict[str, Any]) -> dict[str, Any]:
 
 
 def _convert_ap_to_ai_api(ap: dict[str, Any]) -> dict[str, Any]:
-    """legacy access_point dict → ai_api AccessPoint.
+    """프론트 access_point dict → ai_api AccessPoint.
 
-    legacy 키: {x, y, z?, tx_power_dbm?, frequency_ghz?, name?}
-    ai_api 키: {id, position_m, tx_power_dbm?, frequency_ghz?, name?}
+    프론트는 {id, x_m, y_m, z_m} 보냄. legacy {x, y, z} 도 호환.
+    ai_api 는 {id, position_m: [x, y, z], ...} 받음.
     """
-    x = float(ap.get("x") or ap.get("position", [0, 0, 0])[0])
-    y = float(ap.get("y") or ap.get("position", [0, 0, 0])[1])
-    z = float(ap.get("z") or ap.get("z_m") or 2.5)
+    pos = ap.get("position") or ap.get("position_m")
+    if isinstance(pos, (list, tuple)) and len(pos) >= 2:
+        x, y = float(pos[0]), float(pos[1])
+        z = float(pos[2]) if len(pos) >= 3 else float(ap.get("z_m") or ap.get("z") or 2.5)
+    else:
+        x = float(ap.get("x_m") if ap.get("x_m") is not None else (ap.get("x") or 0.0))
+        y = float(ap.get("y_m") if ap.get("y_m") is not None else (ap.get("y") or 0.0))
+        z = float(ap.get("z_m") if ap.get("z_m") is not None else (ap.get("z") or 2.5))
+
     out: dict[str, Any] = {
         "id": str(ap.get("id") or ap.get("name") or "ap1"),
         "position_m": [x, y, z],
@@ -291,34 +405,87 @@ def _convert_ap_to_ai_api(ap: dict[str, Any]) -> dict[str, Any]:
         out["tx_power_dbm"] = float(ap["tx_power_dbm"])
     if ap.get("frequency_ghz") is not None:
         out["frequency_ghz"] = float(ap["frequency_ghz"])
+    elif ap.get("frequency_hz") is not None:
+        out["frequency_ghz"] = float(ap["frequency_hz"]) / 1e9
     return out
 
 
 def _build_measurement_plane(
     scene_json: dict[str, Any], simulation: dict[str, Any]
 ) -> dict[str, Any]:
-    z_m = float(simulation.get("measurement_z_m") or 1.0)
-    cell_size_m = float(simulation.get("cell_size_m") or 0.25)
+    """프론트 simulation dict → ai_api MeasurementPlane.
+
+    프론트는 measurement_plane_z_m / resolution_m 으로 보냄.
+    ai_api 는 z_m / cell_size_m 받음.
+    """
+    z_m = float(
+        simulation.get("measurement_plane_z_m")
+        or simulation.get("measurement_z_m")
+        or simulation.get("z_m")
+        or 1.0
+    )
+    cell_size_m = float(
+        simulation.get("resolution_m")
+        or simulation.get("cell_size_m")
+        or 0.25
+    )
     return {"z_m": z_m, "cell_size_m": cell_size_m}
 
 
 def _build_sionna_sim_section(simulation: dict[str, Any]) -> dict[str, Any]:
-    """legacy simulation dict → ai_api simulation 객체. 빈 값들은 ai_api default 사용."""
+    """프론트 simulation dict → ai_api simulation {physical, propagation, solver}.
+
+    프론트 flat 키 (frequency_hz, tx_power_dbm, max_depth, samples_per_tx, seed)
+    들을 ai_api 의 nested 구조로 매핑한다. 이미 nested 면 그대로 통과.
+    """
     out: dict[str, Any] = {}
-    if "physical" in simulation:
-        out["physical"] = simulation["physical"]
-    if "propagation" in simulation:
-        out["propagation"] = simulation["propagation"]
-    if "solver" in simulation:
-        out["solver"] = simulation["solver"]
+
+    # 이미 nested 면 그대로
+    if "physical" in simulation or "propagation" in simulation or "solver" in simulation:
+        if "physical" in simulation:
+            out["physical"] = simulation["physical"]
+        if "propagation" in simulation:
+            out["propagation"] = simulation["propagation"]
+        if "solver" in simulation:
+            out["solver"] = simulation["solver"]
+        return out
+
+    # flat → nested 변환
+    physical: dict[str, Any] = {}
+    if simulation.get("frequency_ghz") is not None:
+        physical["frequency_ghz"] = float(simulation["frequency_ghz"])
+    elif simulation.get("frequency_hz") is not None:
+        physical["frequency_ghz"] = float(simulation["frequency_hz"]) / 1e9
+    if simulation.get("tx_power_dbm") is not None:
+        physical["tx_power_dbm"] = float(simulation["tx_power_dbm"])
+    if simulation.get("tx_power_offset_db") is not None:
+        physical["tx_power_offset_db"] = float(simulation["tx_power_offset_db"])
+    if physical:
+        out["physical"] = physical
+
+    solver: dict[str, Any] = {}
+    if simulation.get("max_depth") is not None:
+        solver["max_depth"] = int(simulation["max_depth"])
+    if simulation.get("samples_per_tx") is not None:
+        solver["samples_per_tx"] = int(simulation["samples_per_tx"])
+    if simulation.get("seed") is not None:
+        solver["seed"] = int(simulation["seed"])
+    if solver:
+        out["solver"] = solver
+
     return out
 
 
 # ----- 결과 렌더링 (values_dbm → PNG + npy → 로컬 저장) -----
 def _render_and_save_rf_outputs(
-    artifacts: dict[str, Any], rf_run_id: str
+    artifacts: dict[str, Any],
+    rf_run_id: str,
+    scene_json: dict[str, Any] | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
-    """ai_api artifacts.radiomap.values_dbm → heatmap.png + radio_map.npy (로컬 저장)."""
+    """ai_api artifacts.radiomap.values_dbm → heatmap.png + radio_map.npy (로컬 저장).
+
+    scene_json 의 rooms 폴리곤이 있으면 그 영역으로 alpha 마스크 (도면 밖 투명).
+    """
     radiomap = artifacts.get("radiomap") or {}
     values = radiomap.get("values_dbm")
     if not values:
@@ -330,8 +497,11 @@ def _render_and_save_rf_outputs(
     arr = np.asarray(values, dtype=np.float32)
     bounds = radiomap.get("bounds_m") or {}
 
+    # 방 폴리곤 마스크 (도면 안쪽만 칠해지게)
+    room_mask = _build_room_mask(scene_json, arr.shape, bounds) if scene_json else None
+
     # heatmap PNG (matplotlib jet, 자동 vmin/vmax)
-    png_bytes = _render_heatmap_png(arr, bounds)
+    png_bytes = _render_heatmap_png(arr, bounds, room_mask=room_mask)
     npy_buf = io.BytesIO()
     np.save(npy_buf, arr)
 
@@ -353,35 +523,100 @@ def _render_and_save_rf_outputs(
     return heatmap_uri, radio_map_uri, render_meta
 
 
-def _render_heatmap_png(arr: np.ndarray, bounds: dict[str, Any]) -> bytes:
-    """matplotlib 으로 RSSI heatmap PNG 생성."""
-    # lazy import — matplotlib 무거움
-    import matplotlib
+def _build_room_mask(
+    scene_json: dict[str, Any] | None,
+    shape: tuple[int, int],
+    bounds: dict[str, Any],
+) -> np.ndarray | None:
+    """rooms 폴리곤들을 raster 화해서 (H, W) bool mask 반환. True = 방 안쪽."""
+    if not scene_json:
+        return None
+    rooms = scene_json.get("rooms") or []
+    if not rooms or not bounds:
+        return None
+    from PIL import Image, ImageDraw
 
+    h, w = shape
+    min_x = float(bounds.get("min_x", 0.0))
+    max_x = float(bounds.get("max_x", 0.0))
+    min_y = float(bounds.get("min_y", 0.0))
+    max_y = float(bounds.get("max_y", 0.0))
+    if max_x <= min_x or max_y <= min_y:
+        return None
+
+    sx = w / (max_x - min_x)
+    sy = h / (max_y - min_y)
+
+    img = Image.new("L", (w, h), 0)
+    drawer = ImageDraw.Draw(img)
+    for r in rooms:
+        pts = r.get("points") or r.get("polygon_xy") or []
+        if len(pts) < 3:
+            continue
+        # 미터 → 픽셀. origin=lower 라 y 축 뒤집기 X (matplotlib 이 알아서 처리)
+        pixel_pts = [
+            ((float(p[0]) - min_x) * sx, (float(p[1]) - min_y) * sy)
+            for p in pts
+        ]
+        drawer.polygon(pixel_pts, fill=255)
+
+    return np.array(img) > 0
+
+
+def _render_heatmap_png(
+    arr: np.ndarray,
+    bounds: dict[str, Any],
+    room_mask: np.ndarray | None = None,
+) -> bytes:
+    """matplotlib 으로 RSSI heatmap PNG 생성 (축/제목/컬러바 없는 raw 이미지).
+
+    프론트가 도면 위에 bounds 영역으로 오버레이하므로, PNG 는 색상 그리드만 담아야
+    위치/크기가 1:1 로 맞는다. 매우 낮은 RSSI (invalid cell) 는 vmin 으로 clip.
+    """
+    import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    extent = None
-    if bounds:
-        extent = (
-            float(bounds.get("min_x", 0.0)),
-            float(bounds.get("max_x", arr.shape[1])),
-            float(bounds.get("min_y", 0.0)),
-            float(bounds.get("max_y", arr.shape[0])),
-        )
+    # invalid cell (Sionna 가 ray tracing 못 닿은 영역 — -inf / 매우 낮은 값) 은
+    # alpha=0 으로 투명 처리해서 도면 밖이 안 칠해지게 한다.
+    valid_mask = np.isfinite(arr) & (arr > -200)
+    valid = arr[valid_mask]
+    if valid.size > 0:
+        vmin = float(np.percentile(valid, 5))
+        vmax = float(np.percentile(valid, 95))
+        if vmax - vmin < 8.0:
+            vmax = vmin + 8.0
+    else:
+        vmin, vmax = -90.0, -30.0
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    im = ax.imshow(
-        arr, cmap="jet", origin="lower",
-        extent=extent, interpolation="bilinear",
+    # 출력 픽셀 크기를 grid_shape 와 비슷한 비율로
+    h, w = arr.shape
+    fig = plt.figure(figsize=(w / 50.0, h / 50.0), frameon=False)
+    ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
+    ax.set_axis_off()
+
+    # 방 폴리곤이 있으면: 방 안쪽은 무조건 칠함. invalid 셀 (Sionna 가 못 닿은 곳) 은
+    # vmin 으로 fallback → 진한 파란색 (약한 신호 의미).
+    # 방 폴리곤이 없으면: valid_mask 만 사용 (옛 동작).
+    if room_mask is not None and room_mask.shape == arr.shape:
+        display_arr = np.where(valid_mask, arr, vmin)
+        alpha = room_mask.astype(np.float32)
+    else:
+        display_arr = arr
+        alpha = valid_mask.astype(np.float32)
+
+    # origin="upper" — 프론트가 Y-down (위가 작은 y) 으로 표시하므로 PNG 도 같은 방향.
+    # PIL room_mask 도 Y-down 이라 자연스럽게 일치.
+    ax.imshow(
+        display_arr, cmap="jet", origin="upper",
+        vmin=vmin, vmax=vmax, interpolation="bilinear", alpha=alpha,
     )
-    fig.colorbar(im, ax=ax, label="RSSI (dBm)")
-    ax.set_title("Sionna RT RSSI Heatmap")
-    ax.set_xlabel("x (m)")
-    ax.set_ylabel("y (m)")
+    # 배경 투명 (figure 자체 배경도)
+    fig.patch.set_alpha(0.0)
+    ax.patch.set_alpha(0.0)
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
+    fig.savefig(buf, format="png", dpi=150, pad_inches=0, bbox_inches=None, transparent=True)
     plt.close(fig)
     return buf.getvalue()
 
@@ -392,58 +627,72 @@ def _finalize_rf_job(
     job_id: str,
     rf_run_id: str,
     artifacts: dict[str, Any],
+    ai_api_metrics: dict[str, Any],
     heatmap_uri: str,
     radio_map_uri: str,
     render_meta: dict[str, Any],
 ) -> None:
-    """Job + RfRun done 마킹 + RfMap row 2개 생성. race-safe."""
+    """Job + RfRun done 마킹 + RfMap row 2개 생성. race-safe.
+
+    metrics_json 구조는 프론트 SimulationPage.parseMetrics 가 읽는 형식 사용:
+      - rss_dbm: {min, max, mean}            ← 평균 RSSI 표시
+      - coverage_summary: {ge_-67, valid_cell_ratio, ...}  ← 면적 커버리지 계산
+    """
     locked = _lock_job(db, job_id)
     if locked.status != JOB_STATUS_RUNNING:
         return
 
+    # ai_api metrics → 프론트 호환 키로 매핑
+    rss_summary = (
+        ai_api_metrics.get("rssi_summary")
+        or (artifacts.get("rssi") or {}).get("valid")
+        or {}
+    )
+    rss_dbm = {
+        "min": rss_summary.get("min"),
+        "max": rss_summary.get("max"),
+        "mean": rss_summary.get("mean"),
+    }
+    coverage_summary = (
+        ai_api_metrics.get("coverage_summary")
+        or artifacts.get("coverage_summary_valid_only")
+        or artifacts.get("coverage")
+        or {}
+    )
+    bounds = render_meta["bounds_m"] or {}
+    grid_shape = render_meta["grid_shape"]
+    valid_ratio = ai_api_metrics.get("valid_ratio") or artifacts.get("valid_ratio")
+
+    metrics_payload: dict[str, Any] = {
+        "rss_dbm": rss_dbm,
+        "coverage_summary": coverage_summary,
+        "valid_ratio": valid_ratio,
+        "grid_shape": grid_shape,
+        "bounds_m": bounds,
+        "ai_api_metrics": ai_api_metrics,  # 디버그용 원본
+    }
+
     rf_run = db.get(RfRun, rf_run_id)
     if rf_run is not None:
         rf_run.status = JOB_STATUS_DONE
-        rf_run.metrics_json = {
-            "radiomap": {
-                "grid_shape": render_meta["grid_shape"],
-                "bounds_m": render_meta["bounds_m"],
-            },
-            "rssi": {
-                "min": render_meta["min_dbm"],
-                "max": render_meta["max_dbm"],
-                "mean": render_meta["mean_dbm"],
-            },
-            "ai_api_metrics": artifacts.get("rssi") or {},
-            "coverage": artifacts.get("coverage") or {},
-            "valid_ratio": artifacts.get("valid_ratio"),
-        }
+        rf_run.metrics_json = metrics_payload
 
         cell_size_m = 0.25
-        bounds = render_meta["bounds_m"] or {}
-        # bounds + grid_shape 로부터 cell size 추정
-        shape = render_meta["grid_shape"]
-        if bounds and len(shape) == 2 and shape[1] > 0:
+        if bounds and len(grid_shape) == 2 and grid_shape[1] > 0:
             cell_size_m = (
                 float(bounds.get("max_x", 0)) - float(bounds.get("min_x", 0))
-            ) / float(shape[1])
+            ) / float(grid_shape[1])
         resolution_cm = max(1, int(round(cell_size_m * 100)))
 
-        metrics = {
-            "grid_shape": render_meta["grid_shape"],
-            "min_dbm": render_meta["min_dbm"],
-            "max_dbm": render_meta["max_dbm"],
-            "mean_dbm": render_meta["mean_dbm"],
-        }
         db.add(RfMap(
             rf_run_id=rf_run.id, map_type="heatmap",
             resolution_cm=resolution_cm, storage_url=heatmap_uri,
-            bounds_json=bounds, metrics_json=metrics,
+            bounds_json=bounds, metrics_json=metrics_payload,
         ))
         db.add(RfMap(
             rf_run_id=rf_run.id, map_type="radio_map_dbm",
             resolution_cm=resolution_cm, storage_url=radio_map_uri,
-            bounds_json=bounds, metrics_json=metrics,
+            bounds_json=bounds, metrics_json=metrics_payload,
         ))
 
     locked.status = JOB_STATUS_DONE
