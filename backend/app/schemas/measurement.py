@@ -183,3 +183,25 @@ class DetectedApResponseDTO(BaseModel):
     rssi_avg: float | None = None
     rssi_min: float | None = None
     rssi_max: float | None = None
+
+
+# ============================================================
+# GP 보간 응답 (#81)
+# ============================================================
+class EstimatedRssiRangeDTO(BaseModel):
+    min: float
+    max: float
+    mean: float
+
+
+class EstimatedCoverageResponseDTO(BaseModel):
+    """GP regression 결과. mean/uncertainty heatmap presigned URL + 메타."""
+    heatmap_url: str           # 평균 RSSI heatmap (presigned)
+    uncertainty_url: str       # 불확실성 (std) heatmap (presigned)
+    bounds: FloorBoundsDTO     # 도면 좌표 영역
+    grid_shape: list[int]      # [H, W]
+    grid_resolution_m: float
+    rssi_range: EstimatedRssiRangeDTO  # 추정 grid 의 min/max/mean (dBm)
+    uncertainty_max_db: float
+    input_point_count: int     # GP 학습에 쓴 측정점 개수
+    kernel_repr: str           # 학습된 kernel 정보 (디버깅)

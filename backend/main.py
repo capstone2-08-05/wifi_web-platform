@@ -35,7 +35,7 @@ from app.routers.material_hypotheses import (
     wall_hypotheses_router,
     hypotheses_router,
 )
-from app.routers.rf_runs import router as rf_runs_router
+from app.routers.rf_runs import router as rf_runs_router, floor_rf_runs_router
 from app.routers.rf_jobs import router as rf_jobs_router
 from app.routers.ap_layouts import (
     router as ap_layouts_router,
@@ -125,6 +125,7 @@ app.include_router(materials_router)
 app.include_router(wall_hypotheses_router)
 app.include_router(hypotheses_router)
 app.include_router(rf_runs_router)
+app.include_router(floor_rf_runs_router)
 app.include_router(rf_jobs_router)
 app.include_router(ap_layouts_router)
 app.include_router(rf_run_ap_layouts_router)

@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Path, status
+from fastapi import APIRouter, Depends, Path, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, verify_internal_api_key
 from app.db.session import get_db
 from app.models.user import User
+from app.schemas.pagination import PaginatedResponse
 from app.schemas.rf_map import RfMapCreate, RfMapResponse
 from app.schemas.rf_run import (
     RfRunCreate,
@@ -20,6 +21,25 @@ from app.services import rf_run_service
 
 
 router = APIRouter(prefix="/rf-runs", tags=["rf-runs"])
+floor_rf_runs_router = APIRouter(prefix="/floors", tags=["rf-runs"])
+
+
+@floor_rf_runs_router.get(
+    "/{floor_id}/rf-runs",
+    response_model=PaginatedResponse[RfRunResponse],
+    summary="층의 RF Run 목록 (created_at desc, status 필터, 페이지네이션)",
+)
+def list_floor_rf_runs(
+    floor_id: UUID = Path(...),
+    status: str | None = Query(default=None, description="queued|running|completed|failed 등"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> PaginatedResponse[RfRunResponse]:
+    return rf_run_service.list_by_floor(
+        db, floor_id=floor_id, user=current_user, page=page, page_size=page_size, status=status
+    )
 
 
 @router.post(
