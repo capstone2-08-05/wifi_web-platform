@@ -15,26 +15,33 @@ from app.core.settings import (
     MEASUREMENT_LINK_TTL_SECONDS,
     MEASUREMENT_WEB_FALLBACK_BASE_URL,
 )
+from app.core.geom import wkb_to_geojson
 from app.models.asset import Asset
 from app.models.floor import Floor
 from app.models.measurement_link import MeasurementLink
 from app.models.measurement_point import MeasurementPoint
 from app.models.measurement_session import MeasurementSession
+from app.models.project import Project
 from app.models.scene_version import SceneVersion
+from app.models.user import User
 from app.schemas.measurement import (
     CoordinateSystemDTO,
+    DetectedApResponseDTO,
     FloorBoundsDTO,
+    FloorPositionDTO,
     FloorplanInfoDTO,
     MeasurementLinkContextResponseDTO,
     MeasurementLinkCreateResponseDTO,
     MeasurementPointBatchRequestDTO,
     MeasurementPointBatchResponseDTO,
+    MeasurementPointResponseDTO,
     MeasurementSessionCompleteRequestDTO,
     MeasurementSessionCompleteResponseDTO,
     MeasurementSessionCreateRequestDTO,
     MeasurementSessionResponseDTO,
     RssiRangeDTO,
 )
+from app.schemas.pagination import PaginatedResponse
 
 FLOORPLAN_ASSET_TYPE = "floorplan_image"
 
@@ -400,3 +407,200 @@ def complete_measurement_session(
             avg=float(rssi_avg) if rssi_avg is not None else None,
         ),
     )
+
+
+# ============================================================
+# §10.4 / §10.5 조회 API (JWT — 본인 소유 floor 의 데이터만)
+# ============================================================
+def _load_owned_session(
+    db: Session, session_id: str, user: User
+) -> MeasurementSession:
+    _validate_uuid(session_id, "session_id")
+    row = (
+        db.query(MeasurementSession)
+        .join(Project, MeasurementSession.project_id == Project.id)
+        .filter(
+            MeasurementSession.id == session_id,
+            Project.owner_user_id == user.id,
+        )
+        .one_or_none()
+    )
+    if row is None:
+        raise AppError(
+            ErrorCode.MEASUREMENT_SESSION_NOT_FOUND,
+            f"Measurement session not found: {session_id}",
+            404,
+        )
+    return row
+
+
+def _validate_owned_floor(db: Session, floor_id: str, user: User) -> None:
+    _validate_uuid(floor_id, "floor_id")
+    floor = (
+        db.query(Floor)
+        .join(Project, Floor.project_id == Project.id)
+        .filter(Floor.id == floor_id, Project.owner_user_id == user.id)
+        .one_or_none()
+    )
+    if floor is None:
+        raise AppError(
+            ErrorCode.FLOOR_NOT_FOUND,
+            f"Floor not found: {floor_id}",
+            404,
+        )
+
+
+def _session_to_response(row: MeasurementSession) -> MeasurementSessionResponseDTO:
+    # MeasurementSession 자체엔 asset_id/scene_version_id 가 없음 (link 가 가짐).
+    # 호환을 위해 None 으로 둠 — 필요시 link 통해 조회 가능.
+    return MeasurementSessionResponseDTO(
+        id=row.id,
+        project_id=row.project_id,
+        floor_id=row.floor_id,
+        scene_version_id=None,
+        asset_id=None,
+        measurement_type=row.measurement_type,
+        status=row.status,
+        created_at=row.created_at,
+    )
+
+
+def get_session(
+    db: Session, session_id: str, user: User
+) -> MeasurementSessionResponseDTO:
+    """§10.4 — 측정 세션 단건 조회."""
+    return _session_to_response(_load_owned_session(db, session_id, user))
+
+
+def _point_to_response(row: MeasurementPoint) -> MeasurementPointResponseDTO:
+    gj = wkb_to_geojson(row.point_geom)
+    coords = (gj or {}).get("coordinates") or [0.0, 0.0]
+    z = float(row.z_m) if row.z_m is not None else 0.0
+    return MeasurementPointResponseDTO(
+        id=row.id,
+        session_id=row.session_id,
+        client_point_id=row.client_point_id,
+        batch_id=row.batch_id,
+        floor_position=FloorPositionDTO(
+            x=float(coords[0]), y=float(coords[1]), z=z
+        ),
+        rssi_dbm=float(row.rssi_dbm) if row.rssi_dbm is not None else None,
+        ap_bssid=row.ap_bssid,
+        ap_ssid=row.ap_ssid,
+        channel=row.channel,
+        frequency_mhz=row.frequency_mhz,
+        timestamp_at_point=row.timestamp_at_point,
+        ar_tracking_state=row.ar_tracking_state,
+        ar_confidence=float(row.ar_confidence) if row.ar_confidence is not None else None,
+        step_index=row.step_index,
+        metadata_json=row.metadata_json or {},
+        created_at=row.created_at,
+    )
+
+
+def list_points(
+    db: Session,
+    session_id: str,
+    user: User,
+    page: int,
+    page_size: int,
+) -> PaginatedResponse[MeasurementPointResponseDTO]:
+    """§10.4 — 세션 내 측정 포인트 페이지네이션 조회."""
+    _load_owned_session(db, session_id, user)
+
+    total = db.execute(
+        select(func.count(MeasurementPoint.id)).where(
+            MeasurementPoint.session_id == session_id
+        )
+    ).scalar() or 0
+
+    rows = (
+        db.execute(
+            select(MeasurementPoint)
+            .where(MeasurementPoint.session_id == session_id)
+            .order_by(MeasurementPoint.step_index.asc().nullslast(), MeasurementPoint.created_at.asc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        .scalars()
+        .all()
+    )
+    return PaginatedResponse[MeasurementPointResponseDTO](
+        items=[_point_to_response(r) for r in rows],
+        page=page,
+        page_size=page_size,
+        total=int(total),
+    )
+
+
+def list_sessions_by_floor(
+    db: Session,
+    floor_id: str,
+    user: User,
+    page: int,
+    page_size: int,
+    status: str | None = None,
+) -> PaginatedResponse[MeasurementSessionResponseDTO]:
+    """§10.4 — 층의 모든 측정 세션 목록 (페이지네이션 + status 필터)."""
+    _validate_owned_floor(db, floor_id, user)
+
+    base = (
+        db.query(MeasurementSession)
+        .filter(MeasurementSession.floor_id == floor_id)
+    )
+    if status is not None:
+        base = base.filter(MeasurementSession.status == status)
+
+    total = base.count()
+    rows = (
+        base.order_by(MeasurementSession.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return PaginatedResponse[MeasurementSessionResponseDTO](
+        items=[_session_to_response(r) for r in rows],
+        page=page,
+        page_size=page_size,
+        total=int(total),
+    )
+
+
+def list_detected_aps(
+    db: Session, session_id: str, user: User
+) -> list[DetectedApResponseDTO]:
+    """§10.5 — 세션 내 ap_bssid 별 집계."""
+    _load_owned_session(db, session_id, user)
+
+    rows = db.execute(
+        select(
+            MeasurementPoint.ap_bssid,
+            func.max(MeasurementPoint.ap_ssid).label("ap_ssid"),
+            func.max(MeasurementPoint.channel).label("channel"),
+            func.max(MeasurementPoint.frequency_mhz).label("frequency_mhz"),
+            func.count(MeasurementPoint.id).label("point_count"),
+            func.avg(MeasurementPoint.rssi_dbm).label("rssi_avg"),
+            func.min(MeasurementPoint.rssi_dbm).label("rssi_min"),
+            func.max(MeasurementPoint.rssi_dbm).label("rssi_max"),
+        )
+        .where(
+            MeasurementPoint.session_id == session_id,
+            MeasurementPoint.ap_bssid.isnot(None),
+        )
+        .group_by(MeasurementPoint.ap_bssid)
+        .order_by(func.count(MeasurementPoint.id).desc())
+    ).all()
+
+    return [
+        DetectedApResponseDTO(
+            ap_bssid=r.ap_bssid,
+            ap_ssid=r.ap_ssid,
+            channel=r.channel,
+            frequency_mhz=r.frequency_mhz,
+            point_count=int(r.point_count),
+            rssi_avg=float(r.rssi_avg) if r.rssi_avg is not None else None,
+            rssi_min=float(r.rssi_min) if r.rssi_min is not None else None,
+            rssi_max=float(r.rssi_max) if r.rssi_max is not None else None,
+        )
+        for r in rows
+    ]

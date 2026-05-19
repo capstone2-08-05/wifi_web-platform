@@ -144,3 +144,42 @@ class MeasurementSessionCompleteResponseDTO(BaseModel):
     duration_seconds: int
     ap_count: int
     rssi_range: RssiRangeDTO
+
+
+# ============================================================
+# §10.4 / §10.5 조회 응답 DTO
+# ============================================================
+class MeasurementPointResponseDTO(BaseModel):
+    """§10.4 — 측정 포인트 단건 조회 응답."""
+    id: str
+    session_id: str
+    client_point_id: str | None = None
+    batch_id: str | None = None
+    floor_position: FloorPositionDTO
+    rssi_dbm: float | None = None
+    ap_bssid: str | None = None
+    ap_ssid: str | None = None
+    channel: int | None = None
+    frequency_mhz: int | None = None
+    timestamp_at_point: datetime | None = None
+    ar_tracking_state: str | None = None
+    ar_confidence: float | None = None
+    step_index: int | None = None
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+    @field_serializer("timestamp_at_point", "created_at", when_used="unless-none")
+    def _serialize_dt(self, value: datetime) -> str:
+        return _utc_iso_z(value)
+
+
+class DetectedApResponseDTO(BaseModel):
+    """§10.5 — 세션 내에서 측정된 고유 AP 집계."""
+    ap_bssid: str
+    ap_ssid: str | None = None
+    channel: int | None = None
+    frequency_mhz: int | None = None
+    point_count: int
+    rssi_avg: float | None = None
+    rssi_min: float | None = None
+    rssi_max: float | None = None
