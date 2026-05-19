@@ -4,16 +4,18 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, ErrorCode
+from app.models.floor import Floor
 from app.models.job import Job
 from app.models.project import Project
 from app.models.rf_map import RfMap
 from app.models.rf_run import RfRun
 from app.models.scene_version import SceneVersion
 from app.models.user import User
+from app.schemas.pagination import PaginatedResponse
 from app.schemas.rf_map import RfMapCreate, RfMapResponse
 from app.schemas.rf_run import (
     RfRunCreate,
@@ -146,6 +148,52 @@ async def create_rf_run(
 
 def get_rf_run(db: Session, rf_run_id: UUID, user: User) -> RfRunResponse:
     return _to_response(_get_owned_rf_run(db, rf_run_id, user))
+
+
+def list_by_floor(
+    db: Session,
+    floor_id: UUID,
+    user: User,
+    page: int,
+    page_size: int,
+    status: str | None = None,
+) -> PaginatedResponse[RfRunResponse]:
+    """층의 RF Run 목록 (페이지네이션 + status 필터). created_at desc."""
+    # 권한: floor 소유 확인
+    floor = db.execute(
+        select(Floor)
+        .join(Project, Floor.project_id == Project.id)
+        .where(Floor.id == str(floor_id), Project.owner_user_id == user.id)
+    ).scalar_one_or_none()
+    if floor is None:
+        raise AppError(
+            ErrorCode.FLOOR_NOT_FOUND,
+            "Floor not found.",
+            status_code=404,
+        )
+
+    base = select(RfRun).where(RfRun.floor_id == str(floor_id))
+    count_stmt = select(func.count(RfRun.id)).where(RfRun.floor_id == str(floor_id))
+    if status is not None:
+        base = base.where(RfRun.status == status)
+        count_stmt = count_stmt.where(RfRun.status == status)
+
+    total = db.execute(count_stmt).scalar() or 0
+    rows = (
+        db.execute(
+            base.order_by(RfRun.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        .scalars()
+        .all()
+    )
+    return PaginatedResponse[RfRunResponse](
+        items=[_to_response(r) for r in rows],
+        page=page,
+        page_size=page_size,
+        total=int(total),
+    )
 
 
 def _rf_map_to_response(m: RfMap) -> RfMapResponse:
