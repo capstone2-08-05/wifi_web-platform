@@ -566,6 +566,98 @@ def list_sessions_by_floor(
     )
 
 
+def estimate_session_coverage(
+    db: Session,
+    session_id: str,
+    user: User,
+    grid_resolution_m: float = 0.5,
+) -> "EstimatedCoverageResponseDTO":
+    """§81 — 세션의 측정점들을 GP regression 으로 dense map 추정.
+
+    1. 권한 + 세션 로드
+    2. 측정점 (x, y, rssi) 로드 — rssi NULL 인 점은 제외
+    3. floor 의 도면 bounds 계산 (없으면 측정점 bounding box)
+    4. GP fit + predict
+    5. heatmap PNG 생성 + S3 업로드
+    6. presigned URL 응답
+    """
+    # lazy import — 무거운 sklearn / matplotlib 을 모듈 import 단에서 끌어오지 않음
+    from app.schemas.measurement import (
+        EstimatedCoverageResponseDTO,
+        EstimatedRssiRangeDTO,
+    )
+    from app.services._s3 import presigned_get_url
+    from app.services.measurement_estimation.gp_estimator import estimate_coverage
+    from app.services.measurement_estimation.heatmap import render_and_upload
+
+    session_row = _load_owned_session(db, session_id, user)
+
+    # 측정점 (rssi 있는 것만) 로드
+    rows = (
+        db.execute(
+            select(MeasurementPoint).where(
+                MeasurementPoint.session_id == session_row.id,
+                MeasurementPoint.rssi_dbm.isnot(None),
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    points: list[tuple[float, float, float]] = []
+    for r in rows:
+        gj = wkb_to_geojson(r.point_geom)
+        coords = (gj or {}).get("coordinates") or [0.0, 0.0]
+        points.append((float(coords[0]), float(coords[1]), float(r.rssi_dbm)))
+
+    if len(points) < 3:
+        raise AppError(
+            ErrorCode.INVALID_REQUEST_BODY,
+            f"Need at least 3 measurement points with RSSI for estimation (got {len(points)})",
+            400,
+        )
+
+    # bounds — floor 의 floorplan 메타데이터 → 없으면 측정점 bbox
+    asset = _latest_floorplan_asset(db, str(session_row.floor_id))
+    floorplan = _floorplan_info_from_asset(db, asset.id if asset else None)
+    bounds_dto = _bounds_from_floorplan(floorplan)
+    if bounds_dto.max_x <= 0 or bounds_dto.max_y <= 0:
+        # fallback: 측정점 bbox + 1m 마진
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        bounds_dto = FloorBoundsDTO(
+            min_x=min(xs) - 1.0,
+            min_y=min(ys) - 1.0,
+            max_x=max(xs) + 1.0,
+            max_y=max(ys) + 1.0,
+        )
+    bounds_tuple = (bounds_dto.min_x, bounds_dto.min_y, bounds_dto.max_x, bounds_dto.max_y)
+
+    # GP 학습 + 예측
+    estimate = estimate_coverage(
+        points, bounds=bounds_tuple, grid_resolution_m=grid_resolution_m
+    )
+
+    # heatmap 생성 + S3
+    mean_uri, std_uri = render_and_upload(estimate, str(session_row.id), points)
+
+    return EstimatedCoverageResponseDTO(
+        heatmap_url=presigned_get_url(mean_uri),
+        uncertainty_url=presigned_get_url(std_uri),
+        bounds=bounds_dto,
+        grid_shape=list(estimate.mean_grid.shape),
+        grid_resolution_m=grid_resolution_m,
+        rssi_range=EstimatedRssiRangeDTO(
+            min=float(estimate.mean_grid.min()),
+            max=float(estimate.mean_grid.max()),
+            mean=float(estimate.mean_grid.mean()),
+        ),
+        uncertainty_max_db=float(estimate.std_grid.max()),
+        input_point_count=estimate.input_point_count,
+        kernel_repr=estimate.kernel_repr,
+    )
+
+
 def list_detected_aps(
     db: Session, session_id: str, user: User
 ) -> list[DetectedApResponseDTO]:

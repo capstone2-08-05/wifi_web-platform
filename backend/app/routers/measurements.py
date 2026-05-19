@@ -6,6 +6,7 @@ from app.db.session import get_db
 from app.models.user import User
 from app.schemas.measurement import (
     DetectedApResponseDTO,
+    EstimatedCoverageResponseDTO,
     MeasurementLinkContextResponseDTO,
     MeasurementLinkCreateResponseDTO,
     MeasurementPointBatchRequestDTO,
@@ -141,3 +142,19 @@ def list_detected_aps(
     current_user: User = Depends(get_current_user),
 ) -> list[DetectedApResponseDTO]:
     return measurement_service.list_detected_aps(db, session_id, current_user)
+
+
+@router.get(
+    "/measurement-sessions/{session_id}/estimated-coverage",
+    response_model=EstimatedCoverageResponseDTO,
+    summary="GP regression 으로 측정점 → dense RSSI 맵 추정 (#81)",
+)
+def estimate_session_coverage(
+    session_id: str,
+    resolution_m: float = Query(default=0.5, gt=0.1, le=2.0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> EstimatedCoverageResponseDTO:
+    return measurement_service.estimate_session_coverage(
+        db, session_id, current_user, grid_resolution_m=resolution_m
+    )
