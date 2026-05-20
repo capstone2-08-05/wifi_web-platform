@@ -124,6 +124,61 @@ class FusionService:
             logger.warning("치수 tick 칸막이 복구 skip", exc_info=True)
             return []
 
+    @staticmethod
+    def _promote_space_detections_to_rooms(furniture_objects, rooms):
+        """공간형 탐지(화장실 등)를 포함하는 방에 종류로 부여하고 객체에서 제거.
+
+        det 중심을 포함하는 방을 찾아 room.type/name 세팅 → 떠다니는 객체 대신 방으로.
+        반환: 승격되지 않은 가구 객체 리스트 (포함 방 못 찾으면 객체로 남김).
+        """
+        SPACE_CLASSES = {"bathroom": "화장실"}
+        MAX_SPACE_ROOM_M2 = 15.0  # 이보다 큰 방은 화장실이 아닌 병합/오방 → 승격 안 함
+        if not furniture_objects or not rooms:
+            return furniture_objects
+        try:
+            from shapely.geometry import Point, Polygon
+        except Exception:
+            return furniture_objects
+
+        room_polys = []
+        for r in rooms:
+            try:
+                if len(r.points) >= 3:
+                    room_polys.append((r, Polygon(r.points)))
+            except Exception:
+                continue
+
+        promoted: set[int] = set()
+        for fi, det in enumerate(furniture_objects):
+            label = SPACE_CLASSES.get(det.class_name)
+            if label is None:
+                continue
+            try:
+                bx1, by1, bx2, by2 = det.bbox_xyxy
+            except Exception:
+                continue
+            c = Point((bx1 + bx2) / 2.0, (by1 + by2) / 2.0)
+            target = None
+            for r, poly in room_polys:
+                try:
+                    if poly.contains(c) or poly.buffer(10.0).contains(c):
+                        # 큰 방(병합/오방)이면 화장실로 오태깅 방지 → 승격 보류.
+                        if r.area is not None and r.area > MAX_SPACE_ROOM_M2:
+                            break
+                        target = r
+                        break
+                except Exception:
+                    continue
+            if target is not None:
+                target.type = det.class_name
+                target.name = label
+                promoted.add(fi)
+                logger.info("space detection '%s' → room %s 로 승격", det.class_name, target.id)
+
+        if not promoted:
+            return furniture_objects
+        return [d for i, d in enumerate(furniture_objects) if i not in promoted]
+
     def _run_wi_twin_pipeline(
         self,
         ml_output: MlOutputDTO,
@@ -254,6 +309,13 @@ class FusionService:
                 det.id = f"furniture_{len(furniture_objects)}"
                 furniture_objects.append(det)
 
+        # 공간형 탐지(화장실 등)를 "방"으로 승격 — 떠다니는 고정크기 객체 박스 대신
+        # 그 탐지를 포함하는 방의 종류로 태깅. (Wi-Fi: 화장실은 경계 벽 재질이 달라
+        # 방으로 묶어두면 벽 재질 지정/시뮬에 유리. 객체보다 벽-바인딩에 적합)
+        furniture_objects = self._promote_space_detections_to_rooms(
+            furniture_objects, extracted_rooms
+        )
+
         # 중복 detection 제거 (NMS) — type 무관 단일 pass.
         # 같은 위치에 door 와 window 가 동시 감지되면 score 1 등만 유지.
         # (이전엔 type 별로 따로 NMS 였지만 사용자가 한 개만 보이길 원해 변경.)
@@ -297,13 +359,25 @@ class FusionService:
                 matched_count, len(openings), projected,
             )
 
+        # 객체는 bbox×scale 로 실제 크기(width_m/height_m) 부여 → 떠다니는 고정 1.6m
+        # 박스 대신 탐지된 실제 크기로 렌더 (화장실 등이 거대하게 그려지던 문제 해결).
+        def _obj_dump(obj: DetectionDTO) -> dict:
+            d = obj.model_dump()
+            try:
+                bx1, by1, bx2, by2 = obj.bbox_xyxy
+                d["width_m"] = round(max(abs(bx2 - bx1) * scale_ratio, 0.1), 3)
+                d["height_m"] = round(max(abs(by2 - by1) * scale_ratio, 0.1), 3)
+            except Exception:
+                pass
+            return d
+
         return SceneSchema(
             scale_ratio=scale_ratio,
             walls=[w.model_dump() for w in calibrated_walls],
             openings=[o.model_dump() for o in openings],
             rooms=[r.model_dump() for r in extracted_rooms],
             topology=topology_result.model_dump(),
-            objects=[obj.model_dump() for obj in furniture_objects],
+            objects=[_obj_dump(obj) for obj in furniture_objects],
             inference_metadata=sagemaker_meta,
             postprocess_metadata=postprocess_meta_dict,
         )

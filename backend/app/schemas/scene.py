@@ -18,9 +18,11 @@ class Opening(BaseModel):
 
 class Room(BaseModel):
     id: str
-    points: List[List[float]]  
-    center: List[float]        
-    area: float              
+    points: List[List[float]]
+    center: List[float]
+    area: float
+    type: Optional[str] = None   # 객체 탐지로 부여된 방 종류 (예: "bathroom")
+    name: Optional[str] = None   # 표시용 이름 (예: "화장실")
 
 class Topology(BaseModel):
     adjacencies: List[List[str]] 

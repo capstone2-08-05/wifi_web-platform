@@ -657,8 +657,16 @@ def estimate_scale_crossvalidated(
     if walls:
         vx = [(w[0] + w[2]) / 2.0 for w in walls if _wall_orientation(w) == "vertical"]
         hy = [(w[1] + w[3]) / 2.0 for w in walls if _wall_orientation(w) == "horizontal"]
-        h_dims = [m for ch in chains["horizontal"] for _, m in ch]
-        v_dims = [m for ch in chains["vertical"] for _, m in ch]
+        # max 치수는 **파싱된 모든 치수**에서 — 전체 외곽 치수(예 17,500/9,700)는 자기
+        # 줄에 혼자라 체인(라벨 2개+)에 안 들어가므로 chains 만 보면 빠짐 → scale 급감 버그.
+        h_dims: list[float] = []
+        v_dims: list[float] = []
+        for e in entries or []:
+            p = parse_dimension_to_meters(e.text)
+            if p is None or p.meters <= 0:
+                continue
+            x1b, y1b, x2b, y2b = e.bbox
+            (h_dims if (x2b - x1b) >= (y2b - y1b) else v_dims).append(p.meters)
         if len(vx) >= 2 and h_dims:
             ext = max(vx) - min(vx)
             if ext > 0:

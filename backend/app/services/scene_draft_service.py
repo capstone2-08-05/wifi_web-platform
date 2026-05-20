@@ -345,8 +345,10 @@ def save_scene_draft(
                 room_meta["dimension_spans"] = room_span
             db.add(
                 DraftRoom(
+                    # 표시용 이름은 의미있는 name(예: "화장실")만. 없으면 None
+                    # (room_0 같은 내부 id 를 라벨로 노출하지 않음).
                     scene_draft_id=scene_draft.id,
-                    room_name=str(room.get("id")) if room.get("id") is not None else None,
+                    room_name=(str(room["name"]) if room.get("name") else None),
                     room_type=room.get("type"),
                     source_method=DEFAULT_DRAFT_ANALYSIS_METHOD,
                     polygon_geom=room_polygon_geom(room, scale_ratio),
@@ -416,6 +418,13 @@ def save_scene_draft(
 
         for obj in request_dto.scene.objects:
             obj_type = obj.get("class_name") or obj.get("type") or "unknown"
+            # width_m/height_m 를 metadata_json 최상위에 둠 → 프론트 readObjectSize 가
+            # 이 값으로 실제 크기 렌더 (없으면 1.6m 기본). bbox×scale 로 fusion 이 채움.
+            obj_meta: dict[str, Any] = {"raw": obj}
+            if obj.get("width_m") is not None:
+                obj_meta["width_m"] = obj.get("width_m")
+            if obj.get("height_m") is not None:
+                obj_meta["height_m"] = obj.get("height_m")
             db.add(
                 DraftObject(
                     scene_draft_id=scene_draft.id,
@@ -423,7 +432,7 @@ def save_scene_draft(
                     confidence=_to_float(obj.get("score") or obj.get("confidence")),
                     source_method=DEFAULT_DRAFT_ANALYSIS_METHOD,
                     point_geom=object_point_geom(obj, scale_ratio),
-                    metadata_json={"raw": obj},
+                    metadata_json=obj_meta,
                 )
             )
 
