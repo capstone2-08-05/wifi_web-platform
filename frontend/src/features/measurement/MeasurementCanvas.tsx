@@ -35,6 +35,14 @@ interface Props {
   mode: MeasurementViewMode;
   /** 강조 표시할 측정 포인트 (불량 지점). 외곽 링이 진하게 표시됨. */
   highlightedPointId?: string | null;
+  /**
+   * GP regression dense heatmap (백엔드 #81 / `/estimated-coverage`).
+   * 있으면 'heatmap' / 'both' 모드에서 측정점 radial gradient 대신 이 이미지를 깔아준다.
+   */
+  estimatedHeatmap?: {
+    url: string;
+    bounds: { min_x: number; min_y: number; max_x: number; max_y: number };
+  } | null;
 }
 
 interface Bounds {
@@ -96,6 +104,7 @@ export function MeasurementCanvas({
   aps,
   mode,
   highlightedPointId,
+  estimatedHeatmap,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const sceneId = sceneVersion?.id ?? null;
@@ -134,8 +143,29 @@ export function MeasurementCanvas({
           ))}
         </defs>
 
-        {/* 히트맵: 도형보다 아래에 깔아 도면이 위에 보이도록. */}
-        {showHeatmap &&
+        {/* 히트맵: 도형보다 아래에 깔아 도면이 위에 보이도록.
+            GP regression dense heatmap 이 있으면 그것을 우선 표시 (전체 도면 커버).
+            없으면 측정점 주변 radial gradient 로 fallback. */}
+        {showHeatmap && estimatedHeatmap ? (
+          <image
+            href={estimatedHeatmap.url}
+            xlinkHref={estimatedHeatmap.url}
+            x={estimatedHeatmap.bounds.min_x}
+            y={estimatedHeatmap.bounds.min_y}
+            width={estimatedHeatmap.bounds.max_x - estimatedHeatmap.bounds.min_x}
+            height={estimatedHeatmap.bounds.max_y - estimatedHeatmap.bounds.min_y}
+            preserveAspectRatio="none"
+            opacity={0.65}
+            pointerEvents="none"
+            onError={() => {
+              console.warn(
+                '[MeasurementCanvas] estimated coverage heatmap 로드 실패:',
+                estimatedHeatmap.url,
+              );
+            }}
+          />
+        ) : (
+          showHeatmap &&
           sortedPoints.map((p) => (
             <circle
               key={`heat-${p.id}`}
@@ -145,7 +175,8 @@ export function MeasurementCanvas({
               fill={`url(#heat-${p.quality})`}
               pointerEvents="none"
             />
-          ))}
+          ))
+        )}
 
         {(sceneVersion?.walls ?? []).map((w) => (
           <WallShape key={w.id} wall={w} />

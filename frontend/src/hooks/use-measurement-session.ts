@@ -42,3 +42,21 @@ export function useDetectedAps(sessionId: UUID | null) {
     retry: false,
   });
 }
+
+/**
+ * GP regression 으로 측정점 → 도면 전체 dense RSSI 히트맵 추정 (#81).
+ * 측정점이 충분치 않거나 백엔드가 추정 실패하면 404/422 → 빈 상태로 fallback.
+ * resolution_m: 0.1~2.0. 기본 0.5 (백엔드 기본값과 동일).
+ */
+export function useEstimatedCoverage(sessionId: UUID | null, resolutionM = 0.5) {
+  return useQuery({
+    queryKey: ['estimated-coverage', sessionId, resolutionM] as const,
+    queryFn: () =>
+      measurementSessionApi.getEstimatedCoverage(sessionId as UUID, {
+        resolution_m: resolutionM,
+      }),
+    enabled: !!sessionId,
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
+}

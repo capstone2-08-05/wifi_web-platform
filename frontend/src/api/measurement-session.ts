@@ -2,6 +2,7 @@ import { api } from './client';
 import type { Paginated, UUID } from '@/types/common';
 import type {
   DetectedAp,
+  EstimatedCoverage,
   MeasurementPoint,
   MeasurementSession,
 } from '@/types/measurement-session';
@@ -39,5 +40,15 @@ export const measurementSessionApi = {
   listDetectedAps: (sessionId: UUID) =>
     api
       .get<DetectedAp[]>(`/measurement-sessions/${sessionId}/detected-aps`)
+      .then((r) => r.data),
+
+  // GET /measurement-sessions/{session_id}/estimated-coverage — GP regression dense RSSI 맵 (#81).
+  // 응답에 presigned heatmap_url / uncertainty_url 포함. resolution_m 으로 해상도 조절(0.1~2.0).
+  getEstimatedCoverage: (sessionId: UUID, params?: { resolution_m?: number }) =>
+    api
+      .get<EstimatedCoverage>(
+        `/measurement-sessions/${sessionId}/estimated-coverage`,
+        { params },
+      )
       .then((r) => r.data),
 };

@@ -25,6 +25,7 @@ import type { RfMap } from '@/types/rf';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
 import {
   useDetectedAps,
+  useEstimatedCoverage,
   useFloorMeasurementSessions,
   useMeasurementPoints,
 } from '@/hooks/use-measurement-session';
@@ -79,6 +80,14 @@ export default function MeasurementPage() {
   const detectedApsQuery = useDetectedAps(activeSession?.id ?? null);
   const detectedAps = detectedApsQuery.data ?? [];
 
+  // #81 GP regression dense RSSI heatmap — 측정점 → 도면 전체 추정.
+  const coverageQuery = useEstimatedCoverage(activeSession?.id ?? null);
+  const estimatedHeatmap = useMemo(() => {
+    const c = coverageQuery.data;
+    if (!c) return null;
+    return { url: c.heatmap_url, bounds: c.bounds };
+  }, [coverageQuery.data]);
+
   const [mode, setMode] = useState<MeasurementViewMode>('route');
   const [mobileOpen, setMobileOpen] = useState(false);
   const [actionGuideOpen, setActionGuideOpen] = useState(false);
@@ -117,6 +126,7 @@ export default function MeasurementPage() {
                   points={canvasPoints}
                   aps={canvasAps}
                   mode={mode}
+                  estimatedHeatmap={estimatedHeatmap}
                 />
                 {!hasMeasurement && <CanvasEmptyOverlay loading={pointsQuery.isFetching} />}
               </div>

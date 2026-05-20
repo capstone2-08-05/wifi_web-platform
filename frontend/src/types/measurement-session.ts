@@ -50,3 +50,31 @@ export interface DetectedAp {
   rssi_min: number | null;
   rssi_max: number | null;
 }
+
+// §10.X (#81) — GP regression 으로 측정점 → 도면 전체 dense RSSI 추정.
+// 백엔드 EstimatedCoverageResponseDTO 와 정합.
+
+export interface FloorBounds {
+  min_x: number;
+  min_y: number;
+  max_x: number;
+  max_y: number;
+}
+
+export interface EstimatedRssiRange {
+  min: number;
+  max: number;
+  mean: number;
+}
+
+export interface EstimatedCoverage {
+  heatmap_url: string;
+  uncertainty_url: string;
+  bounds: FloorBounds;
+  grid_shape: [number, number]; // [H, W]
+  grid_resolution_m: number;
+  rssi_range: EstimatedRssiRange;
+  uncertainty_max_db: number;
+  input_point_count: number;
+  kernel_repr: string;
+}
