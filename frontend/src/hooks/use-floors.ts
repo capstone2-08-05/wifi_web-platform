@@ -3,7 +3,7 @@ import { floorApi } from '@/api/floor';
 import type { HttpError } from '@/api/client';
 import { toast } from '@/stores/toast-store';
 import type { UUID } from '@/types/common';
-import type { CreateFloorRequest } from '@/types/floor';
+import type { CreateFloorRequest, UpdateFloorRequest } from '@/types/floor';
 
 const floorsKey = (projectId: UUID) => ['floors', projectId] as const;
 
@@ -25,6 +25,22 @@ export function useCreateFloor(projectId: UUID | null) {
     },
     onSuccess: () => {
       if (projectId) qc.invalidateQueries({ queryKey: floorsKey(projectId) });
+    },
+  });
+}
+
+export function useUpdateFloor(projectId: UUID | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: UUID; body: UpdateFloorRequest }) =>
+      floorApi.update(id, body),
+    onSuccess: () => {
+      if (projectId) qc.invalidateQueries({ queryKey: floorsKey(projectId) });
+      toast.info('층 정보가 수정되었습니다');
+    },
+    onError: (err) => {
+      const e = err as HttpError | null;
+      toast.error('층 수정 실패', e?.message ?? '잠시 후 다시 시도해주세요.');
     },
   });
 }
