@@ -224,22 +224,49 @@ function getRealWidthM(draft: SceneDraft): number | null {
 }
 
 /**
- * real_width_m + 이미지 natural 비율로 이미지의 실제 미터 크기 계산.
- * real_width_m 은 summary_json 우선, 없으면 localStorage 캐시(source_asset_id ?? floor_id 키).
- * → promote 후 version-as-draft (summary_json={}) 에서도 캐시로 복원 → viewBox 안정.
- * 둘 중 하나라도 없으면 null → fallback 으로 도형 bounds 기준 viewBox 사용.
+ * summary_json 의 scale_ratio_m_per_px 조회. geom 변환에 쓴 최종 scale (m/px).
+ * 벽 좌표가 `pixel × scale_ratio` 로 미터화됐으므로, 같은 scale 로 이미지를 놓으면
+ * 벽과 정확히 정렬됨. OCR 추정/기본 fallback 무관하게 백엔드가 항상 기록.
+ */
+function getScaleRatioMPerPx(draft: SceneDraft): number | null {
+  const summary = (draft.summary_json ?? {}) as {
+    scale_ratio_m_per_px?: number;
+  };
+  const v = summary.scale_ratio_m_per_px;
+  if (typeof v === 'number' && v > 0) return v;
+  return null;
+}
+
+/**
+ * 이미지의 실제 미터 크기 계산. 두 가지 소스:
+ *   1. scale_ratio_m_per_px (신규, 권장): imageDims_px × scale → 벽과 동일 좌표계 정렬.
+ *   2. real_width_m (legacy): 사용자가 입력하던 도면 가로폭. 옛 draft 호환용.
+ * 둘 다 없으면 null → fallback 으로 도형 bounds 기준 viewBox 사용.
  */
 function deriveImageExtent(
   draft: SceneDraft,
   imageDims: { w: number; h: number } | null,
 ): { w: number; h: number } | null {
   if (!imageDims || imageDims.w <= 0) return null;
+
+  // 1순위: scale_ratio (이미지 픽셀 × m/px = 미터 크기). 벽과 정확히 겹침.
+  const scaleRatio = getScaleRatioMPerPx(draft);
+  if (scaleRatio != null) {
+    return {
+      w: imageDims.w * scaleRatio,
+      h: imageDims.h * scaleRatio,
+    };
+  }
+
+  // 2순위 (legacy): real_width_m. 옛 draft / version-as-draft 캐시 호환.
   const realWidthM = getRealWidthM(draft);
-  if (realWidthM == null) return null;
-  return {
-    w: realWidthM,
-    h: realWidthM * (imageDims.h / imageDims.w),
-  };
+  if (realWidthM != null) {
+    return {
+      w: realWidthM,
+      h: realWidthM * (imageDims.h / imageDims.w),
+    };
+  }
+  return null;
 }
 
 const DRAG_THRESHOLD_M = 0.05;

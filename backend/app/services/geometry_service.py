@@ -73,8 +73,17 @@ class GeometryService:
         rooms = []
         valid_room_count = 0
         
-        # 벽 두께(약 15cm)만큼 안쪽으로 수축하여 실제 가용 면적 계산
-        shrink_dist = 0.15 / self.scale_ratio 
+        # 벽 안쪽 면 기준 가용 면적 계산을 위해 안쪽으로 수축.
+        # 폴리곤은 벽 '중심선' 으로 그려지므로(LineString w.x1,y1→x2,y2),
+        # 중심선 → 안쪽 면 거리는 벽 두께의 절반이다 → thickness/2 만큼만 수축.
+        # 두께는 calibrate_walls 가 문 폭으로 추정해 각 wall.thickness 에 채워둔 실측값 사용
+        # (calibrate 전이거나 thickness 미설정 시에만 0.15m fallback).
+        thicknesses = [
+            float(w.thickness) for w in walls
+            if getattr(w, "thickness", None) and w.thickness > 0
+        ]
+        wall_thickness_m = float(np.median(thicknesses)) if thicknesses else 0.15
+        shrink_dist = (wall_thickness_m / 2.0) / self.scale_ratio
 
         for poly in polygons:
             # (1) 안쪽으로 수축

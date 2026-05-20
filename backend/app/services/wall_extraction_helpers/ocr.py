@@ -51,9 +51,14 @@ def detect_text_entries(image_path: Path) -> list[OCREntry]:
         return []
 
     try:
-        # detail=1 → bbox + text + confidence
-        # paragraph=False → 각 단어 단위
-        results = reader.readtext(str(image_path), detail=1, paragraph=False)
+        import cv2
+        img = cv2.imread(str(image_path))
+        if img is None:
+            logger.warning("OCR: 이미지 디코드 실패 %s", image_path)
+            return []
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # 전체는 0° 1번, 좌/우 여백 strip 만 회전 OCR(세로 치수). rotation_info 전체 대비 비용↓.
+        results = _ocr_margin_rotation(reader, rgb)
     except Exception as exc:
         logger.warning("OCR 실행 실패: %s", exc)
         return []
@@ -76,8 +81,80 @@ def detect_text_entries(image_path: Path) -> list[OCREntry]:
             confidence = 0.0
         entries.append(OCREntry(bbox=bbox, text=str(text), confidence=confidence))
 
+    entries = _dedupe_entries(entries)
     logger.info("OCR detected %d text entries from %s", len(entries), image_path.name)
     return entries
+
+
+def _readtext_strip(reader, rgb, x0: int, x1: int, rotate_code):
+    """좌/우 strip 회전 OCR → (source 좌표 4pts, text, conf). 좌표 역매핑 포함."""
+    import cv2
+    strip = rgb[:, x0:x1]
+    strip_h, strip_w = strip.shape[:2]
+    rotated = cv2.rotate(strip, rotate_code)
+    out = []
+    for entry in reader.readtext(rotated, detail=1, paragraph=False):
+        if len(entry) < 3:
+            continue
+        pts, text, conf = entry[0], entry[1], entry[2]
+        try:
+            mapped = []
+            for p in pts:
+                rx, ry = float(p[0]), float(p[1])
+                if rotate_code == cv2.ROTATE_90_CLOCKWISE:
+                    sx, sy = ry, (strip_h - 1) - rx
+                else:  # ROTATE_90_COUNTERCLOCKWISE
+                    sx, sy = (strip_w - 1) - ry, rx
+                mapped.append((sx + x0, sy))
+        except (TypeError, IndexError):
+            continue
+        out.append((mapped, text, conf))
+    return out
+
+
+def _ocr_margin_rotation(reader, rgb, *, strip_ratio: float = 0.16, min_strip_px: int = 40):
+    """전체 0° OCR + 좌/우 여백 strip 회전 OCR. detail=1 과 동일 shape 반환."""
+    import cv2
+    results: list = []
+    for entry in reader.readtext(rgb, detail=1, paragraph=False):
+        if len(entry) >= 3:
+            results.append((entry[0], entry[1], entry[2]))
+    h, w = rgb.shape[:2]
+    sw = min(w, max(min_strip_px, int(w * strip_ratio)))
+    strips = [(0, sw)]
+    if w - sw > sw:
+        strips.append((w - sw, w))
+    for (x0, x1) in strips:
+        for code in (cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE):
+            try:
+                results.extend(_readtext_strip(reader, rgb, x0, x1, code))
+            except Exception as exc:
+                logger.warning("strip OCR 실패: %s", exc)
+    return results
+
+
+def _bbox_iou(a, b) -> float:
+    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0, a[2] - a[0]) * max(0, a[3] - a[1])
+    area_b = max(0, b[2] - b[0]) * max(0, b[3] - b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _dedupe_entries(entries: list[OCREntry], iou_thr: float = 0.4) -> list[OCREntry]:
+    """겹치는 OCR 결과 중 confidence 높은 것만 유지 (0°/회전 패스 중복 제거)."""
+    ordered = sorted(entries, key=lambda e: e.confidence, reverse=True)
+    kept: list[OCREntry] = []
+    for e in ordered:
+        if any(_bbox_iou(e.bbox, k.bbox) > iou_thr for k in kept):
+            continue
+        kept.append(e)
+    return kept
 
 
 def detect_text_bboxes(image_path: Path) -> list[tuple[int, int, int, int]]:

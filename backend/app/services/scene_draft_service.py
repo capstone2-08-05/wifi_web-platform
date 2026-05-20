@@ -137,6 +137,72 @@ def _build_wall_dimension_match_map(
     return result
 
 
+def _build_span_maps(
+    walls: list[dict],
+    rooms: list[dict],
+    postprocess_metadata: dict | None,
+    scale_ratio: float,
+) -> tuple[dict[int, dict], dict[int, dict]]:
+    """치수선 세그먼트를 구간(span) 으로 해석해 (벽 길이 맵, 방 가로/세로 맵) 반환.
+
+    벽: 평행 치수(세로벽↔세로치수, 가로벽↔가로치수) 를 IoU 로 매칭한 '도면 길이'.
+    방: 가로/세로 범위에 맞는 치수.
+    치수 텍스트가 벽에서 멀어 직접 매칭(`match_dimensions_to_walls`) 이 실패해도,
+    scale 로 세그먼트 픽셀 길이를 복원하므로 동작한다 (OCR/fallback scale 무관).
+    """
+    empty: tuple[dict, dict] = ({}, {})
+    if not postprocess_metadata or not walls:
+        return empty
+    raw_matches = postprocess_metadata.get("dimension_matches") or []
+    if not raw_matches:
+        return empty
+
+    # scale: OCR 추정값 우선, 없으면 geom 변환에 쓴 scale_ratio.
+    scale_est = postprocess_metadata.get("scale_estimate") or {}
+    scale = scale_est.get("scale_m_per_px") or scale_ratio
+    if not scale or scale <= 0:
+        return empty
+
+    try:
+        from app.services.wall_extraction_helpers import dimension_matching
+        from app.services.wall_extraction_helpers.ocr import OCREntry
+    except Exception:
+        return empty
+
+    wall_px: list[list[float]] = []
+    for w in walls:
+        try:
+            wall_px.append([float(w["x1"]), float(w["y1"]), float(w["x2"]), float(w["y2"])])
+        except (KeyError, TypeError, ValueError):
+            wall_px.append([0.0, 0.0, 0.0, 0.0])
+
+    entries = []
+    for m in raw_matches:
+        try:
+            bbox = tuple(int(v) for v in m.get("bbox", []))
+            if len(bbox) != 4:
+                continue
+            entries.append(
+                OCREntry(
+                    bbox=bbox,  # type: ignore[arg-type]
+                    text=str(m.get("text", "")),
+                    confidence=float(m.get("ocr_confidence", 0.0)),
+                )
+            )
+        except Exception:
+            continue
+    if not entries:
+        return empty
+
+    spans = dimension_matching.build_dimension_spans(entries, float(scale), wall_px)
+    if not spans:
+        return empty
+    # 벽: 평행 치수(자기 길이) 매칭. 방: 가로/세로 치수.
+    wall_len_map = dimension_matching.attach_wall_lengths_parallel(spans, wall_px)
+    room_span_map = dimension_matching.attach_spans_to_rooms(spans, rooms or [])
+    return wall_len_map, room_span_map
+
+
 def _resolve_project_floor(
     db: Session,
     project_id: str | None,
@@ -230,11 +296,16 @@ def save_scene_draft(
         db, request_dto.project_id, request_dto.floor_id, current_user,
     )
 
+    scale_ratio = float(request_dto.scene.scale_ratio or 1.0)
+
     summary_json: dict[str, Any] = {
         "source": DEFAULT_DRAFT_SOURCE,
         "analysis_method": DEFAULT_DRAFT_ANALYSIS_METHOD,
         "raw_result_version": request_dto.scene.scene_version,
         "storage": request_dto.upload.model_dump(),
+        # geom 변환에 쓴 최종 scale (m/px). OCR 추정/기본 fallback 무관하게 항상 기록.
+        # 프론트가 배경 도면 이미지를 미터 좌표에 정렬할 때 사용 (imageDims_px × scale).
+        "scale_ratio_m_per_px": scale_ratio,
     }
     if request_dto.scene.inference_metadata:
         summary_json["inference_metadata"] = request_dto.scene.inference_metadata
@@ -252,13 +323,24 @@ def save_scene_draft(
         created_by=request_dto.created_by or current_user.email,
     )
 
-    scale_ratio = float(request_dto.scene.scale_ratio or 1.0)
-
     try:
         db.add(scene_draft)
         db.flush()
 
-        for room in request_dto.scene.rooms:
+        # 치수선 세그먼트를 구간(span) 으로 해석 → 벽 평행 길이 + 방 가로/세로 치수.
+        # (치수선이 벽에서 멀어 직접 매칭이 안 되는 도면도 scale 로 복원해 부착)
+        wall_len_map, room_span_map = _build_span_maps(
+            request_dto.scene.walls,
+            request_dto.scene.rooms,
+            request_dto.scene.postprocess_metadata,
+            scale_ratio,
+        )
+
+        for room_idx, room in enumerate(request_dto.scene.rooms):
+            room_meta: dict[str, Any] = {"raw": room}
+            room_span = room_span_map.get(room_idx)
+            if room_span:
+                room_meta["dimension_spans"] = room_span
             db.add(
                 DraftRoom(
                     scene_draft_id=scene_draft.id,
@@ -267,7 +349,7 @@ def save_scene_draft(
                     source_method=DEFAULT_DRAFT_ANALYSIS_METHOD,
                     polygon_geom=room_polygon_geom(room, scale_ratio),
                     centroid_geom=room_centroid_geom(room, scale_ratio),
-                    metadata_json={"raw": room},
+                    metadata_json=room_meta,
                 )
             )
 
@@ -284,6 +366,9 @@ def save_scene_draft(
             dim_match = wall_dim_matches.get(idx)
             if dim_match is not None:
                 wall_meta["dimension_match"] = dim_match
+            wall_len = wall_len_map.get(idx)
+            if wall_len:
+                wall_meta["dimension_length"] = wall_len
 
             draft_wall = DraftWall(
                 scene_draft_id=scene_draft.id,

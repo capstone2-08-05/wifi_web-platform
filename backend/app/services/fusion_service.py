@@ -22,6 +22,8 @@ from app.geometry import (
     nms_filter_indices,
     project_openings_onto_walls,
     snap_wall_endpoints,
+    synthesize_opening_wall_segments,
+    synthesize_partition_walls_from_ticks,
 )
 from app.schemas.ai_response import (
     DetectionDTO,
@@ -61,8 +63,66 @@ class FusionService:
             sagemaker_meta,
             result.source_image_local_path,
             debug_dir,
+            result.ocr_priors,
+            result.line_priors,
+            result.roi_transform,
         )
         return scene
+
+    @staticmethod
+    def _recover_partitions_from_dimension_ticks(
+        postprocess, walls, scale_ratio: float
+    ) -> list[tuple[float, float, float, float]]:
+        """치수선 그리드 tick(벽 없는 경계) + 직교벽 끝점 → 누락 칸막이 조각.
+
+        best-effort: 입력이 없거나 실패하면 빈 리스트 (방 추출에 영향 없음).
+        """
+        try:
+            dim_matches = getattr(postprocess, "dimension_matches", None) or []
+            if not dim_matches or not walls or not scale_ratio or scale_ratio <= 0:
+                return []
+            from app.services.wall_extraction_helpers import dimension_matching as _dm
+            from app.services.wall_extraction_helpers.ocr import OCREntry
+
+            entries = []
+            for m in dim_matches:
+                bb = m.get("bbox") or []
+                if len(bb) != 4:
+                    continue
+                entries.append(
+                    OCREntry(
+                        bbox=tuple(int(v) for v in bb),  # type: ignore[arg-type]
+                        text=str(m.get("text", "")),
+                        confidence=float(m.get("ocr_confidence", 0.0)),
+                    )
+                )
+            if not entries:
+                return []
+
+            wall_px = [[w.x1, w.y1, w.x2, w.y2] for w in walls]
+            spans = _dm.build_dimension_spans(entries, float(scale_ratio), wall_px)
+            if not spans:
+                return []
+
+            # 벽이 안 붙은(boundary None) tick 만 칸막이 후보로.
+            vtick_xs: list[float] = []
+            htick_ys: list[float] = []
+            for s in spans:
+                if s.orientation == "horizontal":
+                    if s.boundary_lo_wall is None:
+                        vtick_xs.append(s.axis_lo)
+                    if s.boundary_hi_wall is None:
+                        vtick_xs.append(s.axis_hi)
+                else:
+                    if s.boundary_lo_wall is None:
+                        htick_ys.append(s.axis_lo)
+                    if s.boundary_hi_wall is None:
+                        htick_ys.append(s.axis_hi)
+
+            return synthesize_partition_walls_from_ticks(vtick_xs, htick_ys, walls)
+        except Exception:
+            logger.warning("치수 tick 칸막이 복구 skip", exc_info=True)
+            return []
 
     def _run_wi_twin_pipeline(
         self,
@@ -71,19 +131,27 @@ class FusionService:
         sagemaker_meta: dict[str, Any] | None = None,
         source_image_local_path=None,
         debug_dir=None,
+        ocr_priors: list[dict] | None = None,
+        line_priors: list[dict] | None = None,
+        roi_transform: dict | None = None,
     ) -> SceneSchema:
         # wall_extraction 은 .npy 파일 경로를 받아 prob_map 로딩.
-        # source_image 있으면 §69 multi-threshold + OCR scoring + 치수 매칭 흐름 활성화.
-        # GeometryService 보다 먼저 호출 — OCR 치수 기반 scale 추정을 받아 scale 결정.
+        # priors (AI 서버 사전 분석 결과) 가 있으면 wall_extraction 이 그걸 사용,
+        # 없으면 source_image_local_path 기반으로 자체 OCR/line 추출.
         wall_result = wall_extractor.execute_from_prob_map(
             prob_map_local_path,
             threshold=None,
             detections=ml_output.detections,
             image_path=source_image_local_path,
             debug_dir=debug_dir,
+            ocr_priors=ocr_priors,
+            line_priors=line_priors,
         )
         raw_coords = wall_result.walls
         postprocess_meta_dict = wall_result.postprocess.to_dict()
+        # AI 서버가 같이 내려준 RoiTransform 도 영속화 (디버깅/프론트 표시용).
+        if roi_transform is not None:
+            postprocess_meta_dict["roi_transform"] = roi_transform
 
         # OCR 치수 추정 scale 이 있으면 그걸로, 없으면 default fallback (사용자가
         # PropertiesPanel 에서 벽별 실측 입력해 후속 보정).
@@ -138,7 +206,42 @@ class FusionService:
                 n_walls_before, len(calibrated_walls),
             )
 
-        extracted_rooms: list[Room] = geo_service.extract_rooms(calibrated_walls)
+        # 개구부(문/창) 를 벽 증거로 활용 — U-Net 이 개구부에서 벽을 끊는 경우가 많아
+        # 그 자리에 중심선 조각을 끼워 끊긴 벽을 잇는다 → 방 폐합률 ↑ (도면별 편차 ↓).
+        # ⚠️ 합성 조각은 방 추출 입력에만 더하고 영속 wall 에는 넣지 않는다 (문 위 벽 중복 방지).
+        opening_bboxes = [
+            tuple(float(v) for v in det.bbox_xyxy)
+            for det in ml_output.detections
+            if det.class_name in {"door", "window"}
+        ]
+        opening_segments = synthesize_opening_wall_segments(
+            opening_bboxes, calibrated_walls
+        )
+
+        # 치수선 그리드 tick → 누락 칸막이 복구 (게이팅: 직교벽 끝점 + tick 두 증거).
+        # 개구부 신호와 상보적. 실패해도 방 추출엔 영향 없게 best-effort.
+        partition_segments = self._recover_partitions_from_dimension_ticks(
+            wall_result.postprocess, calibrated_walls, scale_ratio
+        )
+
+        # 합성 조각(개구부 + 칸막이)은 방 추출 입력에만 더하고 영속 wall 에는 안 넣음.
+        synth_segments = list(opening_segments) + list(partition_segments)
+        walls_for_rooms: list[Wall] = calibrated_walls
+        if synth_segments:
+            walls_for_rooms = list(calibrated_walls) + [
+                Wall(
+                    id=f"synth_seg_{i}",
+                    x1=sx1, y1=sy1, x2=sx2, y2=sy2,
+                    thickness=0.0,  # 추정 두께 median 에서 제외되도록 0 (extract_rooms 가 >0 만 사용)
+                )
+                for i, (sx1, sy1, sx2, sy2) in enumerate(synth_segments)
+            ]
+            logger.info(
+                "wall completion: 방 추출용 합성 조각 +%d개 (개구부 %d, 치수 tick %d)",
+                len(synth_segments), len(opening_segments), len(partition_segments),
+            )
+
+        extracted_rooms: list[Room] = geo_service.extract_rooms(walls_for_rooms)
         topology_result = topo_service.analyze(extracted_rooms, ml_output.detections)
 
         # door/window 와 가구 detection 분리

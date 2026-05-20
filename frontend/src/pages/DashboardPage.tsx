@@ -95,8 +95,12 @@ export default function DashboardPage() {
   const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
   const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
   const localImage = useLocalFloorplanImage(floorId);
-  const backgroundImageUrl =
-    assetUrlQuery.data?.url ?? localImage ?? null;
+  // 절대 http(s) 자산 URL 만 <image> 에서 직접 로드. local 모드 `/assets/{id}/raw`
+  // 상대경로는 origin/인증 문제로 못 써서 localStorage 캐시로 fallback.
+  const assetUrl = assetUrlQuery.data?.url ?? null;
+  const usableAssetUrl =
+    assetUrl && /^https?:\/\//i.test(assetUrl) ? assetUrl : null;
+  const backgroundImageUrl = usableAssetUrl ?? localImage ?? null;
 
   return (
     <div className="relative h-full overflow-auto p-6">

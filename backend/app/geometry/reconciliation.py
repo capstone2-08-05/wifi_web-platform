@@ -15,7 +15,11 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import Protocol
 
-from app.geometry.matching import segment_orientation
+from app.geometry.matching import (
+    Bbox,
+    bbox_orientation,
+    segment_orientation,
+)
 
 # tolerance 비율 (wall 좌표 전체 extent 대비)
 DEFAULT_COLLINEAR_AXIS_RATIO = 0.012   # collinear 판정: 수직(perp) 위치 차이 허용
@@ -303,3 +307,174 @@ def project_openings_onto_walls(
         projected += 1
 
     return projected
+
+
+# ============================================================
+# 4. 개구부(문/창) 를 벽 증거로 → 벽 중심선 조각 합성
+# ============================================================
+def synthesize_opening_wall_segments(
+    opening_bboxes: Iterable[Bbox],
+    walls: Sequence[_WallLike],
+    *,
+    perp_ratio: float = 0.04,
+    reach_ratio: float = 0.10,
+    min_perp_px: float = 15.0,
+) -> list[tuple[float, float, float, float]]:
+    """문/창 bbox 를 "여기 벽이 지나간다" 는 증거로 보고 벽 중심선 조각을 합성한다.
+
+    U-Net 은 개구부 위치에서 벽 확률이 떨어져 벽이 끊기는 경우가 흔하다. 그러면
+    `polygonize` 가 방을 못 닫아(내벽이 사라진 것처럼) 인접 방이 하나로 합쳐진다.
+    개구부는 정의상 벽에 박혀 있으므로, 그 자리에 짧은 중심선 조각을 끼워 넣으면
+    끊긴 양쪽 벽을 이어 방 폐합률을 높인다.
+
+    ⚠️ 반환된 조각은 **방 추출 입력에만** 더해야 한다 (영속 wall 에 넣으면 문 위에
+    벽이 중복 렌더됨). 호출자가 분리 책임.
+
+    축 결정 — bbox 방향은 door swing 때문에 신뢰 불가(host 벽과 직교로 보일 수 있음).
+    그래서 **host 벽을 먼저 찾고 그 벽의 방향을 축으로** 삼는다:
+      - 각 H/V wall 의 무한직선까지의 수직거리(perp_off) + 선분 끝까지의 along-axis
+        거리(along_gap) 계산.
+      - perp_off ≤ perp_tol, along_gap ≤ reach_tol 이면 host 후보. perp_off 최소 채택.
+      - host 가 잡히면 그 벽과 collinear(같은 perp) 하게, bbox 의 host-축 길이만큼 조각 생성.
+      - 못 찾으면 bbox 가 명확히 길쭉할 때만 그 축으로 fallback (ambiguous 는 skip).
+
+    좌표 단위: 픽셀 (fusion 파이프라인 기준).
+    반환: (x1, y1, x2, y2) 중심선 좌표 리스트.
+    """
+    walls = list(walls)
+    extent = _coord_extent(walls)
+
+    segments: list[tuple[float, float, float, float]] = []
+    for bbox in opening_bboxes:
+        x1, y1, x2, y2 = (float(v) for v in bbox)
+        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        bw, bh = abs(x2 - x1), abs(y2 - y1)
+        if bw <= 0.0 and bh <= 0.0:
+            continue
+
+        # perp_tol 은 door swing 으로 bbox 중심이 벽선에서 떨어진 만큼 흡수해야 함 →
+        # bbox 짧은 변 절반도 하한으로 반영.
+        perp_tol = max(min_perp_px, extent * perp_ratio, 0.5 * min(bw, bh))
+        reach_tol = max(extent * reach_ratio, 2.0 * max(bw, bh))
+
+        best_wall: _WallLike | None = None
+        best_axis = ""
+        best_perp_off = perp_tol
+        for w in walls:
+            o = segment_orientation(w.x1, w.y1, w.x2, w.y2)
+            if o == "horizontal":
+                wp = (w.y1 + w.y2) / 2.0
+                perp_off = abs(cy - wp)
+                lo, hi = sorted((w.x1, w.x2))
+                along_gap = 0.0 if lo <= cx <= hi else min(abs(cx - lo), abs(cx - hi))
+            elif o == "vertical":
+                wp = (w.x1 + w.x2) / 2.0
+                perp_off = abs(cx - wp)
+                lo, hi = sorted((w.y1, w.y2))
+                along_gap = 0.0 if lo <= cy <= hi else min(abs(cy - lo), abs(cy - hi))
+            else:
+                continue  # diagonal/degenerate → 축 모호, 제외
+            if perp_off <= best_perp_off and along_gap <= reach_tol:
+                best_perp_off = perp_off
+                best_wall = w
+                best_axis = o
+
+        if best_wall is not None:
+            if best_axis == "horizontal" and bw > 0.0:
+                perp = (best_wall.y1 + best_wall.y2) / 2.0
+                half = bw / 2.0
+                segments.append((cx - half, perp, cx + half, perp))
+            elif best_axis == "vertical" and bh > 0.0:
+                perp = (best_wall.x1 + best_wall.x2) / 2.0
+                half = bh / 2.0
+                segments.append((perp, cy - half, perp, cy + half))
+            continue
+
+        # fallback: host 벽 못 찾음 → bbox 가 명확히 길쭉할 때만 그 축으로.
+        op_orient = bbox_orientation(x1, y1, x2, y2)
+        if op_orient == "horizontal" and bw > 0.0:
+            half = bw / 2.0
+            segments.append((cx - half, cy, cx + half, cy))
+        elif op_orient == "vertical" and bh > 0.0:
+            half = bh / 2.0
+            segments.append((cx, cy - half, cx, cy + half))
+
+    return segments
+
+
+# ============================================================
+# 5. 치수선 그리드 tick → (게이팅) 누락 칸막이 복구
+# ============================================================
+def _cluster_ticks(values: Iterable[float], tol: float) -> list[float]:
+    """가까운 tick 값들을 하나로 합침 (정렬 후 tol 이내 중복 제거)."""
+    out: list[float] = []
+    for v in sorted(values):
+        if out and abs(v - out[-1]) <= tol:
+            continue
+        out.append(v)
+    return out
+
+
+def synthesize_partition_walls_from_ticks(
+    vtick_xs: Iterable[float],   # 벽 없는 세로 그리드라인 x (수평 치수선 tick)
+    htick_ys: Iterable[float],   # 벽 없는 가로 그리드라인 y (수직 치수선 tick)
+    walls: Sequence[_WallLike],
+    *,
+    tol_ratio: float = 0.02,
+    min_tol_px: float = 12.0,
+) -> list[tuple[float, float, float, float]]:
+    """치수선 그리드 tick + 직교벽 끝점 = 누락 칸막이 증거 → 칸막이 조각 합성.
+
+    게이팅(교차증거 필수): tick 자리에 직교벽의 **끝점**이 가까이 있을 때만 합성.
+      - 가로벽이 허공에서 끝남(xlo/xhi ≈ T) = 거기 세로 칸막이가 만나야 함
+      - + 치수 tick = 그리드 경계
+      두 독립 증거가 겹칠 때만 → 과분할 위험 ↓. 끝점에서 반대편 직교벽까지 연결.
+
+    개구부 앵커(synthesize_opening_wall_segments)와 상보적 — 이쪽은 "벽 끝점"
+    증거를 쓰므로 개구부 신호와 중복되지 않는다.
+
+    ⚠️ 개구부 조각과 동일하게 **방 추출 입력 전용**. 영속 벽엔 넣지 말 것.
+    반환: (x1, y1, x2, y2) 중심선 좌표 리스트.
+    """
+    walls = list(walls)
+    extent = _coord_extent(walls)
+    tol = max(min_tol_px, extent * tol_ratio)
+
+    hwalls: list[tuple[float, float, float]] = []  # (xlo, xhi, ymid)
+    vwalls: list[tuple[float, float, float]] = []  # (ylo, yhi, xmid)
+    for w in walls:
+        o = segment_orientation(w.x1, w.y1, w.x2, w.y2)
+        if o == "horizontal":
+            hwalls.append((min(w.x1, w.x2), max(w.x1, w.x2), (w.y1 + w.y2) / 2.0))
+        elif o == "vertical":
+            vwalls.append((min(w.y1, w.y2), max(w.y1, w.y2), (w.x1 + w.x2) / 2.0))
+
+    segments: list[tuple[float, float, float, float]] = []
+
+    # 세로 칸막이: 세로 tick x=T, 가로벽 끝점이 T 근처
+    for t in _cluster_ticks(vtick_xs, tol):
+        anchors = [ym for (xlo, xhi, ym) in hwalls if min(abs(xlo - t), abs(xhi - t)) <= tol]
+        if not anchors:
+            continue
+        covering = [ym for (xlo, xhi, ym) in hwalls if xlo - tol <= t <= xhi + tol]
+        ay = anchors[0]
+        others = [y for y in covering if abs(y - ay) > tol]
+        if not others:
+            continue
+        by = min(others, key=lambda y: abs(y - ay))
+        segments.append((t, min(ay, by), t, max(ay, by)))
+
+    # 가로 칸막이: 가로 tick y=T, 세로벽 끝점이 T 근처
+    for t in _cluster_ticks(htick_ys, tol):
+        anchors = [xm for (ylo, yhi, xm) in vwalls if min(abs(ylo - t), abs(yhi - t)) <= tol]
+        if not anchors:
+            continue
+        covering = [xm for (ylo, yhi, xm) in vwalls if ylo - tol <= t <= yhi + tol]
+        ax = anchors[0]
+        others = [x for x in covering if abs(x - ax) > tol]
+        if not others:
+            continue
+        bx = min(others, key=lambda x: abs(x - ax))
+        segments.append((min(ax, bx), t, max(ax, bx), t))
+
+    return segments
