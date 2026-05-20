@@ -1,6 +1,12 @@
 import { api } from './client';
-import type { UUID } from '@/types/common';
-import type { RfJob, RfMap, RfRun, RfRunCreate, RfRunCreated } from '@/types/rf';
+import type { Paginated, UUID } from '@/types/common';
+import type { RfJob, RfMap, RfRun, RfRunCreate, RfRunCreated, RfRunStatus } from '@/types/rf';
+
+export interface ListRfRunsParams {
+  status?: RfRunStatus;
+  page?: number;
+  page_size?: number;
+}
 
 export const rfRunApi = {
   // §13.1 POST /rf-runs — 비동기 시뮬레이션 큐 등록 (HTTP 202)
@@ -13,6 +19,12 @@ export const rfRunApi = {
   // §13.3 GET /rf-runs/{rf_run_id}/maps — 완료 후 RF 맵 목록 (storage_url 은 s3:// URI)
   listMaps: (id: UUID) =>
     api.get<RfMap[]>(`/rf-runs/${id}/maps`).then((r) => r.data),
+
+  // GET /floors/{floor_id}/rf-runs — 층의 RF Run 목록 (created_at desc, 페이지네이션 + status 필터)
+  listByFloor: (floorId: UUID, params?: ListRfRunsParams) =>
+    api
+      .get<Paginated<RfRun>>(`/floors/${floorId}/rf-runs`, { params })
+      .then((r) => r.data),
 };
 
 export const rfJobApi = {

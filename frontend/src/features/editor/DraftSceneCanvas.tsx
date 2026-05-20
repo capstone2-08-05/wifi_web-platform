@@ -99,16 +99,18 @@ function computeViewBox(
   return { x: b.minX - padding, y: b.minY - padding, w: w + 2 * padding, h: h + 2 * padding };
 }
 
-// draft.id 별 최초 viewBox 를 localStorage 에 캐싱 (이미지 extent 없을 때의 fallback).
-// 새로고침 후에도 같은 draft 면 같은 viewBox 가 복원되어, 그룹 리사이즈로 도형이
-// 줄어들었을 때 캔버스가 작아진 도형에 자동 맞춤되는 현상(라벨·핸들이 커보임)을 막는다.
+// 최초 viewBox 를 localStorage 에 캐싱 (이미지 extent 없을 때의 fallback).
+// 키는 floor_id — promote(확정) 직후 draft → version-as-draft 로 전환되면서
+// DraftSceneCanvas 가 잠깐 unmount → remount 될 때, 새 draft.id 기준으로는 cache miss 가 나
+// "도형 bounds 에 fit" 된 좁은 viewBox 로 다시 계산되는 문제를 막는다.
+// 같은 층 안에선 어떤 draft/version 이든 동일한 캔버스 영역을 공유해야 자연스럽다.
 // 이미지 extent (real_width_m + natural dims) 가 있는 경우엔 union viewBox 가 자연스럽게
 // 안정적이므로 캐시 불필요.
-const VIEWBOX_CACHE_PREFIX = 'draft-viewbox:v1:';
+const VIEWBOX_CACHE_PREFIX = 'draft-viewbox:v2:';
 
-function loadCachedViewBox(draftId: string): ViewBox | null {
+function loadCachedViewBox(key: string): ViewBox | null {
   try {
-    const raw = localStorage.getItem(VIEWBOX_CACHE_PREFIX + draftId);
+    const raw = localStorage.getItem(VIEWBOX_CACHE_PREFIX + key);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<ViewBox>;
     if (
@@ -127,19 +129,29 @@ function loadCachedViewBox(draftId: string): ViewBox | null {
   return null;
 }
 
-function saveCachedViewBox(draftId: string, vb: ViewBox) {
+function saveCachedViewBox(key: string, vb: ViewBox) {
   try {
-    localStorage.setItem(VIEWBOX_CACHE_PREFIX + draftId, JSON.stringify(vb));
+    localStorage.setItem(VIEWBOX_CACHE_PREFIX + key, JSON.stringify(vb));
   } catch {
     // quota exceeded / private mode: 무시. 캐시 없이도 동작.
   }
 }
 
+function viewBoxCacheKey(draft: SceneDraft): string {
+  return draft.floor_id ?? draft.id;
+}
+
+/**
+ * 최초 viewBox 결정. floor 별로 첫 mount 때 한 번만 계산하고 캐시 → 이후 remount
+ * (promote 전후, 새로고침, draft↔version 전환 등) 시엔 같은 값을 복원.
+ * → 도형을 작게 그리거나 확정해도 캔버스 영역이 안 바뀌어 객체가 갑자기 커지는 현상 방지.
+ */
 function resolveInitialViewBox(draft: SceneDraft): ViewBox {
-  const cached = loadCachedViewBox(draft.id);
+  const key = viewBoxCacheKey(draft);
+  const cached = loadCachedViewBox(key);
   if (cached) return cached;
   const computed = computeViewBox(draft);
-  saveCachedViewBox(draft.id, computed);
+  saveCachedViewBox(key, computed);
   return computed;
 }
 

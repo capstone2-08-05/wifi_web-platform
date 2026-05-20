@@ -14,7 +14,7 @@ import {
 import { useMemo } from 'react';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
-import { useCreateRfRun, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
+import { useCreateRfRun, useFloorRfRuns, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
 import {
   useApCandidates,
   useApLayouts,
@@ -46,7 +46,8 @@ export default function SimulationPage() {
   const currentVersion =
     versionsQuery.data?.find((v) => v.is_current) ?? versionsQuery.data?.[0] ?? null;
 
-  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  // 사용자가 명시적으로 선택한 run (또는 새로 실행한 run). null 이면 "최신 succeeded 자동" 모드.
+  const [pickedRunId, setPickedRunId] = useState<string | null>(null);
 
   // 사용자가 배치한 AP 목록 + 추가 모드(true 면 다음 클릭이 새 AP 추가).
   const [aps, setAps] = useState<PlacedAp[]>([]);
@@ -54,6 +55,18 @@ export default function SimulationPage() {
 
   // 캔버스 배경으로 보여줄 확정 버전 상세 (rooms/walls/openings/objects 포함).
   const versionDetailQuery = useSceneVersion(currentVersion?.id ?? null);
+
+  // 층의 과거 RF Run 목록 (이력 카드 + 자동 복원용).
+  const pastRunsQuery = useFloorRfRuns(floorId, { page_size: 20 });
+  const pastRuns = useMemo(() => pastRunsQuery.data?.items ?? [], [pastRunsQuery.data]);
+
+  // 활성 run = 사용자가 명시 선택한 것 ?? 최근 succeeded fallback.
+  // → 새로고침/재진입 시에도 가장 최근 succeeded 자동 활성.
+  const activeRunId = useMemo(() => {
+    if (pickedRunId) return pickedRunId;
+    return pastRuns.find((r) => r.status === 'succeeded')?.id ?? null;
+  }, [pickedRunId, pastRuns]);
+  const setActiveRunId = setPickedRunId;
 
   // 시뮬레이션 페이지는 배경 도면 이미지를 안 깔음 — 도형만 + 히트맵 오버레이.
   // (배경 이미지는 공간편집/대시보드 한정.)
@@ -127,23 +140,24 @@ export default function SimulationPage() {
     rfMapsQuery.data?.[0]?.metrics_json,
   );
 
-  // 시뮬레이션 기록 — 현재 실행 + (TODO: 과거 RF runs 목록)
-  const history: SimulationHistoryItem[] = currentVersion
-    ? [
-        ...(rfRunPoll.isSucceeded
-          ? [
-              {
-                id: `run-${activeRunId}`,
-                label: `시뮬레이션 결과 #${rfRunPoll.rfRun?.id?.slice(0, 6) ?? ''}`,
-                timeLabel: '방금 전',
-                avgRssiDbm: metrics.avgRssiDbm ?? 0,
-                coveragePercent: metrics.coveragePercent ?? 0,
-                active: true,
-              },
-            ]
-          : []),
-      ]
-    : [];
+  // 시뮬레이션 기록 — 백엔드의 RF Run 목록을 표시. 클릭하면 해당 run 으로 전환.
+  const history: SimulationHistoryItem[] = useMemo(
+    () =>
+      pastRuns
+        .filter((r) => r.status === 'succeeded')
+        .map((r) => {
+          const m = parseMetrics(r.metrics_json);
+          return {
+            id: r.id,
+            label: `시뮬레이션 결과 #${r.id.slice(0, 6)}`,
+            timeLabel: formatRunTime(r.created_at),
+            avgRssiDbm: m.avgRssiDbm ?? 0,
+            coveragePercent: m.coveragePercent ?? 0,
+            active: r.id === activeRunId,
+          };
+        }),
+    [pastRuns, activeRunId],
+  );
 
   return (
     <div className="relative flex h-full flex-col p-6">
@@ -227,7 +241,12 @@ export default function SimulationPage() {
             {state === 'complete' && activeRunId && (
               <ApPlacementPanel rfRunId={activeRunId} />
             )}
-            <SimulationHistory items={history} showCompareButton={false} />
+            <SimulationHistory
+              items={history}
+              showCompareButton={false}
+              onSelect={(id) => setActiveRunId(id)}
+              emptyMessage="아직 시뮬레이션 기록이 없습니다. AP 를 배치하고 시뮬레이션을 실행해보세요."
+            />
           </aside>
         </div>
       )}
@@ -584,6 +603,27 @@ function ApLayoutRow({
  * 백엔드 응답 예: { z: 1, min_x, min_y, max_x, max_y }.
  * 4개 좌표 중 하나라도 유효하지 않으면 null → 히트맵 오버레이 생략.
  */
+/** RF Run.created_at → "방금 전" / "오늘 14:32" / "어제 09:10" / "5/18 14:32". */
+function formatRunTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  if (diffMs < 60_000) return '방금 전';
+  if (diffMs < 3600_000) return `${Math.floor(diffMs / 60_000)}분 전`;
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate();
+  if (sameDay(d, now)) return `오늘 ${hh}:${mm}`;
+  if (sameDay(d, yesterday)) return `어제 ${hh}:${mm}`;
+  return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
+}
+
 function parseHeatmapBounds(
   bounds: Record<string, unknown> | null | undefined,
 ): { minX: number; minY: number; maxX: number; maxY: number } | null {

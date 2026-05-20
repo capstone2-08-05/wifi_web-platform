@@ -9,9 +9,18 @@ interface PromotedCardProps {
   version: SceneVersion;
   versions?: SceneVersion[];
   onReupload: () => void;
+  /** "빈 도면으로 시작" — 새 SceneDraft 를 빈 상태로 생성. 미제공 시 버튼 숨김. */
+  onStartBlank?: () => void;
+  isStartingBlank?: boolean;
 }
 
-export function PromotedCard({ version, versions, onReupload }: PromotedCardProps) {
+export function PromotedCard({
+  version,
+  versions,
+  onReupload,
+  onStartBlank,
+  isStartingBlank,
+}: PromotedCardProps) {
   const [minimized, setMinimized] = useState(false);
 
   // versions 리스트에 is_current 가 잡혀있으면 그쪽을 진실의 원천으로 사용.
@@ -90,6 +99,16 @@ export function PromotedCard({ version, versions, onReupload }: PromotedCardProp
         >
           새 버전 업로드
         </button>
+        {onStartBlank && (
+          <button
+            type="button"
+            onClick={onStartBlank}
+            disabled={isStartingBlank}
+            className="rounded-md border px-3 py-2 text-sm hover:bg-accent disabled:opacity-50"
+          >
+            {isStartingBlank ? '생성 중…' : '빈 도면으로 시작'}
+          </button>
+        )}
         <Link
           to="/simulation"
           className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"

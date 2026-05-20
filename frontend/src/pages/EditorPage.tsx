@@ -836,6 +836,16 @@ export default function EditorPage() {
                       setPendingFileName(null);
                       openFilePicker();
                     }}
+                    onStartBlank={
+                      floorId
+                        ? () => {
+                            setJustPromoted(null);
+                            setPendingFileName(null);
+                            handleStartBlankDraft();
+                          }
+                        : undefined
+                    }
+                    isStartingBlank={createEmptyDraft.isPending}
                   />
                 </OverlayLayer>
               ) : isAnalyzing ? (
@@ -873,6 +883,15 @@ export default function EditorPage() {
                       setPendingFileName(null);
                       openFilePicker();
                     }}
+                    onStartBlank={
+                      floorId
+                        ? () => {
+                            setPendingFileName(null);
+                            handleStartBlankDraft();
+                          }
+                        : undefined
+                    }
+                    isStartingBlank={createEmptyDraft.isPending}
                   />
                 </OverlayLayer>
               ) : null)}
