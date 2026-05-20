@@ -13,9 +13,11 @@ export interface SimulationHistoryItem {
 interface Props {
   items: SimulationHistoryItem[];
   showCompareButton?: boolean;
+  onSelect?: (id: string) => void;
+  emptyMessage?: string;
 }
 
-export function SimulationHistory({ items, showCompareButton }: Props) {
+export function SimulationHistory({ items, showCompareButton, onSelect, emptyMessage }: Props) {
   return (
     <section className="rounded-2xl border bg-background p-5 shadow-sm">
       <header className="mb-4 flex items-center gap-2">
@@ -23,35 +25,43 @@ export function SimulationHistory({ items, showCompareButton }: Props) {
         <h3 className="text-sm font-bold">시뮬레이션 기록</h3>
       </header>
 
-      <ul className="space-y-3">
-        {items.map((item) => (
-          <li key={item.id}>
-            <button
-              type="button"
-              className={cn(
-                'w-full rounded-lg border p-3 text-left transition-colors hover:border-primary/40',
-                item.active && 'border-primary/40 bg-primary/5',
-              )}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <span className="text-sm font-semibold">{item.label}</span>
-                <span className="shrink-0 rounded-full bg-muted/60 px-2 py-0.5 text-[11px] text-muted-foreground">
-                  {item.timeLabel}
-                </span>
-              </div>
-              <div className="mt-2 flex items-center gap-3 text-[12px] text-muted-foreground">
-                <span>
-                  평균: <span className="font-semibold text-foreground">{formatNum(item.avgRssiDbm)}dBm</span>
-                </span>
-                <span>
-                  커버리지:{' '}
-                  <span className="font-semibold text-foreground">{formatNum(item.coveragePercent)}%</span>
-                </span>
-              </div>
-            </button>
-          </li>
-        ))}
-      </ul>
+      {items.length === 0 ? (
+        <p className="py-2 text-xs text-muted-foreground">
+          {emptyMessage ?? '아직 시뮬레이션 기록이 없습니다.'}
+        </p>
+      ) : (
+        <ul className="space-y-3">
+          {items.map((item) => (
+            <li key={item.id}>
+              <button
+                type="button"
+                onClick={() => onSelect?.(item.id)}
+                disabled={!onSelect}
+                className={cn(
+                  'w-full rounded-lg border p-3 text-left transition-colors hover:border-primary/40 disabled:cursor-default',
+                  item.active && 'border-primary/40 bg-primary/5',
+                )}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <span className="text-sm font-semibold">{item.label}</span>
+                  <span className="shrink-0 rounded-full bg-muted/60 px-2 py-0.5 text-[11px] text-muted-foreground">
+                    {item.timeLabel}
+                  </span>
+                </div>
+                <div className="mt-2 flex items-center gap-3 text-[12px] text-muted-foreground">
+                  <span>
+                    평균: <span className="font-semibold text-foreground">{formatNum(item.avgRssiDbm)}dBm</span>
+                  </span>
+                  <span>
+                    커버리지:{' '}
+                    <span className="font-semibold text-foreground">{formatNum(item.coveragePercent)}%</span>
+                  </span>
+                </div>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
 
       {showCompareButton && (
         <button
