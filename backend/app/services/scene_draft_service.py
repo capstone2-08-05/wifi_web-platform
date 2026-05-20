@@ -66,6 +66,77 @@ def _positive(value: float | None, fallback: float) -> float:
     return value
 
 
+def _build_wall_dimension_match_map(
+    walls: list[dict],
+    postprocess_metadata: dict | None,
+) -> dict[int, dict]:
+    """SceneSchema.walls (픽셀 좌표) 와 postprocess dimension_matches 를 다시 매칭.
+
+    fusion 후처리(bridge/snap)로 wall idx 가 바뀌었을 수 있어, postprocess 단계의
+    `matched_wall_idx` 를 그대로 못 씀. 대신 OCR entries 와 wall 픽셀 좌표를 받아
+    동일 `match_dimensions_to_walls` 알고리즘으로 재매칭.
+
+    반환: `{wall_index_in_scene: dimension_match_dict}`. 매칭 안 된 wall 은 키 없음.
+    """
+    if not postprocess_metadata or not walls:
+        return {}
+
+    raw_matches = postprocess_metadata.get("dimension_matches") or []
+    if not raw_matches:
+        return {}
+
+    # dimension_matches 자체에 OCR 결과 (bbox + parsed meters) 가 있으므로 OCR 호출
+    # 다시 안 해도 됨. dimension_matching 의 매칭 알고리즘만 재사용.
+    try:
+        from app.services.wall_extraction_helpers import dimension_matching
+        from app.services.wall_extraction_helpers.ocr import OCREntry
+    except Exception:
+        return {}
+
+    # 픽셀 좌표 추출. SceneSchema.Wall 은 model_dump 됐으므로 x1/y1/x2/y2 직접 접근.
+    wall_pixel_coords: list[list[float]] = []
+    for w in walls:
+        try:
+            wall_pixel_coords.append([
+                float(w["x1"]), float(w["y1"]),
+                float(w["x2"]), float(w["y2"]),
+            ])
+        except (KeyError, TypeError, ValueError):
+            wall_pixel_coords.append([0.0, 0.0, 0.0, 0.0])
+
+    # 각 dimension_match → OCREntry 로 복원 (text/bbox 가 필요한 최소 필드).
+    entries = []
+    for m in raw_matches:
+        try:
+            bbox = tuple(int(v) for v in m.get("bbox", []))
+            if len(bbox) != 4:
+                continue
+            entries.append(
+                OCREntry(
+                    bbox=bbox,  # type: ignore[arg-type]
+                    text=str(m.get("text", "")),
+                    confidence=float(m.get("ocr_confidence", 0.0)),
+                )
+            )
+        except Exception:
+            continue
+
+    if not entries:
+        return {}
+
+    rematched = dimension_matching.match_dimensions_to_walls(entries, wall_pixel_coords)
+    result: dict[int, dict] = {}
+    for m in rematched:
+        if m.matched_wall_idx is None:
+            continue
+        # 같은 wall 에 여러 매칭이 잡히면 가장 높은 ocr_confidence 만 유지.
+        existing = result.get(m.matched_wall_idx)
+        if existing and existing.get("ocr_confidence", 0) >= m.ocr_confidence:
+            continue
+        result[m.matched_wall_idx] = m.to_dict()
+    return result
+
+
 def _resolve_project_floor(
     db: Session,
     project_id: str | None,
@@ -167,6 +238,8 @@ def save_scene_draft(
     }
     if request_dto.scene.inference_metadata:
         summary_json["inference_metadata"] = request_dto.scene.inference_metadata
+    if request_dto.scene.postprocess_metadata:
+        summary_json["wall_postprocess"] = request_dto.scene.postprocess_metadata
 
     scene_draft = SceneDraft(
         project_id=resolved_project_id,
@@ -198,8 +271,20 @@ def save_scene_draft(
                 )
             )
 
+        # wall 픽셀 좌표 기준으로 OCR 치수 매칭 재실행 (fusion 후처리로 wall idx 바뀌었을
+        # 가능성 대비). dimension_match 결과는 각 DraftWall.metadata_json 에 첨부.
+        wall_dim_matches = _build_wall_dimension_match_map(
+            request_dto.scene.walls,
+            request_dto.scene.postprocess_metadata,
+        )
+
         wall_id_map: dict[str, str] = {}
-        for wall in request_dto.scene.walls:
+        for idx, wall in enumerate(request_dto.scene.walls):
+            wall_meta: dict[str, Any] = {"raw": wall}
+            dim_match = wall_dim_matches.get(idx)
+            if dim_match is not None:
+                wall_meta["dimension_match"] = dim_match
+
             draft_wall = DraftWall(
                 scene_draft_id=scene_draft.id,
                 wall_role=wall.get("role", "inner"),
@@ -208,7 +293,7 @@ def save_scene_draft(
                 material_label=wall.get("material"),
                 source_method=DEFAULT_DRAFT_ANALYSIS_METHOD,
                 centerline_geom=wall_centerline_geom(wall, scale_ratio),
-                metadata_json={"raw": wall},
+                metadata_json=wall_meta,
             )
             db.add(draft_wall)
             db.flush()
@@ -272,8 +357,8 @@ def save_scene_draft(
 async def analyze_from_asset(
     db: Session,
     asset_id: UUID,
-    real_width_m: float,
     current_user: User,
+    inference_mode: str = "sagemaker",
 ) -> AnalyzeFromAssetResponse:
     """이미 등록된 Asset 도면을 분석해서 비동기 Job 등록.
 
@@ -314,13 +399,13 @@ async def analyze_from_asset(
         image_bytes=content,
         filename=filename,
         content_type=asset.mime_type or "application/octet-stream",
-        real_width_m=real_width_m,
         project_id=asset.project_id,
         floor_id=asset.floor_id,
         current_user=current_user,
         upload_metadata=upload_metadata,
         created_by=current_user.email,
         source_asset_id=str(asset.id),
+        inference_mode=inference_mode,
     )
 
     return AnalyzeFromAssetResponse(

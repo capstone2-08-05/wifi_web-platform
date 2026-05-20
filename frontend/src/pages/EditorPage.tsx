@@ -166,7 +166,7 @@ export default function EditorPage() {
   // 2순위: 층의 floorplan 자산 중 가장 최근 것 (fallback).
   // Asset.storage_url 이 s3:// URI 라서 직접 못 쓰고, /download-url 로 presigned 받음.
   const sourceAssetId = baseScene?.source_asset_id ?? null;
-  const floorAssetsQuery = useFloorAssets(floorId, 'floorplan');
+  const floorAssetsQuery = useFloorAssets(floorId, 'floorplan_image');
   const fallbackAsset = useMemo(() => {
     const list = floorAssetsQuery.data ?? [];
     if (list.length === 0) return null;
@@ -547,6 +547,19 @@ export default function EditorPage() {
     runPatch('wall', selectedRef.id, { material_label: material });
   };
 
+  // 벽 실측 길이 (m) 갱신 — metadata_json.dimension_match.user_meters 에 저장.
+  // null 이면 사용자 override 해제 (OCR 추정값으로 fallback).
+  const handleUpdateWallDimension = (meters: number | null) => {
+    if (!selectedRef || selectedRef.kind !== 'wall') return;
+    const wall = activeDraft?.walls.find((w) => w.id === selectedRef.id);
+    if (!wall) return;
+    const meta = (wall.metadata_json ?? {}) as Record<string, unknown>;
+    const dim = (meta.dimension_match ?? {}) as Record<string, unknown>;
+    const nextDim = { ...dim, user_meters: meters };
+    const nextMeta = { ...meta, dimension_match: nextDim };
+    runPatch('wall', selectedRef.id, { metadata_json: nextMeta });
+  };
+
   // 객체 종류 변경
   const handleUpdateObjectType = (objectType: string) => {
     if (!selectedRef || selectedRef.kind !== 'object') return;
@@ -640,15 +653,15 @@ export default function EditorPage() {
     }
   }, [jobPoll.isSucceeded, jobPoll.isFailed]);
 
-  const handleFile = (file: File, realWidthM: number) => {
+  const handleFile = (file: File) => {
     setPendingFileName(file.name);
     if (!floorId) return;
     // 캔버스 배경용 로컬 캐시 — 백엔드가 source_asset_id 안 채워도 시각화 가능.
     saveLocalFloorplanImage(floorId, file);
+    // scale_ratio 는 백엔드의 OCR 치수 자동 추정으로 결정됨. 사용자 입력 m 없음.
     analyze.mutate(
       {
         file,
-        real_width_m: realWidthM,
         project_id: projectId ?? undefined,
         floor_id: floorId,
       },
@@ -694,7 +707,7 @@ export default function EditorPage() {
   // 글로벌(헤더/PromotedCard) 업로드용 hidden input — CanvasArea 안 떠있을 때도 동작.
   const globalFileInputRef = useRef<HTMLInputElement>(null);
   const openFilePicker = () => {
-    // CanvasArea 떠있으면 그쪽 입력으로 (real_width_m 같이 입력), 아니면 글로벌(기본 10m).
+    // CanvasArea 떠있으면 그쪽 입력으로, 아니면 글로벌.
     if (fileInputRef.current) {
       fileInputRef.current.click();
     } else {
@@ -705,10 +718,10 @@ export default function EditorPage() {
     const f = e.target.files?.[0];
     e.target.value = '';
     if (!f) return;
-    handleFile(f, 10);
+    handleFile(f);
     toast.info(
       '도면 분석 시작',
-      '실제 가로 길이는 10m 로 가정합니다. 더 정확한 값이 필요하면 분석 후 새로 업로드하세요.',
+      'AI 가 도면 치수를 읽어 자동으로 scale 을 추정합니다. 분석 후 벽별 실측값으로 보정할 수 있습니다.',
     );
   };
   // handleFile 안에서 saveLocalFloorplanImage 이미 호출됨.
@@ -895,6 +908,7 @@ export default function EditorPage() {
         onDelete={handleDeleteSelected}
         onRotate={handleRotateSelected}
         onUpdateMaterial={handleUpdateMaterial}
+        onUpdateWallDimension={handleUpdateWallDimension}
         onUpdateObjectPosition={handleUpdateObjectPosition}
         onUpdateObjectSize={handleResizeObject}
         isSaving={patchEntity.isPending || patchVersionEntity.isPending}

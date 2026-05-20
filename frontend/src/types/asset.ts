@@ -1,6 +1,6 @@
 import type { ISODateString, UUID } from './common';
 
-export type AssetType = 'floorplan' | 'photo' | 'document' | string;
+export type AssetType = 'floorplan_image' | 'photo' | 'document' | string;
 
 // §5.1 응답 (POST /floors/{floor_id}/assets) 및 §5.3 GET /assets/{id}
 export interface Asset {

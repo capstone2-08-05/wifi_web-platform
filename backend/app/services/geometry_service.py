@@ -9,10 +9,24 @@ from app.schemas.scene import Wall, Room
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_FALLBACK_SCALE_M_PER_PX = 0.01  # OCR 치수 추정 실패 시 임시값 (1px = 1cm).
+# 명백히 잘못된 추정 가능성 있음 — 사용자가 PropertiesPanel 에서 벽별 실측값 입력해
+# 보정하도록 유도. summary_json["wall_postprocess"]["scale_source"]="default_fallback".
+
+
 class GeometryService:
-    def __init__(self, pixel_width: int, pixel_height: int, real_width_m: float):
-        # 픽셀 당 미터 비율 계산
-        self.scale_ratio = real_width_m / pixel_width if pixel_width > 0 else 0.1
+    def __init__(
+        self,
+        pixel_width: int,
+        pixel_height: int,
+        scale_ratio: float | None = None,
+    ):
+        # scale_ratio 결정 (m/px): 호출자가 명시한 값 우선, 없으면 default fallback.
+        # real_width_m 입력 흐름은 제거됨 — OCR 치수 자동 추정이 primary source.
+        if scale_ratio is not None and scale_ratio > 0:
+            self.scale_ratio = float(scale_ratio)
+        else:
+            self.scale_ratio = DEFAULT_FALLBACK_SCALE_M_PER_PX
         self.pixel_height = pixel_height
         self.pixel_width = pixel_width
 

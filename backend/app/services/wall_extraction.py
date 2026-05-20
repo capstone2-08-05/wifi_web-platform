@@ -1,31 +1,100 @@
 import cv2
 import numpy as np
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Any, Tuple
 from app.core.settings import MASK_DIR
+
+
+@dataclass
+class PostprocessMetadata:
+    """§69 wall postprocess 결과 metadata.
+
+    응답 / `summary_json["wall_postprocess"]` 영속화 / 디버깅 라우터에서 동일하게 사용.
+    `applied=False` 면 threshold scoring 비활성 (image_path 없음, helper import 실패 등).
+    """
+    applied: bool
+    selected_threshold: float | None = None
+    threshold_candidates: list[float] = field(default_factory=list)
+    scores: list[dict] = field(default_factory=list)  # ThresholdScore.to_dict()
+    ocr_regions_count: int = 0
+    line_segments_count: int = 0
+    # OCR 진단용 원본 entries (각 항목: text/bbox/confidence/parsed_meters/parse_confidence).
+    # "OCR 자체 실패" vs "OCR 성공했지만 parser 가 거부" vs "parse 됐지만 매칭 실패" 분리용.
+    ocr_entries: list[dict] = field(default_factory=list)
+    # 치수 OCR ↔ 벽 매칭 결과 (scoring 단계에서는 dim_entries 만 추출, 매칭은 후처리 후).
+    dimension_entries_count: int = 0     # 치수로 파싱된 OCR 항목 수
+    dimension_matches: list[dict] = field(default_factory=list)  # DimensionMatch.to_dict()
+    scale_estimate: dict | None = None   # ScaleEstimate.to_dict() — OCR 기반 scale (None 이면 fallback 필요)
+    fallback_reason: str | None = None   # applied=False 일 때 사유
+    debug_dir: str | None = None         # per-job 디버그 이미지 디렉토리 (있을 때)
+
+    def to_dict(self) -> dict:
+        return {
+            "applied": self.applied,
+            "selected_threshold": self.selected_threshold,
+            "threshold_candidates": list(self.threshold_candidates),
+            "scores": list(self.scores),
+            "ocr_regions_count": self.ocr_regions_count,
+            "line_segments_count": self.line_segments_count,
+            "ocr_entries": list(self.ocr_entries),
+            "dimension_entries_count": self.dimension_entries_count,
+            "dimension_matches": list(self.dimension_matches),
+            "scale_estimate": self.scale_estimate,
+            "fallback_reason": self.fallback_reason,
+            "debug_dir": self.debug_dir,
+        }
+
+
+@dataclass
+class WallExtractionResult:
+    """`execute_from_prob_map` 반환값. walls 좌표 + postprocess metadata 묶음."""
+    walls: list[list[float]]
+    postprocess: PostprocessMetadata
 
 
 class WallExtractor:
     def __init__(self):
         MASK_DIR.mkdir(parents=True, exist_ok=True)
 
+    def _resolve_debug_dir(self, debug_dir: Path | None) -> Path:
+        """디버그 이미지 저장 경로. 명시되면 그 디렉토리, 아니면 MASK_DIR fallback."""
+        target = Path(debug_dir) if debug_dir is not None else MASK_DIR
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
     # ── 1. 전처리 ─────────────────────────────────────────────────────────
-    def _preprocess(self, mask: np.ndarray) -> np.ndarray:
+    def _preprocess(self, mask: np.ndarray, debug_dir: Path | None = None) -> np.ndarray:
+        """Open(작게)으로 노이즈만 제거 → 수평/수직 Close 따로 적용해 합집합.
+
+        이전엔 큰 정사각형(k*2) Close 로 인접 평행 벽을 뭉치게 했는데, 얇은 내부 벽이
+        사라지는 문제 있어서 H/V 분리:
+          - 수평 close (k_close, 1) → 가로 벽 안의 작은 끊김만 메움
+          - 수직 close (1, k_close) → 세로 벽 안의 작은 끊김만 메움
+          - 두 결과 OR → H/V 벽 모두 보존하되 perpendicular gap bridging 회피
+        """
         _, binary = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
         h, w = binary.shape
 
-        k_size = max(3, int(min(h, w) * 0.01))
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_size, k_size))
-        clean = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+        # Open: 노이즈 제거용 작은 커널 (이전 0.01 → 0.003 으로 축소).
+        k_open = max(2, int(min(h, w) * 0.003))
+        open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_open, k_open))
+        clean = cv2.morphologyEx(binary, cv2.MORPH_OPEN, open_kernel)
 
-        close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_size * 2, k_size * 2))
-        clean = cv2.morphologyEx(clean, cv2.MORPH_CLOSE, close_kernel)
+        # Close: H/V 분리해서 각자의 끊김만 메움.
+        k_close = max(5, int(min(h, w) * 0.008))
+        h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_close, 1))
+        v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, k_close))
+        h_close = cv2.morphologyEx(clean, cv2.MORPH_CLOSE, h_kernel)
+        v_close = cv2.morphologyEx(clean, cv2.MORPH_CLOSE, v_kernel)
+        clean = cv2.bitwise_or(h_close, v_close)
 
-        cv2.imwrite(str(MASK_DIR / "debug_edges.png"), clean)
+        out_dir = self._resolve_debug_dir(debug_dir)
+        cv2.imwrite(str(out_dir / "debug_edges.png"), clean)
         return clean
 
     # ── 2. Skeleton ───────────────────────────────────────────────────────
-    def _skeletonize(self, edges: np.ndarray, prob_map=None) -> np.ndarray:
+    def _skeletonize(self, edges: np.ndarray, prob_map=None, debug_dir: Path | None = None) -> np.ndarray:
         from skimage.morphology import thin
 
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(edges)
@@ -44,7 +113,8 @@ class WallExtractor:
             conf_mask = (prob_map > 0.4)
             thinned = ((thinned > 0) & conf_mask).astype(np.uint8) * 255
 
-        cv2.imwrite(str(MASK_DIR / "debug_skeleton.png"), thinned)
+        out_dir = self._resolve_debug_dir(debug_dir)
+        cv2.imwrite(str(out_dir / "debug_skeleton.png"), thinned)
         return thinned
     
     def _filter_by_confidence(self, lines: List, prob_map: np.ndarray, min_conf=0.6) -> List:
@@ -341,7 +411,13 @@ class WallExtractor:
         return float(np.median(samples))
 
     # ── 9. 디버그 이미지 저장 ─────────────────────────────────────────────
-    def _save_debug(self, skeleton: np.ndarray, lines: List, detections: List[Any] = None):
+    def _save_debug(
+        self,
+        skeleton: np.ndarray,
+        lines: List,
+        detections: List[Any] = None,
+        debug_dir: Path | None = None,
+    ):
         debug = cv2.cvtColor(skeleton, cv2.COLOR_GRAY2BGR)
 
         # 벽 선분 (주황색)
@@ -361,16 +437,22 @@ class WallExtractor:
                 color = (0, 255, 0) if det.class_name == "door" else (0, 200, 255)
                 cv2.rectangle(debug, (bx1, by1), (bx2, by2), color, 2)
 
-        cv2.imwrite(str(MASK_DIR / "eee.png"), debug)
+        out_dir = self._resolve_debug_dir(debug_dir)
+        cv2.imwrite(str(out_dir / "walls_overlay.png"), debug)
 
     # ── 10. 메인 실행 ─────────────────────────────────────────────────────
-    def execute_from_mask(self, mask: np.ndarray, detections: List[Any] = None) -> List[List[float]]:
-        edges = self._preprocess(mask)
+    def execute_from_mask(
+        self,
+        mask: np.ndarray,
+        detections: List[Any] = None,
+        debug_dir: Path | None = None,
+    ) -> List[List[float]]:
+        edges = self._preprocess(mask, debug_dir=debug_dir)
         if edges.sum() == 0:
             return []
 
         wall_thickness = self.estimate_wall_thickness(edges, detections or [])
-        skeleton = self._skeletonize(edges)
+        skeleton = self._skeletonize(edges, debug_dir=debug_dir)
 
         raw_lines = self._detect_lines(skeleton)
         hv_lines  = self._filter_hv(raw_lines)           
@@ -406,18 +488,28 @@ class WallExtractor:
         extended = self._snap_intersections(extended, tol=20.0)
 
 
-        self._save_debug(skeleton, extended, detections or [])
+        self._save_debug(skeleton, extended, detections or [], debug_dir=debug_dir)
         return extended
 
-    def execute_from_unet_image(self, image_path: Path, detections: List[Any] = None) -> List[List[float]]:
+    def execute_from_unet_image(
+        self,
+        image_path: Path,
+        detections: List[Any] = None,
+        debug_dir: Path | None = None,
+    ) -> List[List[float]]:
         img = cv2.imread(str(image_path))
         if img is None:
             raise ValueError(f"이미지를 읽을 수 없습니다: {image_path}")
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        return self.execute_from_mask(gray, detections)
+        return self.execute_from_mask(gray, detections, debug_dir=debug_dir)
 
-    def execute(self, image_path: Path, detections: List[Any] = None) -> List[List[float]]:
-        return self.execute_from_unet_image(image_path, detections)
+    def execute(
+        self,
+        image_path: Path,
+        detections: List[Any] = None,
+        debug_dir: Path | None = None,
+    ) -> List[List[float]]:
+        return self.execute_from_unet_image(image_path, detections, debug_dir=debug_dir)
 
     def execute_from_prob_map(
         self,
@@ -425,32 +517,59 @@ class WallExtractor:
         threshold: float = None,
         detections: List[Any] = None,
         image_path: Path | None = None,
-    ) -> List[List[float]]:
-        """U-Net wall probability map → wall 선분 리스트.
+        debug_dir: Path | None = None,
+    ) -> WallExtractionResult:
+        """U-Net wall probability map → walls + postprocess metadata.
 
         threshold 결정 우선순위:
           1. `threshold` 인자가 명시되면 그 값 사용
           2. `image_path` 가 있으면 multi-threshold + OCR/선분 정합도 기반 best 선택 (§69)
           3. 그 외 → Otsu fallback
+
+        반환: `WallExtractionResult` (walls + PostprocessMetadata). 호출자가 metadata
+        를 `summary_json` 영속화 / 응답 / 디버깅에 활용.
         """
         from skimage.filters import threshold_otsu
 
         prob = np.load(str(prob_map_path))
 
-        # 1. threshold 결정
-        thr = self._pick_threshold(prob, threshold, image_path)
-        if thr is None:
-            thr = float(threshold_otsu(prob))
+        # A. 좌표계 통일 — AI 가 prob_map 을 작은 해상도(예: 512×512)로 뱉으면
+        # OCR bbox(원본 이미지 좌표)와 wall 결과(prob_map 좌표) 가 어긋남.
+        # image_path 가 있으면 prob_map 을 원본 이미지 크기로 미리 resize 해서
+        # 모든 downstream 처리(mask, skeleton, walls, OCR, dimension match)가 동일
+        # 이미지 좌표계에서 동작하도록 보장.
+        if image_path is not None and Path(image_path).exists():
+            img_for_dims = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+            if img_for_dims is not None:
+                h_img, w_img = img_for_dims.shape
+                h_prob, w_prob = prob.shape
+                if (h_img, w_img) != (h_prob, w_prob):
+                    prob = cv2.resize(
+                        prob.astype(np.float32), (w_img, h_img),
+                        interpolation=cv2.INTER_LINEAR,
+                    )
+
+        # 1. threshold 결정 (+ metadata 동시 빌드, OCR entries 보존)
+        # 이 시점의 prob 는 이미 image 좌표계에 정렬되어 있음.
+        meta, ocr_entries = self._pick_threshold(prob, threshold, image_path)
+        if meta.debug_dir is None and debug_dir is not None:
+            meta.debug_dir = str(debug_dir)
+        if meta.selected_threshold is None:
+            otsu_thr = float(threshold_otsu(prob))
+            meta.selected_threshold = otsu_thr
+            if meta.fallback_reason is None:
+                meta.fallback_reason = "explicit_threshold_not_provided"
+        thr = meta.selected_threshold
         mask = (prob > thr).astype(np.uint8) * 255
-        
-        edges = self._preprocess(mask)
+
+        edges = self._preprocess(mask, debug_dir=debug_dir)
         if edges.sum() == 0:
-            return []
+            return WallExtractionResult(walls=[], postprocess=meta)
 
         wall_thickness = self.estimate_wall_thickness(edges, detections or [])
-        
+
         # 2. 확률 가중 스켈레톤
-        skeleton = self._skeletonize(edges, prob_map=prob)
+        skeleton = self._skeletonize(edges, prob_map=prob, debug_dir=debug_dir)
 
         raw_lines = self._detect_lines(skeleton)
         hv_lines  = self._filter_hv(raw_lines)
@@ -494,22 +613,63 @@ class WallExtractor:
         # 이미지 가장자리에 잡힌 캔버스 경계 라인 제거
         result = self._filter_border(result, skeleton.shape, margin_ratio=0.01)
 
-        self._save_debug(skeleton, result, detections or [])
-        return result
+        self._save_debug(skeleton, result, detections or [], debug_dir=debug_dir)
+
+        # 4. 치수 OCR ↔ 추출된 벽 매칭 → scale 추정 (real_width_m fallback 용).
+        if ocr_entries and result:
+            try:
+                from app.services.wall_extraction_helpers import dimension_matching
+
+                matches = dimension_matching.match_dimensions_to_walls(
+                    ocr_entries, result,
+                )
+                meta.dimension_matches = [m.to_dict() for m in matches]
+                est = dimension_matching.estimate_scale_from_matches(matches)
+                if est is not None:
+                    meta.scale_estimate = est.to_dict()
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "dimension matching 실패 (무시하고 진행): %s", exc
+                )
+
+        return WallExtractionResult(walls=result, postprocess=meta)
 
     def _pick_threshold(
         self,
         prob: np.ndarray,
         explicit: float | None,
         image_path: Path | None,
-    ) -> float | None:
-        """§69 multi-threshold scoring 으로 best 선택. image_path 없으면 None 반환 (fallback)."""
+    ) -> tuple[PostprocessMetadata, list]:
+        """§69 multi-threshold scoring 으로 best 선택 + 치수 매칭 입력 자료 보존.
+
+        반환: `(PostprocessMetadata, ocr_entries)` — ocr_entries 는 후속 dimension
+        매칭에 재사용. scoring 비활성이면 빈 리스트.
+
+          - `applied=True` & `selected_threshold` 설정: scoring 완료
+          - `applied=False`: scoring 비활성 — 호출자가 explicit 값 또는 Otsu fallback 사용
+        """
+        from app.services.wall_extraction_helpers.threshold_scoring import (
+            DEFAULT_THRESHOLDS,
+        )
+
+        meta = PostprocessMetadata(
+            applied=False,
+            threshold_candidates=list(DEFAULT_THRESHOLDS),
+        )
+
         if explicit is not None:
-            return float(explicit)
-        if image_path is None or not image_path.exists():
-            return None
+            meta.selected_threshold = float(explicit)
+            meta.fallback_reason = "explicit_threshold_provided"
+            return meta, []
+
+        if image_path is None or not Path(image_path).exists():
+            meta.fallback_reason = "source_image_unavailable"
+            return meta, []
+
         try:
             from app.services.wall_extraction_helpers import (
+                dimension_matching,
                 line_detection,
                 ocr,
                 threshold_scoring,
@@ -519,12 +679,14 @@ class WallExtractor:
             logging.getLogger(__name__).warning(
                 "wall_extraction_helpers import 실패 → Otsu fallback: %s", exc
             )
-            return None
+            meta.fallback_reason = f"helpers_import_failed: {exc}"
+            return meta, []
 
         # prob_map 과 source image 의 해상도가 다를 수 있음 → image 기준으로 prob_map 리사이즈.
         img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
         if img is None:
-            return None
+            meta.fallback_reason = "source_image_read_failed"
+            return meta, []
         h_img, w_img = img.shape
         h_prob, w_prob = prob.shape
         if (h_img, w_img) != (h_prob, w_prob):
@@ -534,30 +696,70 @@ class WallExtractor:
         else:
             prob_resized = prob
 
-        # OCR + line 추출 (실패해도 둘 다 None 처리해서 진행)
+        # OCR — 텍스트 보존된 entries (치수 매칭 + 페널티 양쪽 쓰임).
+        ocr_entries = []
+        text_mask = None
         try:
-            text_bboxes = ocr.detect_text_bboxes(image_path)
-            text_mask = ocr.build_text_mask(text_bboxes, prob_resized.shape, pad=3)
-        except Exception:
-            text_mask = None
+            ocr_entries = ocr.detect_text_entries(image_path)
+            meta.ocr_regions_count = len(ocr_entries)
+            text_mask = ocr.build_text_mask(
+                [e.bbox for e in ocr_entries], prob_resized.shape, pad=3,
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("OCR 추출 실패: %s", exc)
 
+        # 진단용: 각 OCR entry 의 raw text + bbox + conf + parse 결과를 metadata 에 보관.
+        # "OCR 실패" / "parser 거부" / "parse 됐지만 매칭 실패" 를 분리해 추적 가능.
+        ocr_entries_dump: list[dict] = []
+        dim_entries = []
+        for e in ocr_entries:
+            parsed = dimension_matching.parse_dimension_to_meters(e.text)
+            ocr_entries_dump.append({
+                "text": e.text,
+                "bbox": list(e.bbox),
+                "confidence": round(float(e.confidence), 3),
+                "parsed_meters": (
+                    round(parsed.meters, 4) if parsed is not None else None
+                ),
+                "parse_confidence": (
+                    round(parsed.confidence, 2) if parsed is not None else None
+                ),
+                "unit_hint": parsed.unit_hint if parsed is not None else None,
+            })
+            if parsed is not None:
+                dim_entries.append(e)
+        meta.ocr_entries = ocr_entries_dump
+        meta.dimension_entries_count = len(dim_entries)
+
+        line_mask = None
         try:
             segs = line_detection.detect_line_segments(image_path)
-            line_mask = line_detection.build_line_mask(segs, prob_resized.shape, thickness=3) if len(segs) > 0 else None
-        except Exception:
-            line_mask = None
+            meta.line_segments_count = int(len(segs))
+            line_mask = (
+                line_detection.build_line_mask(segs, prob_resized.shape, thickness=3)
+                if len(segs) > 0 else None
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("line detection 실패: %s", exc)
 
-        best_thr, _scores = threshold_scoring.pick_best_threshold(
-            prob_resized, line_mask=line_mask, text_mask=text_mask
+        best_thr, scores = threshold_scoring.pick_best_threshold(
+            prob_resized,
+            line_mask=line_mask,
+            text_mask=text_mask,
+            dim_entries=dim_entries,
         )
-        return float(best_thr)
+        meta.applied = True
+        meta.selected_threshold = float(best_thr)
+        meta.scores = [s.to_dict() for s in scores]
+        meta.fallback_reason = None
+        return meta, ocr_entries
 
 
 wall_extractor = WallExtractor()
 
 
-# def run_rule_based_wall_extraction(image_path: Path, detections: List[Any] = None):
-#     return wall_extractor.execute(image_path, detections)
-
-def run_rule_based_wall_extraction(prob_map_path: Path, detections=None): 
-     return wall_extractor.execute_from_prob_map(prob_map_path, detections=detections)
+def run_rule_based_wall_extraction(prob_map_path: Path, detections=None):
+    """legacy entry point — walls 좌표 리스트만 반환 (metadata 버림)."""
+    return wall_extractor.execute_from_prob_map(prob_map_path, detections=detections).walls

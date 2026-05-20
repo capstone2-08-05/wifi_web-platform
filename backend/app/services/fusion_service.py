@@ -15,6 +15,7 @@ from typing import Any
 
 from starlette.concurrency import run_in_threadpool
 
+from app.core.settings import MASK_DIR
 from app.geometry import (
     assign_wall_refs,
     bridge_collinear_walls,
@@ -43,7 +44,6 @@ class FusionService:
         *,
         result: InferenceResult,
         filename: str,
-        real_width_m: float,
     ) -> SceneSchema:
         """SageMaker raw outputs (download 완료된 상태) → SceneSchema.
 
@@ -52,40 +52,64 @@ class FusionService:
         """
         ml_output = _build_ml_output_from_inference(result, filename)
         sagemaker_meta = _build_sagemaker_meta(result)
+        # per-job 디버그 이미지 격리 (멀티잡 동시 실행 시 덮어쓰기 방지).
+        debug_dir = MASK_DIR / "wall_postprocess" / str(result.job_id)
         scene = await run_in_threadpool(
             self._run_wi_twin_pipeline,
             ml_output,
-            real_width_m,
             result.prob_map_local_path,
             sagemaker_meta,
             result.source_image_local_path,
+            debug_dir,
         )
         return scene
 
     def _run_wi_twin_pipeline(
         self,
         ml_output: MlOutputDTO,
-        real_width_m: float,
         prob_map_local_path,
         sagemaker_meta: dict[str, Any] | None = None,
         source_image_local_path=None,
+        debug_dir=None,
     ) -> SceneSchema:
-        geo_service = GeometryService(
-            pixel_width=ml_output.meta.original_width,
-            pixel_height=ml_output.meta.original_height,
-            real_width_m=real_width_m,
-        )
-        topo_service = TopologyService()
-        scale_ratio = geo_service.scale_ratio
-
         # wall_extraction 은 .npy 파일 경로를 받아 prob_map 로딩.
-        # source_image 있으면 §69 multi-threshold + OCR scoring 흐름 활성화.
-        raw_coords = wall_extractor.execute_from_prob_map(
+        # source_image 있으면 §69 multi-threshold + OCR scoring + 치수 매칭 흐름 활성화.
+        # GeometryService 보다 먼저 호출 — OCR 치수 기반 scale 추정을 받아 scale 결정.
+        wall_result = wall_extractor.execute_from_prob_map(
             prob_map_local_path,
             threshold=None,
             detections=ml_output.detections,
             image_path=source_image_local_path,
+            debug_dir=debug_dir,
         )
+        raw_coords = wall_result.walls
+        postprocess_meta_dict = wall_result.postprocess.to_dict()
+
+        # OCR 치수 추정 scale 이 있으면 그걸로, 없으면 default fallback (사용자가
+        # PropertiesPanel 에서 벽별 실측 입력해 후속 보정).
+        scale_ratio_override: float | None = None
+        scale_source = "default_fallback"
+        scale_est = wall_result.postprocess.scale_estimate
+        if scale_est and scale_est.get("scale_m_per_px", 0) > 0:
+            scale_ratio_override = float(scale_est["scale_m_per_px"])
+            scale_source = "ocr_dimension"
+            logger.info(
+                "scale source: OCR dimension matching (%.6f m/px, %d pairs)",
+                scale_ratio_override, scale_est.get("pair_count", 0),
+            )
+        else:
+            logger.info(
+                "scale source: default fallback — OCR dim 매칭 부족, 사용자 보정 필요"
+            )
+        postprocess_meta_dict["scale_source"] = scale_source
+
+        geo_service = GeometryService(
+            pixel_width=ml_output.meta.original_width,
+            pixel_height=ml_output.meta.original_height,
+            scale_ratio=scale_ratio_override,
+        )
+        topo_service = TopologyService()
+        scale_ratio = geo_service.scale_ratio
 
         raw_walls: list[Wall] = []
         for i, coord in enumerate(raw_coords):
@@ -127,25 +151,20 @@ class FusionService:
                 det.id = f"furniture_{len(furniture_objects)}"
                 furniture_objects.append(det)
 
-        # 같은 문/창을 여러 번 탐지한 중복 제거 (NMS). score 높은 박스 유지.
-        # type 별로 따로 NMS — 가까이 겹친 door 와 window 가 서로를 제거하지 않도록.
+        # 중복 detection 제거 (NMS) — type 무관 단일 pass.
+        # 같은 위치에 door 와 window 가 동시 감지되면 score 1 등만 유지.
+        # (이전엔 type 별로 따로 NMS 였지만 사용자가 한 개만 보이길 원해 변경.)
         if opening_dets:
             before = len(opening_dets)
-            kept_set: set[int] = set()
-            for cls in ("door", "window"):
-                group = [i for i, d in enumerate(opening_dets) if d.class_name == cls]
-                if not group:
-                    continue
-                g_boxes = [
-                    tuple(float(v) for v in opening_dets[i].bbox_xyxy) for i in group
-                ]
-                g_scores = [float(opening_dets[i].score) for i in group]
-                for k in nms_filter_indices(g_boxes, g_scores):
-                    kept_set.add(group[k])
-            opening_dets = [d for i, d in enumerate(opening_dets) if i in kept_set]
+            all_boxes = [
+                tuple(float(v) for v in d.bbox_xyxy) for d in opening_dets
+            ]
+            all_scores = [float(d.score) for d in opening_dets]
+            kept_indices = nms_filter_indices(all_boxes, all_scores)
+            opening_dets = [opening_dets[i] for i in kept_indices]
             if len(opening_dets) < before:
                 logger.info(
-                    "opening NMS (per-type): %d → %d (removed %d duplicates)",
+                    "opening NMS (cross-type): %d → %d (removed %d duplicates)",
                     before, len(opening_dets), before - len(opening_dets),
                 )
 
@@ -183,6 +202,7 @@ class FusionService:
             topology=topology_result.model_dump(),
             objects=[obj.model_dump() for obj in furniture_objects],
             inference_metadata=sagemaker_meta,
+            postprocess_metadata=postprocess_meta_dict,
         )
 
 

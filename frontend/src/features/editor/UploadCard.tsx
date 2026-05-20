@@ -14,13 +14,12 @@ function isAllowed(file: File) {
 interface UploadCardProps {
   isPending?: boolean;
   errorMessage?: string;
-  onSubmit: (file: File, realWidthM: number) => void;
+  onSubmit: (file: File) => void;
 }
 
 export function UploadCard({ isPending, errorMessage, onSubmit }: UploadCardProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
-  const [realWidth, setRealWidth] = useState<number>(10);
   const [dragOver, setDragOver] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
@@ -49,7 +48,7 @@ export function UploadCard({ isPending, errorMessage, onSubmit }: UploadCardProp
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!file) return;
-    onSubmit(file, realWidth);
+    onSubmit(file);
   };
 
   const error = localError ?? errorMessage ?? null;
@@ -112,20 +111,10 @@ export function UploadCard({ isPending, errorMessage, onSubmit }: UploadCardProp
           />
         </div>
 
-        <div className="flex items-center gap-3">
-          <label className="text-xs text-muted-foreground">실제 너비(m)</label>
-          <input
-            type="number"
-            step="0.1"
-            min="0.1"
-            value={realWidth}
-            onChange={(e) => setRealWidth(Number(e.target.value) || 0)}
-            className="w-24 rounded-md border bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          />
-          <p className="text-[11px] text-muted-foreground">
-            도면이 표현하는 실제 가로 길이 (스케일 환산용)
-          </p>
-        </div>
+        <p className="text-[11px] text-muted-foreground">
+          AI 가 도면 치수를 자동으로 읽어 scale 을 추정합니다. 분석 후 벽별 실측값으로
+          보정할 수 있습니다.
+        </p>
 
         {error && (
           <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">

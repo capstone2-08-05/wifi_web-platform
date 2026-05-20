@@ -217,6 +217,56 @@ def create_floorplan_asset_from_bytes(
     return asset
 
 
+def create_floorplan_asset_from_local_path(
+    db: Session,
+    *,
+    project_id: str,
+    floor_id: str,
+    local_path: str,
+    filename: str,
+    content_type: Optional[str],
+    file_size_bytes: int,
+    uploaded_by: str,
+) -> Asset:
+    """로컬 FS 에 이미 저장된 도면 이미지를 assets 에 등록 (S3 업로드 없음).
+
+    로컬 추론 모드(`/upload/floorplan/analyze?inference_mode=local`) 전용. router 의
+    `_validate_and_save_file` 가 이미 UPLOAD_DIR 에 파일을 저장했으므로, 그 경로를
+    그대로 `storage_url = file:///abs/path` 로 보관해서 DB row 만든다.
+
+    `/assets/{id}/download-url` 은 `file://` 스킴을 감지해 백엔드 자체 스트리밍
+    엔드포인트(`/assets/{id}/raw`) URL 을 반환한다 (S3 presigned 우회).
+    """
+    asset_type = AssetType.FLOORPLAN_IMAGE.value
+    ext = _resolve_extension(filename)
+    mime_type = content_type or ALLOWED_EXTENSIONS[ext]
+    asset_id = uuid4()
+
+    # 경로 정규화 + file:// URI 로 보관 (드라이브 표기 윈도우 호환).
+    abs_path = Path(local_path).resolve()
+    storage_url = abs_path.as_uri()  # 예: file:///C:/capstone2/.../uploads/xxx.jpg
+
+    asset = Asset(
+        id=str(asset_id),
+        project_id=project_id,
+        floor_id=floor_id,
+        uploaded_by=uploaded_by,
+        asset_type=asset_type,
+        source_format=ext,
+        storage_url=storage_url,
+        mime_type=mime_type,
+        file_size_bytes=file_size_bytes,
+        metadata_json={},
+    )
+    try:
+        db.add(asset)
+        db.flush()
+    except Exception:
+        db.rollback()
+        raise
+    return asset
+
+
 def list_assets(
     db: Session,
     floor_id: UUID,
@@ -242,18 +292,58 @@ def get_asset(db: Session, asset_id: UUID, user: User) -> Asset:
 def get_asset_download_url(
     db: Session, asset_id: UUID, user: User
 ) -> tuple[str, int]:
-    """presigned GET URL + 만료 초 반환."""
+    """asset 다운로드 URL + 만료 초 반환.
+
+    - `s3://` 자산: S3 presigned GET URL
+    - `file://` 자산 (로컬 추론 모드): 백엔드 자체 스트리밍 엔드포인트 상대 경로
+    """
     asset, _floor, _project = _get_owned_asset_or_404(db, asset_id, user)
-    if not asset.storage_url or not asset.storage_url.startswith("s3://"):
+    url_value = asset.storage_url or ""
+    if url_value.startswith("s3://"):
+        url = _s3.presigned_get_url(
+            url_value, expires_seconds=RF_PRESIGNED_URL_EXPIRES_SECONDS
+        )
+        return url, RF_PRESIGNED_URL_EXPIRES_SECONDS
+    if url_value.startswith("file://"):
+        # 백엔드가 자체 스트리밍 — 만료 개념 없지만 client 호환성을 위해 0 으로.
+        return f"/assets/{asset.id}/raw", 0
+    raise AppError(
+        ErrorCode.UPLOADED_FILE_NOT_FOUND,
+        f"Asset has unsupported storage scheme: {url_value[:40]}",
+        status_code=404,
+    )
+
+
+def open_asset_local_file(
+    db: Session, asset_id: UUID, user: User
+) -> tuple[Path, str]:
+    """`file://` 자산의 로컬 파일 경로 + mime_type 반환. 스트리밍 endpoint 가 사용.
+
+    권한 체크(_get_owned_asset_or_404) 포함. S3 자산이면 404.
+    """
+    asset, _floor, _project = _get_owned_asset_or_404(db, asset_id, user)
+    url_value = asset.storage_url or ""
+    if not url_value.startswith("file://"):
         raise AppError(
             ErrorCode.UPLOADED_FILE_NOT_FOUND,
-            "Asset is not on S3 (legacy local path).",
+            "Asset is not a local file.",
             status_code=404,
         )
-    url = _s3.presigned_get_url(
-        asset.storage_url, expires_seconds=RF_PRESIGNED_URL_EXPIRES_SECONDS
-    )
-    return url, RF_PRESIGNED_URL_EXPIRES_SECONDS
+    # file:///C:/path → Path 추출. Path.from_uri 는 3.13+, urlparse 로 호환.
+    from urllib.parse import urlparse, unquote
+    parsed = urlparse(url_value)
+    raw_path = unquote(parsed.path)
+    # 윈도우: '/C:/x/y' 형태 → 앞의 '/' 제거
+    if len(raw_path) >= 3 and raw_path[0] == "/" and raw_path[2] == ":":
+        raw_path = raw_path[1:]
+    path = Path(raw_path)
+    if not path.exists() or not path.is_file():
+        raise AppError(
+            ErrorCode.UPLOADED_FILE_NOT_FOUND,
+            f"Local asset file missing on disk: {path}",
+            status_code=404,
+        )
+    return path, asset.mime_type or "application/octet-stream"
 
 
 def delete_asset(db: Session, asset_id: UUID, user: User) -> None:

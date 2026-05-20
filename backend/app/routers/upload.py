@@ -68,10 +68,10 @@ async def upload_floorplan(file: UploadFile = File(...)) -> dict:
 )
 async def upload_and_analyze_floorplan(
     file: UploadFile = File(...),
-    real_width_m: float = Form(10.0),
     project_id: str | None = Form(None),
     floor_id: str | None = Form(None),
     created_by: str | None = Form(None),
+    inference_mode: str = Form("sagemaker"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> UploadAndAnalyzeFloorplanResponse:
@@ -91,12 +91,12 @@ async def upload_and_analyze_floorplan(
         image_bytes=content,
         filename=file.filename or f"{file_id}",
         content_type=file.content_type or "application/octet-stream",
-        real_width_m=real_width_m,
         project_id=project_id,
         floor_id=floor_id,
         current_user=current_user,
         upload_metadata=upload_metadata,
         created_by=created_by,
+        inference_mode=inference_mode,
     )
 
     return UploadAndAnalyzeFloorplanResponse(

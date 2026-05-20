@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils';
 import { ProjectSelector } from '@/features/header/ProjectSelector';
 import { FloorSelector } from '@/features/header/FloorSelector';
 import { ProfileMenu } from '@/features/header/ProfileMenu';
+import { InferenceModeToggle } from '@/features/header/InferenceModeToggle';
 import { MobileConnectModal } from '@/features/mobile/MobileConnectModal';
 
 const NAV = [
@@ -82,6 +83,7 @@ export function AppLayout() {
             <FloorSelector />
           </div>
           <div className="flex items-center gap-2">
+            <InferenceModeToggle />
             {!isMobileAppPage && (
               <button
                 type="button"
