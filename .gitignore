@@ -24,6 +24,7 @@ htmlcov/
 *.cover
 .hypothesis/
 backend/tests/
+backend/wall_debug/
 
 # build
 *.egg-info/

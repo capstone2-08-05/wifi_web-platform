@@ -177,8 +177,13 @@ export default function EditorPage() {
   const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
   // 3순위: 사용자가 업로드한 파일을 base64 로 캐시해둔 로컬 이미지 (백엔드 미지원 우회).
   const localImage = useLocalFloorplanImage(floorId);
-  const backgroundImageUrl =
-    assetUrlQuery.data?.url ?? localImage ?? null;
+  // 자산 URL 은 <image href> 에서 직접 로드 가능한 절대 http(s) 만 사용.
+  // local 모드의 `/assets/{id}/raw` 같은 상대경로는 (a) 프론트 origin 기준이라 백엔드를
+  // 못 가리키고 (b) JWT 인증 헤더를 못 실어서 못 씀 → localStorage 캐시(base64) 로 fallback.
+  const assetUrl = assetUrlQuery.data?.url ?? null;
+  const usableAssetUrl =
+    assetUrl && /^https?:\/\//i.test(assetUrl) ? assetUrl : null;
+  const backgroundImageUrl = usableAssetUrl ?? localImage ?? null;
   const editingScene: SceneDraft | null = baseScene;
   const resolvedSelected = useMemo<SelectedEntityResolved | null>(() => {
     const scene = editingScene;

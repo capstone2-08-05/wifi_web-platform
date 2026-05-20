@@ -82,6 +82,11 @@ class InferenceResult:
     result_payload: dict[str, Any]      # 원본 result.json (디버깅/메트릭)
     # 원본 도면 이미지 (S3 에서 다운). OCR/선분 검출에 필요. 다운로드 실패 시 None.
     source_image_local_path: Path | None = None
+    # 사전 분석 priors — AI 서버가 같이 내려주면 채워짐. 없으면 None → 백엔드가 자체 fallback.
+    # 형식은 packages/contracts/inference.py 의 OcrPrior/LinePrior/RoiTransform 와 일치.
+    ocr_priors: list[dict[str, Any]] | None = None    # [{text, bbox:[x1,y1,x2,y2], confidence}]
+    line_priors: list[dict[str, Any]] | None = None   # [{x1,y1,x2,y2,angle_deg?,length_px?}]
+    roi_transform: dict[str, Any] | None = None       # {offset_x, offset_y, width, height}
 
     def cleanup(self) -> None:
         try:
