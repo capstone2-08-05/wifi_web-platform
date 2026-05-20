@@ -119,7 +119,7 @@ class WallExtractor:
         return clean
 
     # ── 2. Skeleton ───────────────────────────────────────────────────────
-    def _skeletonize(self, edges: np.ndarray, prob_map=None, debug_dir: Path | None = None) -> np.ndarray:
+    def _skeletonize(self, edges: np.ndarray, prob_map=None, conf_floor: float = 0.4, debug_dir: Path | None = None) -> np.ndarray:
         from skimage.morphology import thin
 
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(edges)
@@ -133,9 +133,11 @@ class WallExtractor:
         binary = (clean > 0).astype(bool)
         thinned = thin(binary).astype(np.uint8) * 255
 
-        # prob_map 있으면 저확률 픽셀 제거
+        # prob_map 있으면 저확률 픽셀 제거. conf_floor 는 **선택된 threshold** 를 받음.
+        # (예전엔 0.4 하드코딩 → mask 가 prob>thr(예 0.25)여도 prob 0.25~0.4 벽은 여기서
+        #  지워져 "빨강인데 선 안 됨". 이제 mask 와 같은 floor 라 일관됨.)
         if prob_map is not None:
-            conf_mask = (prob_map > 0.4)
+            conf_mask = (prob_map > conf_floor)
             thinned = ((thinned > 0) & conf_mask).astype(np.uint8) * 255
 
         out_dir = self._resolve_debug_dir(debug_dir)
@@ -637,8 +639,8 @@ class WallExtractor:
 
         wall_thickness = self.estimate_wall_thickness(edges, detections or [])
 
-        # 2. 확률 가중 스켈레톤
-        skeleton = self._skeletonize(edges, prob_map=prob, debug_dir=debug_dir)
+        # 2. 확률 가중 스켈레톤 — conf_floor 를 선택된 threshold 에 맞춤 (숨은 0.4 게이트 제거).
+        skeleton = self._skeletonize(edges, prob_map=prob, conf_floor=float(thr), debug_dir=debug_dir)
 
         raw_lines = self._detect_lines(skeleton)
         hv_lines  = self._filter_hv(raw_lines)
@@ -649,8 +651,9 @@ class WallExtractor:
         snapped   = self._snap_endpoints(snapped, tol=20.0)
         filtered  = self._filter_short(snapped, skeleton.shape)
         
-        # 3. 신뢰도 필터 (완화: 0.6 → 0.4. mask 자체가 이미 prob>thr 로 1차 필터된 상태)
-        filtered  = self._filter_by_confidence(filtered, prob, min_conf=0.4)
+        # 3. 신뢰도 필터 — min_conf 를 선택된 threshold 에 맞춤. mask 가 이미 prob>thr 로
+        #    1차 필터된 상태라 동일 floor 로 두어 "마스크엔 있는데 여기서 또 떨궈지는" 이중 게이팅 방지.
+        filtered  = self._filter_by_confidence(filtered, prob, min_conf=float(thr))
 
         filled = self._fill_opening_gaps(filtered, detections or [])
         filled = self._merge_lines(filled, pos_thresh=int(wall_thickness * 3.0))

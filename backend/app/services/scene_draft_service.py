@@ -197,8 +197,10 @@ def _build_span_maps(
     spans = dimension_matching.build_dimension_spans(entries, float(scale), wall_px)
     if not spans:
         return empty
-    # 벽: 평행 치수(자기 길이) 매칭. 방: 가로/세로 치수.
-    wall_len_map = dimension_matching.attach_wall_lengths_parallel(spans, wall_px)
+    # 벽: 평행 치수(자기 길이) 매칭 + scale 로 실제 길이 검증. 방: 가로/세로 치수.
+    wall_len_map = dimension_matching.attach_wall_lengths_parallel(
+        spans, wall_px, float(scale)
+    )
     room_span_map = dimension_matching.attach_spans_to_rooms(spans, rooms or [])
     return wall_len_map, room_span_map
 

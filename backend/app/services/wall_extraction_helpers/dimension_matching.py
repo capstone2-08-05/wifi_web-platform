@@ -671,15 +671,15 @@ def estimate_scale_crossvalidated(
     if not cands:
         return None
 
-    # cluster 합의: 동의 후보 가장 많은 값 중심 (동률이면 baseline 긴 쪽).
-    best_cluster: list[_ScaleCandidate] = []
-    best_key: tuple[int, float] = (-1, -1.0)
-    for c in cands:
-        nb = [d for d in cands if abs(d.scale - c.scale) <= agree_ratio * c.scale]
-        key = (len(nb), c.baseline_px)
-        if key > best_key:
-            best_key = key
-            best_cluster = nb
+    # anchor = 가장 신뢰할 후보. 벽 외곽(wall_*)을 최우선 — (전체 치수 ÷ 건물 픽셀폭)이라
+    # baseline 이 가장 길고 단일 고신뢰 치수에 기반. 없으면 baseline 가장 긴 후보.
+    # anchor 와 동의(±agree_ratio)하는 것만 모아 median → 짧고 noisy 한 chain 들이
+    # 다수(수)로 anchor 를 이기지 못하게 함 (사용자 의도: "전체 치수를 anchor로").
+    wall_cands = [c for c in cands if c.source.startswith("wall")]
+    anchor = max(wall_cands or cands, key=lambda c: c.baseline_px)
+    best_cluster = [
+        c for c in cands if abs(c.scale - anchor.scale) <= agree_ratio * anchor.scale
+    ]
 
     scales = sorted(c.scale for c in best_cluster)
     n = len(scales)
@@ -955,19 +955,24 @@ def _best_iou_span(
 
 
 def attach_wall_lengths_parallel(
-    spans: Sequence[DimensionSpan], walls: Sequence[Sequence[float]]
+    spans: Sequence[DimensionSpan],
+    walls: Sequence[Sequence[float]],
+    scale_m_per_px: float | None = None,
+    *,
+    length_tol: float = 0.12,
 ) -> dict[int, dict]:
-    """각 벽에 **평행한** 치수(벽 자기 길이)를 IoU 매칭으로 부착.
+    """각 벽에 길이 부착 — 평행 치수(도면값) + scale 로 계산한 실제 길이로 검증.
 
-    세로벽 ↔ 세로 치수(y 범위), 가로벽 ↔ 가로 치수(x 범위). 벽의 자기 범위와
-    양 끝이 일치하는 치수를 그 벽의 '도면 길이' 로 본다.
-      - 내벽: 단일 세그먼트에 매칭
-      - 외벽: 전체(합계) 치수에 매칭 (범위가 같으니 IoU 최대)
+    세로벽 ↔ 세로 치수(y 범위), 가로벽 ↔ 가로 치수(x 범위) IoU 매칭. 단, **매칭된
+    치수가 벽의 실제 길이(픽셀×scale)와 ±length_tol 안에서 일치할 때만** 도면값으로
+    인정 → "거의 full-width 내벽이 전체 치수(17,500)에 과매칭"되는 오류 차단.
+    일치 안 하면 계산 길이만 표시(source="computed").
 
-    반환: `{wall_idx: {"meters": .., "text": .., "parse_confidence": ..}}`
+    반환: `{wall_idx: {"meters", "text"(도면값일 때만), "source": "dimension"|"computed"}}`
     """
     vspans = [s for s in spans if s.orientation == "vertical"]
     hspans = [s for s in spans if s.orientation == "horizontal"]
+    has_scale = bool(scale_m_per_px and scale_m_per_px > 0)
     result: dict[int, dict] = {}
     for idx, w in enumerate(walls):
         orient = _wall_orientation(w)
@@ -978,12 +983,27 @@ def attach_wall_lengths_parallel(
             lo, hi = sorted((w[0], w[2]))   # x 범위
             sp = _best_iou_span(hspans, lo, hi)
         else:
-            sp = None
-        if sp is not None:
+            continue
+
+        computed_m = (hi - lo) * scale_m_per_px if has_scale else None  # type: ignore[operator]
+
+        # 도면 치수가 실제 길이와 충분히 일치하면 도면값 채택.
+        if sp is not None and (
+            computed_m is None
+            or abs(sp.meters - computed_m) <= length_tol * computed_m
+        ):
             result[idx] = {
                 "meters": round(sp.meters, 3),
                 "text": sp.text,
+                "source": "dimension",
                 "parse_confidence": round(sp.parse_confidence, 3),
+            }
+        elif computed_m is not None and computed_m > 0:
+            # 도면 치수 없거나 불일치 → scale 계산 길이만.
+            result[idx] = {
+                "meters": round(computed_m, 3),
+                "text": None,
+                "source": "computed",
             }
     return result
 
