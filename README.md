@@ -1,15 +1,15 @@
-# Capstone2 Service Deployment Guide
+# 📡 Capstone2 Service Deployment Guide
 
-- `frontend`: 사용자 UI + three.js 렌더
-- `backend`: API 오케스트레이션(업로드/DB/AI-RF 호출)
-- `capstone2-ai`: GPU 추론 서버(U-Net/YOLO)
-- `capstone2-rf`(별도 레포 권장): Sionna RT 서버
+- 🖥️ `frontend`: 사용자 UI + three.js 렌더
+- ⚙️ `backend`: API 오케스트레이션(업로드/DB/AI-RF 호출)
+- 🤖 `capstone2-ai`: GPU 추론 서버(U-Net/YOLO)
+- 📶 `capstone2-rf`(별도 레포 권장): Sionna RT 서버
 
 ---
 
-## 1) 빠른 아키텍처
+## 🏗️ 1) 빠른 아키텍처
 
-`Frontend -> Backend -> AI/RF`
+`Frontend ➜ Backend ➜ AI/RF`
 
 - 프론트는 파일 업로드와 결과 시각화만 담당
 - 백엔드는 업로드 파일 저장 후 AI/RF로 전달
@@ -18,7 +18,7 @@
 
 ---
 
-## 2) 환경 변수
+## 🔑 2) 환경 변수
 
 `web-platform` 루트의 `.env` (예시는 `.env.example`). Alembic은 `backend/migrations/env.py`에서 이 파일을 읽습니다.
 
@@ -38,7 +38,7 @@ OPENAI_API_KEY=
 
 ---
 
-## 3) DB 세팅 (PostgreSQL + PostGIS)
+## 🗄️ 3) DB 세팅 (PostgreSQL + PostGIS)
 
 **전제:** [Docker Desktop](https://www.docker.com/products/docker-desktop/)이 설치되어 있고 **실행 중**이어야 합니다.  
 `docker_engine` 파이프 오류는 데몬이 꺼져 있을 때 납니다.
@@ -106,7 +106,7 @@ alembic upgrade head
 
 ---
 
-## 4) 서비스별 실행
+## 🚀 4) 서비스별 실행
 
 ### A. Backend
 
@@ -161,7 +161,7 @@ YOLO_DEVICE=cuda:0
 
 ---
 
-## 5) AI API 계약 (multipart)
+## 🤝 5) AI API 계약 (multipart)
 
 AI 서버는 파일 경로가 아니라 **파일 자체**를 받습니다.
 
@@ -174,7 +174,7 @@ AI 서버는 파일 경로가 아니라 **파일 자체**를 받습니다.
 
 ---
 
-## 6) 스모크 테스트
+## 🧪 6) 스모크 테스트
 
 1. Backend health
 
@@ -196,7 +196,7 @@ powershell -ExecutionPolicy Bypass -File ..\rf-service\service\ai-inference\scri
 
 ---
 
-## 7) 참고 문서
+## 📚 7) 참고 문서
 
 - `docs/EXPERIMENT_SETUP.md`
 - `docs/DB_SETUP.md`
