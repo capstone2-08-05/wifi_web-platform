@@ -81,12 +81,20 @@ export default function SimulationPage() {
   const createRfRun = useCreateRfRun();
   const rfRunPoll = useRfRun(activeRunId);
   const rfMapsQuery = useRfMaps(activeRunId, rfRunPoll.isSucceeded);
+  // 활성 RfRun 이 현재 버전이 아닌 옛 버전에서 돌린 것이면 → 도면이 바뀌어서 히트맵이 도면과 안 맞음.
+  // 사용자 혼란 방지로 그런 경우엔 히트맵 숨김 (메트릭은 그대로 표시).
+  const activeRunSceneVersionId = rfRunPoll.rfRun?.scene_version_id ?? null;
+  const isRunForCurrentVersion =
+    !activeRunSceneVersionId ||
+    !currentVersion ||
+    activeRunSceneVersionId === currentVersion.id;
   // 백엔드가 RfMapResponse 에 presigned `url` 을 자동 채워주므로 (PR #70)
   // /rf-jobs 별도 호출 없이 /maps 응답 하나로 heatmap URL + bounds 둘 다 처리.
   const heatmapMap = useMemo(() => {
+    if (!isRunForCurrentVersion) return null;
     const maps = rfMapsQuery.data ?? [];
     return maps.find((m) => m.map_type === 'heatmap') ?? maps[0] ?? null;
-  }, [rfMapsQuery.data]);
+  }, [rfMapsQuery.data, isRunForCurrentVersion]);
   const heatmapUrl = heatmapMap?.url ?? null;
   const heatmapBounds = useMemo(
     () => parseHeatmapBounds(heatmapMap?.bounds_json),
@@ -229,19 +237,27 @@ export default function SimulationPage() {
               </div>
             ) : (
               // 'complete' — 도형/AP + 히트맵 오버레이를 한 SVG 안에 겹쳐 표시 (read-only).
-              <SimulationCanvas
-                sceneVersion={versionDetailQuery.data}
-                backgroundImageUrl={null}
-                aps={aps}
-                onAdd={handleAddAp}
-                onMove={handleMoveAp}
-                onRemove={handleRemoveAp}
-                pending={false}
-                onClearPending={() => {}}
-                heatmapUrl={heatmapUrl}
-                heatmapBounds={heatmapBounds}
-                readOnly
-              />
+              <>
+                {!isRunForCurrentVersion && (
+                  <div className="absolute left-3 right-3 top-3 z-10 rounded-md border border-amber-300 bg-amber-50/95 px-3 py-2 text-[11px] leading-relaxed text-amber-900 shadow-sm backdrop-blur">
+                    이 시뮬레이션은 이전 버전 도면 기준이라 현재 도면과 다를 수 있어
+                    히트맵을 표시하지 않습니다. 새 버전으로 다시 실행해주세요.
+                  </div>
+                )}
+                <SimulationCanvas
+                  sceneVersion={versionDetailQuery.data}
+                  backgroundImageUrl={null}
+                  aps={aps}
+                  onAdd={handleAddAp}
+                  onMove={handleMoveAp}
+                  onRemove={handleRemoveAp}
+                  pending={false}
+                  onClearPending={() => {}}
+                  heatmapUrl={heatmapUrl}
+                  heatmapBounds={heatmapBounds}
+                  readOnly
+                />
+              </>
             )}
           </div>
 
