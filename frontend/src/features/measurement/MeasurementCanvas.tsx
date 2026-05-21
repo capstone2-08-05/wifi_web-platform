@@ -1,5 +1,6 @@
 import { useMemo, useRef } from 'react';
 import { parseGeometry } from '@/features/editor/geometry-utils';
+import { loadCachedViewBox } from '@/features/editor/viewbox-cache';
 import type {
   DraftObject,
   DraftOpening,
@@ -107,8 +108,14 @@ export function MeasurementCanvas({
   estimatedHeatmap,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
+  // viewBox 는 editor 와 동일하게 — 같은 floor_id 의 editor 캐시(localStorage) 를 우선.
+  // 없으면 scene 도형 기준 계산. 페이지 간 캔버스 영역 일관성 유지.
   const sceneId = sceneVersion?.id ?? null;
-  const vb = useMemo(() => computeViewBox(sceneVersion), [sceneId]);
+  const vb = useMemo(() => {
+    const cached = loadCachedViewBox(sceneVersion?.floor_id ?? null);
+    if (cached) return cached;
+    return computeViewBox(sceneVersion);
+  }, [sceneId, sceneVersion?.floor_id]);
   const sortedPoints = useMemo(
     () => [...points].sort((a, b) => a.order - b.order),
     [points],
@@ -132,9 +139,15 @@ export function MeasurementCanvas({
         ref={svgRef}
         viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
         preserveAspectRatio="xMidYMid meet"
-        className="h-full w-full select-none"
+        overflow="hidden"
+        className="h-full w-full select-none overflow-hidden"
       >
         <defs>
+          {/* viewBox(=도면) 영역으로 클립. 측정점/AP/히트맵이 도면 밖 좌표여도
+              밖으로 튀어나가지 않도록 잘라낸다 (도면 비례 유지). */}
+          <clipPath id="mc-viewbox-clip">
+            <rect x={vb.x} y={vb.y} width={vb.w} height={vb.h} />
+          </clipPath>
           {(['good', 'warning', 'poor'] as const).map((q) => (
             <radialGradient key={q} id={`heat-${q}`}>
               <stop offset="0%" stopColor={QUALITY_HEATMAP_RGBA[q]} />
@@ -142,6 +155,9 @@ export function MeasurementCanvas({
             </radialGradient>
           ))}
         </defs>
+
+        {/* 모든 콘텐츠를 도면 영역으로 클립. */}
+        <g clipPath="url(#mc-viewbox-clip)">
 
         {/* 히트맵: 도형보다 아래에 깔아 도면이 위에 보이도록.
             GP regression dense heatmap 이 있으면 그것을 우선 표시 (전체 도면 커버).
@@ -221,6 +237,7 @@ export function MeasurementCanvas({
         {aps.map((ap) => (
           <ApMarker key={ap.id} ap={ap} />
         ))}
+        </g>
       </svg>
     </div>
   );

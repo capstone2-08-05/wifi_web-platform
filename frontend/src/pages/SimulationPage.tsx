@@ -264,13 +264,21 @@ export default function SimulationPage() {
           <aside className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1">
             {state === 'complete' && (
               <SimulationResultCard
-                avgRssiDbm={metrics.avgRssiDbm ?? -65}
-                coveragePercent={metrics.coveragePercent ?? 0}
+                avgRssiDbm={isRunForCurrentVersion ? metrics.avgRssiDbm : null}
+                coveragePercent={isRunForCurrentVersion ? metrics.coveragePercent : null}
+                staleReason={
+                  isRunForCurrentVersion
+                    ? null
+                    : '이전 버전 도면에서 돌린 시뮬레이션이라 현재 도면과 비교 가치가 없어 결과를 숨겼습니다.'
+                }
               />
             )}
+            {/* AP 배치 (§14) 카드 — 백엔드 ap-candidates 미구현 상태라 임시로 숨김.
+                백엔드 붙으면 다시 노출.
             {state === 'complete' && activeRunId && (
               <ApPlacementPanel rfRunId={activeRunId} />
             )}
+            */}
             <SimulationHistory
               items={history}
               showCompareButton={false}
@@ -480,7 +488,9 @@ function EmptyState({
 /**
  * §14 AP 후보/배치 패널.
  * RF Run 이 succeeded 된 후에만 표시되고, 후보 생성 + 후보 선택 → 배치 저장 흐름.
+ * 백엔드 ap-candidates 미구현으로 시연 동안 사용처에서만 주석 처리됨 (정의 유지).
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function ApPlacementPanel({ rfRunId }: { rfRunId: string }) {
   const generate = useGenerateApCandidates();
   const candidatesQuery = useApCandidates(rfRunId);

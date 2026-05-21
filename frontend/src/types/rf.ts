@@ -35,6 +35,11 @@ export interface RfRunCreate {
   access_points?: AccessPointDTO[];
   simulation?: RfSimulationParams;
   metadata?: Record<string, unknown>;
+  /**
+   * 해당 scene_version 의 최신 완료된 CalibrationRun 보정값을 시뮬에 반영할지 (#88).
+   * 미지정 시 백엔드 default=true (보정 자동 적용). false 면 raw 시뮬 (비교용).
+   */
+  apply_calibration?: boolean;
   /** Legacy 호환 (deprecated). */
   request_json?: Record<string, unknown>;
 }
