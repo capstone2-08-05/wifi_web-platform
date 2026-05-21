@@ -5,7 +5,9 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.core.enums import normalize_job_status
 
 
 class CalibrationRunCreate(BaseModel):
@@ -33,6 +35,14 @@ class CalibrationRunResponse(BaseModel):
     error_heatmap_url: Optional[str] = None
     created_at: datetime
     finished_at: Optional[datetime] = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _normalize_status(cls, v: Any) -> Any:
+        """내부 status(completed/queued) → API 표기(succeeded/pending). 프론트 폴링 종료 인식용."""
+        if isinstance(v, str):
+            return normalize_job_status(v)
+        return v
 
 
 class CalibrationRunUpdate(BaseModel):

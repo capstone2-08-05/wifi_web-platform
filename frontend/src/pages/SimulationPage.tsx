@@ -11,7 +11,7 @@ import {
   Trash2,
   Wifi,
 } from 'lucide-react';
-import { useMemo } from 'react';
+import { useMemo, useEffect } from 'react';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
 import { useCreateRfRun, useFloorRfRuns, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
@@ -88,6 +88,22 @@ export default function SimulationPage() {
     !activeRunSceneVersionId ||
     !currentVersion ||
     activeRunSceneVersionId === currentVersion.id;
+
+  // 활성 run(과거/자동복원 포함)의 AP 를 캔버스에 복원 — 결과 화면에 AP 마커가 보이도록.
+  // (aps state 는 사용자가 직접 찍은 것만 담기는데, 과거 run 을 불러올 땐 비어 있어 마커가 안 떴음)
+  useEffect(() => {
+    const aps_raw = (rfRunPoll.rfRun?.request_json?.['access_points'] ?? []) as Array<
+      Record<string, unknown>
+    >;
+    if (!Array.isArray(aps_raw) || aps_raw.length === 0) return;
+    const restored: PlacedAp[] = aps_raw.map((a, i) => ({
+      id: String(a['id'] ?? `ap${i + 1}`),
+      x_m: Number(a['x_m'] ?? a['x'] ?? 0),
+      y_m: Number(a['y_m'] ?? a['y'] ?? 0),
+      z_m: Number(a['z_m'] ?? a['z'] ?? 2.5),
+    }));
+    setAps(restored);
+  }, [rfRunPoll.rfRun]);
   // 백엔드가 RfMapResponse 에 presigned `url` 을 자동 채워주므로 (PR #70)
   // /rf-jobs 별도 호출 없이 /maps 응답 하나로 heatmap URL + bounds 둘 다 처리.
   const heatmapMap = useMemo(() => {
@@ -142,6 +158,7 @@ export default function SimulationPage() {
   const handleReset = () => {
     setPickedRunId(null);
     setResetCleared(true);
+    setAps([]); // 배치 화면으로 돌아가면 새로 찍도록 초기화
   };
 
   const handleAddAp = (ap: PlacedAp) => setAps((prev) => [...prev, ap]);
