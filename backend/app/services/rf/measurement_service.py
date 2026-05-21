@@ -922,7 +922,7 @@ def estimate_session_coverage(
         EstimatedCoverageResponseDTO,
         EstimatedRssiRangeDTO,
     )
-    from app.services._s3 import presigned_get_url
+    from app.services._local_storage import presigned_get_url
     from app.services.rf.measurement_estimation.gp_estimator import (
         estimate_coverage,
         estimate_coverage_residual,

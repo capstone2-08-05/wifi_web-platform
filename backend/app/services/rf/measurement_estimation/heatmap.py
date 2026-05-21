@@ -6,7 +6,7 @@ uncertainty 는 흑백 계열 사용.
 """
 from __future__ import annotations
 from .gp_estimator import CoverageEstimate
-from app.services import _s3
+from app.services import _local_storage as _s3
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
@@ -35,7 +35,6 @@ _RSSI_CMAP = mcolors.LinearSegmentedColormap.from_list(
         np.array([128,   0,   0]) / 255,
     ],
 )
-
 
 logger = logging.getLogger(__name__)
 

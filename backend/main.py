@@ -10,6 +10,7 @@ logging.basicConfig(
 )
 
 from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 from app.routers.experiments import router as experiments_router
 from app.routers.health import router as health_router
 from app.routers.upload import router as upload_router
@@ -72,6 +73,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 로컬 자산 정적 서빙 (assets / heatmaps / RF maps — local:// URI 의 HTTP 대응).
+# refactor/no-aws (Colab) — S3 presigned URL 의 로컬 대체.
+from app.services._local_storage import STORAGE_ROOT as _STORAGE_ROOT
+_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+app.mount("/storage", StaticFiles(directory=str(_STORAGE_ROOT)), name="storage")
 
 @app.exception_handler(AppError)
 
