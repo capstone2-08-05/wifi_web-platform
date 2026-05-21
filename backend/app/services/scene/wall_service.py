@@ -14,7 +14,7 @@ from app.models.user import User
 from app.models.wall import Wall
 from app.schemas.wall import WallCreate, WallResponse, WallUpdate
 from app.services._patch_log_helpers import record_patch, snapshot_wall
-from app.services.scene_version_service import (
+from app.services.scene.scene_version_service import (
     _get_owned_scene_version,
     _wall_to_response,
 )

@@ -36,4 +36,11 @@ class Floor(Base):
 
     project = relationship("Project", back_populates="floors")
     assets = relationship("Asset", back_populates="floor")
-    scene_drafts = relationship("SceneDraft", back_populates="floor")
+    # scene_drafts.floor_id 는 NOT NULL + DB ondelete=CASCADE.
+    # passive_deletes 로 DB cascade 에 위임해야 함 (안 그러면 ORM 이 floor_id=NULL 시도 → NotNullViolation).
+    scene_drafts = relationship(
+        "SceneDraft",
+        back_populates="floor",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )

@@ -14,7 +14,7 @@ from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.job import JobResponse
-from app.services.floorplan_job_service import poll_floorplan_job
+from app.services.inference.floorplan_job_service import poll_floorplan_job
 
 router = APIRouter(prefix="/floorplan-jobs", tags=["floorplan-jobs"])
 

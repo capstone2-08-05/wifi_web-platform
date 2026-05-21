@@ -22,6 +22,8 @@ from app.geometry import (
     nms_filter_indices,
     project_openings_onto_walls,
     snap_wall_endpoints,
+    synthesize_opening_wall_segments,
+    synthesize_partition_walls_from_ticks,
 )
 from app.schemas.ai_response import (
     DetectionDTO,
@@ -30,10 +32,10 @@ from app.schemas.ai_response import (
     WallSegmentationDTO,
 )
 from app.schemas.scene import Opening, Room, SceneSchema, Wall
-from app.services.geometry_service import GeometryService
-from app.services.sagemaker_inference_service import InferenceResult
-from app.services.topology_service import TopologyService
-from app.services.wall_extraction import wall_extractor
+from app.services.floorplan.geometry_service import GeometryService
+from app.services.inference.sagemaker_inference_service import InferenceResult
+from app.services.floorplan.topology_service import TopologyService
+from app.services.floorplan.wall_extraction import wall_extractor
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +63,121 @@ class FusionService:
             sagemaker_meta,
             result.source_image_local_path,
             debug_dir,
+            result.ocr_priors,
+            result.line_priors,
+            result.roi_transform,
         )
         return scene
+
+    @staticmethod
+    def _recover_partitions_from_dimension_ticks(
+        postprocess, walls, scale_ratio: float
+    ) -> list[tuple[float, float, float, float]]:
+        """치수선 그리드 tick(벽 없는 경계) + 직교벽 끝점 → 누락 칸막이 조각.
+
+        best-effort: 입력이 없거나 실패하면 빈 리스트 (방 추출에 영향 없음).
+        """
+        try:
+            dim_matches = getattr(postprocess, "dimension_matches", None) or []
+            if not dim_matches or not walls or not scale_ratio or scale_ratio <= 0:
+                return []
+            from app.services.floorplan.wall_extraction_helpers import dimension_matching as _dm
+            from app.services.floorplan.wall_extraction_helpers.ocr import OCREntry
+
+            entries = []
+            for m in dim_matches:
+                bb = m.get("bbox") or []
+                if len(bb) != 4:
+                    continue
+                entries.append(
+                    OCREntry(
+                        bbox=tuple(int(v) for v in bb),  # type: ignore[arg-type]
+                        text=str(m.get("text", "")),
+                        confidence=float(m.get("ocr_confidence", 0.0)),
+                    )
+                )
+            if not entries:
+                return []
+
+            wall_px = [[w.x1, w.y1, w.x2, w.y2] for w in walls]
+            spans = _dm.build_dimension_spans(entries, float(scale_ratio), wall_px)
+            if not spans:
+                return []
+
+            # 벽이 안 붙은(boundary None) tick 만 칸막이 후보로.
+            vtick_xs: list[float] = []
+            htick_ys: list[float] = []
+            for s in spans:
+                if s.orientation == "horizontal":
+                    if s.boundary_lo_wall is None:
+                        vtick_xs.append(s.axis_lo)
+                    if s.boundary_hi_wall is None:
+                        vtick_xs.append(s.axis_hi)
+                else:
+                    if s.boundary_lo_wall is None:
+                        htick_ys.append(s.axis_lo)
+                    if s.boundary_hi_wall is None:
+                        htick_ys.append(s.axis_hi)
+
+            return synthesize_partition_walls_from_ticks(vtick_xs, htick_ys, walls)
+        except Exception:
+            logger.warning("치수 tick 칸막이 복구 skip", exc_info=True)
+            return []
+
+    @staticmethod
+    def _promote_space_detections_to_rooms(furniture_objects, rooms):
+        """공간형 탐지(화장실 등)를 포함하는 방에 종류로 부여하고 객체에서 제거.
+
+        det 중심을 포함하는 방을 찾아 room.type/name 세팅 → 떠다니는 객체 대신 방으로.
+        반환: 승격되지 않은 가구 객체 리스트 (포함 방 못 찾으면 객체로 남김).
+        """
+        SPACE_CLASSES = {"bathroom": "화장실"}
+        MAX_SPACE_ROOM_M2 = 15.0  # 이보다 큰 방은 화장실이 아닌 병합/오방 → 승격 안 함
+        if not furniture_objects or not rooms:
+            return furniture_objects
+        try:
+            from shapely.geometry import Point, Polygon
+        except Exception:
+            return furniture_objects
+
+        room_polys = []
+        for r in rooms:
+            try:
+                if len(r.points) >= 3:
+                    room_polys.append((r, Polygon(r.points)))
+            except Exception:
+                continue
+
+        promoted: set[int] = set()
+        for fi, det in enumerate(furniture_objects):
+            label = SPACE_CLASSES.get(det.class_name)
+            if label is None:
+                continue
+            try:
+                bx1, by1, bx2, by2 = det.bbox_xyxy
+            except Exception:
+                continue
+            c = Point((bx1 + bx2) / 2.0, (by1 + by2) / 2.0)
+            target = None
+            for r, poly in room_polys:
+                try:
+                    if poly.contains(c) or poly.buffer(10.0).contains(c):
+                        # 큰 방(병합/오방)이면 화장실로 오태깅 방지 → 승격 보류.
+                        if r.area is not None and r.area > MAX_SPACE_ROOM_M2:
+                            break
+                        target = r
+                        break
+                except Exception:
+                    continue
+            if target is not None:
+                target.type = det.class_name
+                target.name = label
+                promoted.add(fi)
+                logger.info("space detection '%s' → room %s 로 승격", det.class_name, target.id)
+
+        if not promoted:
+            return furniture_objects
+        return [d for i, d in enumerate(furniture_objects) if i not in promoted]
 
     def _run_wi_twin_pipeline(
         self,
@@ -71,19 +186,27 @@ class FusionService:
         sagemaker_meta: dict[str, Any] | None = None,
         source_image_local_path=None,
         debug_dir=None,
+        ocr_priors: list[dict] | None = None,
+        line_priors: list[dict] | None = None,
+        roi_transform: dict | None = None,
     ) -> SceneSchema:
         # wall_extraction 은 .npy 파일 경로를 받아 prob_map 로딩.
-        # source_image 있으면 §69 multi-threshold + OCR scoring + 치수 매칭 흐름 활성화.
-        # GeometryService 보다 먼저 호출 — OCR 치수 기반 scale 추정을 받아 scale 결정.
+        # priors (AI 서버 사전 분석 결과) 가 있으면 wall_extraction 이 그걸 사용,
+        # 없으면 source_image_local_path 기반으로 자체 OCR/line 추출.
         wall_result = wall_extractor.execute_from_prob_map(
             prob_map_local_path,
             threshold=None,
             detections=ml_output.detections,
             image_path=source_image_local_path,
             debug_dir=debug_dir,
+            ocr_priors=ocr_priors,
+            line_priors=line_priors,
         )
         raw_coords = wall_result.walls
         postprocess_meta_dict = wall_result.postprocess.to_dict()
+        # AI 서버가 같이 내려준 RoiTransform 도 영속화 (디버깅/프론트 표시용).
+        if roi_transform is not None:
+            postprocess_meta_dict["roi_transform"] = roi_transform
 
         # OCR 치수 추정 scale 이 있으면 그걸로, 없으면 default fallback (사용자가
         # PropertiesPanel 에서 벽별 실측 입력해 후속 보정).
@@ -138,7 +261,42 @@ class FusionService:
                 n_walls_before, len(calibrated_walls),
             )
 
-        extracted_rooms: list[Room] = geo_service.extract_rooms(calibrated_walls)
+        # 개구부(문/창) 를 벽 증거로 활용 — U-Net 이 개구부에서 벽을 끊는 경우가 많아
+        # 그 자리에 중심선 조각을 끼워 끊긴 벽을 잇는다 → 방 폐합률 ↑ (도면별 편차 ↓).
+        # ⚠️ 합성 조각은 방 추출 입력에만 더하고 영속 wall 에는 넣지 않는다 (문 위 벽 중복 방지).
+        opening_bboxes = [
+            tuple(float(v) for v in det.bbox_xyxy)
+            for det in ml_output.detections
+            if det.class_name in {"door", "window"}
+        ]
+        opening_segments = synthesize_opening_wall_segments(
+            opening_bboxes, calibrated_walls
+        )
+
+        # 치수선 그리드 tick → 누락 칸막이 복구 (게이팅: 직교벽 끝점 + tick 두 증거).
+        # 개구부 신호와 상보적. 실패해도 방 추출엔 영향 없게 best-effort.
+        partition_segments = self._recover_partitions_from_dimension_ticks(
+            wall_result.postprocess, calibrated_walls, scale_ratio
+        )
+
+        # 합성 조각(개구부 + 칸막이)은 방 추출 입력에만 더하고 영속 wall 에는 안 넣음.
+        synth_segments = list(opening_segments) + list(partition_segments)
+        walls_for_rooms: list[Wall] = calibrated_walls
+        if synth_segments:
+            walls_for_rooms = list(calibrated_walls) + [
+                Wall(
+                    id=f"synth_seg_{i}",
+                    x1=sx1, y1=sy1, x2=sx2, y2=sy2,
+                    thickness=0.0,  # 추정 두께 median 에서 제외되도록 0 (extract_rooms 가 >0 만 사용)
+                )
+                for i, (sx1, sy1, sx2, sy2) in enumerate(synth_segments)
+            ]
+            logger.info(
+                "wall completion: 방 추출용 합성 조각 +%d개 (개구부 %d, 치수 tick %d)",
+                len(synth_segments), len(opening_segments), len(partition_segments),
+            )
+
+        extracted_rooms: list[Room] = geo_service.extract_rooms(walls_for_rooms)
         topology_result = topo_service.analyze(extracted_rooms, ml_output.detections)
 
         # door/window 와 가구 detection 분리
@@ -150,6 +308,13 @@ class FusionService:
             else:
                 det.id = f"furniture_{len(furniture_objects)}"
                 furniture_objects.append(det)
+
+        # 공간형 탐지(화장실 등)를 "방"으로 승격 — 떠다니는 고정크기 객체 박스 대신
+        # 그 탐지를 포함하는 방의 종류로 태깅. (Wi-Fi: 화장실은 경계 벽 재질이 달라
+        # 방으로 묶어두면 벽 재질 지정/시뮬에 유리. 객체보다 벽-바인딩에 적합)
+        furniture_objects = self._promote_space_detections_to_rooms(
+            furniture_objects, extracted_rooms
+        )
 
         # 중복 detection 제거 (NMS) — type 무관 단일 pass.
         # 같은 위치에 door 와 window 가 동시 감지되면 score 1 등만 유지.
@@ -194,13 +359,25 @@ class FusionService:
                 matched_count, len(openings), projected,
             )
 
+        # 객체는 bbox×scale 로 실제 크기(width_m/height_m) 부여 → 떠다니는 고정 1.6m
+        # 박스 대신 탐지된 실제 크기로 렌더 (화장실 등이 거대하게 그려지던 문제 해결).
+        def _obj_dump(obj: DetectionDTO) -> dict:
+            d = obj.model_dump()
+            try:
+                bx1, by1, bx2, by2 = obj.bbox_xyxy
+                d["width_m"] = round(max(abs(bx2 - bx1) * scale_ratio, 0.1), 3)
+                d["height_m"] = round(max(abs(by2 - by1) * scale_ratio, 0.1), 3)
+            except Exception:
+                pass
+            return d
+
         return SceneSchema(
             scale_ratio=scale_ratio,
             walls=[w.model_dump() for w in calibrated_walls],
             openings=[o.model_dump() for o in openings],
             rooms=[r.model_dump() for r in extracted_rooms],
             topology=topology_result.model_dump(),
-            objects=[obj.model_dump() for obj in furniture_objects],
+            objects=[_obj_dump(obj) for obj in furniture_objects],
             inference_metadata=sagemaker_meta,
             postprocess_metadata=postprocess_meta_dict,
         )

@@ -13,7 +13,7 @@ from app.schemas.scene_draft import (
     UploadAndAnalyzeFloorplanResponse,
     UploadStorageMetadataDTO,
 )
-from app.services.floorplan_job_service import submit_floorplan_analysis
+from app.services.inference.floorplan_job_service import submit_floorplan_analysis
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 

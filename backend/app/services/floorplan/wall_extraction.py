@@ -18,7 +18,8 @@ class PostprocessMetadata:
     threshold_candidates: list[float] = field(default_factory=list)
     scores: list[dict] = field(default_factory=list)  # ThresholdScore.to_dict()
     ocr_regions_count: int = 0
-    line_segments_count: int = 0
+    line_segments_count: int = 0       # 벽 점수에 실제 사용된 wall_candidate 선분 수
+    dimension_lines_excluded: int = 0  # 치수선으로 분류돼 벽 후보에서 제외된 선분 수
     # OCR 진단용 원본 entries (각 항목: text/bbox/confidence/parsed_meters/parse_confidence).
     # "OCR 자체 실패" vs "OCR 성공했지만 parser 가 거부" vs "parse 됐지만 매칭 실패" 분리용.
     ocr_entries: list[dict] = field(default_factory=list)
@@ -29,6 +30,22 @@ class PostprocessMetadata:
     fallback_reason: str | None = None   # applied=False 일 때 사유
     debug_dir: str | None = None         # per-job 디버그 이미지 디렉토리 (있을 때)
 
+    # Priors source tracking — None vs [] 구분.
+    # "ai_service"        : AI 가 priors 제공 (빈 list 든 채워진 list 든)
+    # "backend_fallback"  : AI 가 안 줘서 backend 가 자체 OCR/line 실행
+    # "none"              : 둘 다 못 함 (image_path 없거나 실패)
+    ocr_priors_source: str = "none"
+    line_priors_source: str = "none"
+    fallback_used: bool = False           # 둘 중 하나라도 backend_fallback 이면 True
+
+    # 좌표계 진단 — 배경 이미지 ↔ 벽 정렬 디버깅용.
+    # prob_map 원본 shape, source image shape, 좌표 통일 resize 여부.
+    # 이미지가 벽과 어긋나면 여기서 dims 불일치/resize 누락 확인.
+    prob_shape: list[int] | None = None      # [H, W] of loaded prob_map (resize 전)
+    image_shape: list[int] | None = None     # [H, W] of source image (Phase A 에서 읽음)
+    coord_resized: bool = False              # prob_map → image dims resize 발생 여부
+    coord_aligned: bool = False              # 최종 prob 이 image 좌표계와 정렬됐는지
+
     def to_dict(self) -> dict:
         return {
             "applied": self.applied,
@@ -37,12 +54,20 @@ class PostprocessMetadata:
             "scores": list(self.scores),
             "ocr_regions_count": self.ocr_regions_count,
             "line_segments_count": self.line_segments_count,
+            "dimension_lines_excluded": self.dimension_lines_excluded,
             "ocr_entries": list(self.ocr_entries),
             "dimension_entries_count": self.dimension_entries_count,
             "dimension_matches": list(self.dimension_matches),
             "scale_estimate": self.scale_estimate,
             "fallback_reason": self.fallback_reason,
             "debug_dir": self.debug_dir,
+            "ocr_priors_source": self.ocr_priors_source,
+            "line_priors_source": self.line_priors_source,
+            "fallback_used": self.fallback_used,
+            "prob_shape": self.prob_shape,
+            "image_shape": self.image_shape,
+            "coord_resized": self.coord_resized,
+            "coord_aligned": self.coord_aligned,
         }
 
 
@@ -94,7 +119,7 @@ class WallExtractor:
         return clean
 
     # ── 2. Skeleton ───────────────────────────────────────────────────────
-    def _skeletonize(self, edges: np.ndarray, prob_map=None, debug_dir: Path | None = None) -> np.ndarray:
+    def _skeletonize(self, edges: np.ndarray, prob_map=None, conf_floor: float = 0.4, debug_dir: Path | None = None) -> np.ndarray:
         from skimage.morphology import thin
 
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(edges)
@@ -108,9 +133,11 @@ class WallExtractor:
         binary = (clean > 0).astype(bool)
         thinned = thin(binary).astype(np.uint8) * 255
 
-        # prob_map 있으면 저확률 픽셀 제거
+        # prob_map 있으면 저확률 픽셀 제거. conf_floor 는 **선택된 threshold** 를 받음.
+        # (예전엔 0.4 하드코딩 → mask 가 prob>thr(예 0.25)여도 prob 0.25~0.4 벽은 여기서
+        #  지워져 "빨강인데 선 안 됨". 이제 mask 와 같은 floor 라 일관됨.)
         if prob_map is not None:
-            conf_mask = (prob_map > 0.4)
+            conf_mask = (prob_map > conf_floor)
             thinned = ((thinned > 0) & conf_mask).astype(np.uint8) * 255
 
         out_dir = self._resolve_debug_dir(debug_dir)
@@ -518,6 +545,8 @@ class WallExtractor:
         detections: List[Any] = None,
         image_path: Path | None = None,
         debug_dir: Path | None = None,
+        ocr_priors: list[dict] | None = None,
+        line_priors: list[dict] | None = None,
     ) -> WallExtractionResult:
         """U-Net wall probability map → walls + postprocess metadata.
 
@@ -525,6 +554,11 @@ class WallExtractor:
           1. `threshold` 인자가 명시되면 그 값 사용
           2. `image_path` 가 있으면 multi-threshold + OCR/선분 정합도 기반 best 선택 (§69)
           3. 그 외 → Otsu fallback
+
+        priors:
+          - `ocr_priors`/`line_priors` 가 제공되면 자체 OCR/line 검출 건너뛰고 그대로 사용.
+          - None 이면 fallback 으로 `image_path` 기반 내부 추출.
+          - AI 측에서 priors 를 채워주는 흐름(Phase 2)으로 가면 이 path 가 primary.
 
         반환: `WallExtractionResult` (walls + PostprocessMetadata). 호출자가 metadata
         를 `summary_json` 영속화 / 응답 / 디버깅에 활용.
@@ -538,20 +572,57 @@ class WallExtractor:
         # image_path 가 있으면 prob_map 을 원본 이미지 크기로 미리 resize 해서
         # 모든 downstream 처리(mask, skeleton, walls, OCR, dimension match)가 동일
         # 이미지 좌표계에서 동작하도록 보장.
+        #
+        # ⚠ 정렬 핵심: prob_map 은 반드시 source image dims 로 와야 프론트가 같은
+        # scale 로 배경 이미지를 겹쳤을 때 정확. image_path 를 못 읽으면 (download
+        # 실패 등) resize 가 스킵돼 prob dims ≠ image dims → 배경 이미지 어긋남.
+        _diag_prob_shape = [int(prob.shape[0]), int(prob.shape[1])]
+        _diag_image_shape: list[int] | None = None
+        _diag_resized = False
+        _diag_aligned = False
         if image_path is not None and Path(image_path).exists():
             img_for_dims = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
             if img_for_dims is not None:
                 h_img, w_img = img_for_dims.shape
+                _diag_image_shape = [int(h_img), int(w_img)]
                 h_prob, w_prob = prob.shape
                 if (h_img, w_img) != (h_prob, w_prob):
                     prob = cv2.resize(
                         prob.astype(np.float32), (w_img, h_img),
                         interpolation=cv2.INTER_LINEAR,
                     )
+                    _diag_resized = True
+                _diag_aligned = True  # prob 이 image 좌표계와 정렬됨 (resize 했거나 이미 동일)
+                import logging
+                logging.getLogger(__name__).info(
+                    "coord align: prob %s → image %s (resized=%s)",
+                    _diag_prob_shape, _diag_image_shape, _diag_resized,
+                )
+            else:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "coord align: image_path 읽기 실패 → prob dims 유지, 배경 정렬 어긋날 수 있음: %s",
+                    image_path,
+                )
+        else:
+            import logging
+            logging.getLogger(__name__).warning(
+                "coord align: image_path 없음 → prob dims 유지, 배경 정렬 어긋날 수 있음",
+            )
 
         # 1. threshold 결정 (+ metadata 동시 빌드, OCR entries 보존)
         # 이 시점의 prob 는 이미 image 좌표계에 정렬되어 있음.
-        meta, ocr_entries = self._pick_threshold(prob, threshold, image_path)
+        # priors 가 제공되면 _pick_threshold 가 자체 OCR/line 검출 대신 그걸 사용.
+        meta, ocr_entries = self._pick_threshold(
+            prob, threshold, image_path,
+            ocr_priors=ocr_priors,
+            line_priors=line_priors,
+        )
+        # 좌표계 진단값 기록
+        meta.prob_shape = _diag_prob_shape
+        meta.image_shape = _diag_image_shape
+        meta.coord_resized = _diag_resized
+        meta.coord_aligned = _diag_aligned
         if meta.debug_dir is None and debug_dir is not None:
             meta.debug_dir = str(debug_dir)
         if meta.selected_threshold is None:
@@ -568,8 +639,8 @@ class WallExtractor:
 
         wall_thickness = self.estimate_wall_thickness(edges, detections or [])
 
-        # 2. 확률 가중 스켈레톤
-        skeleton = self._skeletonize(edges, prob_map=prob, debug_dir=debug_dir)
+        # 2. 확률 가중 스켈레톤 — conf_floor 를 선택된 threshold 에 맞춤 (숨은 0.4 게이트 제거).
+        skeleton = self._skeletonize(edges, prob_map=prob, conf_floor=float(thr), debug_dir=debug_dir)
 
         raw_lines = self._detect_lines(skeleton)
         hv_lines  = self._filter_hv(raw_lines)
@@ -580,8 +651,9 @@ class WallExtractor:
         snapped   = self._snap_endpoints(snapped, tol=20.0)
         filtered  = self._filter_short(snapped, skeleton.shape)
         
-        # 3. 신뢰도 필터 (완화: 0.6 → 0.4. mask 자체가 이미 prob>thr 로 1차 필터된 상태)
-        filtered  = self._filter_by_confidence(filtered, prob, min_conf=0.4)
+        # 3. 신뢰도 필터 — min_conf 를 선택된 threshold 에 맞춤. mask 가 이미 prob>thr 로
+        #    1차 필터된 상태라 동일 floor 로 두어 "마스크엔 있는데 여기서 또 떨궈지는" 이중 게이팅 방지.
+        filtered  = self._filter_by_confidence(filtered, prob, min_conf=float(thr))
 
         filled = self._fill_opening_gaps(filtered, detections or [])
         filled = self._merge_lines(filled, pos_thresh=int(wall_thickness * 3.0))
@@ -615,16 +687,40 @@ class WallExtractor:
 
         self._save_debug(skeleton, result, detections or [], debug_dir=debug_dir)
 
-        # 4. 치수 OCR ↔ 추출된 벽 매칭 → scale 추정 (real_width_m fallback 용).
-        if ocr_entries and result:
+        # 4. Scale 추정 — 우선순위:
+        #    (a0) anchored 교차검증: 긴 기준선(체인 전체 span + 벽 외곽 anchor) cluster 합의.
+        #         짧은 tick 노이즈에 강함 → 가장 신뢰. (벽 결과 있으면 외곽 anchor 도 사용)
+        #    (a) tick-interval: 인접 OCR 치수 중심 거리. anchored 실패 시 fallback.
+        #    (b) wall-length fallback: 둘 다 실패하면 OCR ↔ 벽 길이 매칭. (legacy)
+        if ocr_entries:
             try:
-                from app.services.wall_extraction_helpers import dimension_matching
+                from app.services.floorplan.wall_extraction_helpers import dimension_matching
 
-                matches = dimension_matching.match_dimensions_to_walls(
-                    ocr_entries, result,
+                # (a0) Anchored 교차검증 (긴 기준선 cluster 합의)
+                est = dimension_matching.estimate_scale_crossvalidated(
+                    ocr_entries, result if result else None,
                 )
-                meta.dimension_matches = [m.to_dict() for m in matches]
-                est = dimension_matching.estimate_scale_from_matches(matches)
+
+                # (a) Fallback: tick-interval (인접 페어)
+                if est is None:
+                    pairs = dimension_matching.find_dimension_interval_pairs(ocr_entries)
+                    est = dimension_matching.estimate_scale_from_intervals(pairs)
+
+                # (b) Fallback: wall-length 매칭 (벽 결과 있고 위 모두 실패한 경우만)
+                if est is None and result:
+                    matches = dimension_matching.match_dimensions_to_walls(
+                        ocr_entries, result,
+                    )
+                    meta.dimension_matches = [m.to_dict() for m in matches]
+                    est = dimension_matching.estimate_scale_from_matches(matches)
+                elif est is not None:
+                    # tick-interval 성공 시에도 wall-length 매칭은 metadata 진단용으로 같이 채움
+                    if result:
+                        matches = dimension_matching.match_dimensions_to_walls(
+                            ocr_entries, result,
+                        )
+                        meta.dimension_matches = [m.to_dict() for m in matches]
+
                 if est is not None:
                     meta.scale_estimate = est.to_dict()
             except Exception as exc:
@@ -640,18 +736,23 @@ class WallExtractor:
         prob: np.ndarray,
         explicit: float | None,
         image_path: Path | None,
+        ocr_priors: list[dict] | None = None,
+        line_priors: list[dict] | None = None,
     ) -> tuple[PostprocessMetadata, list]:
         """§69 multi-threshold scoring 으로 best 선택 + 치수 매칭 입력 자료 보존.
 
+        priors:
+          - AI 서버가 OCR/line 결과를 같이 내려준 경우 (ocr_priors / line_priors 채워짐)
+            → 자체 OCR/line 검출 건너뛰고 그대로 scoring 에 사용.
+          - None 이면 fallback 으로 image_path 기반 자체 추출 (legacy).
+
         반환: `(PostprocessMetadata, ocr_entries)` — ocr_entries 는 후속 dimension
         매칭에 재사용. scoring 비활성이면 빈 리스트.
-
-          - `applied=True` & `selected_threshold` 설정: scoring 완료
-          - `applied=False`: scoring 비활성 — 호출자가 explicit 값 또는 Otsu fallback 사용
         """
-        from app.services.wall_extraction_helpers.threshold_scoring import (
+        from app.services.floorplan.wall_extraction_helpers.threshold_scoring import (
             DEFAULT_THRESHOLDS,
         )
+        from app.services.floorplan.wall_extraction_helpers.ocr import OCREntry
 
         meta = PostprocessMetadata(
             applied=False,
@@ -668,7 +769,7 @@ class WallExtractor:
             return meta, []
 
         try:
-            from app.services.wall_extraction_helpers import (
+            from app.services.floorplan.wall_extraction_helpers import (
                 dimension_matching,
                 line_detection,
                 ocr,
@@ -696,21 +797,61 @@ class WallExtractor:
         else:
             prob_resized = prob
 
-        # OCR — 텍스트 보존된 entries (치수 매칭 + 페널티 양쪽 쓰임).
-        ocr_entries = []
-        text_mask = None
-        try:
-            ocr_entries = ocr.detect_text_entries(image_path)
+        # ── OCR entries 결정: priors > 자체 추출 ───────────────────────────
+        # None: AI 가 안 줌 → backend fallback
+        # []  : AI 가 줬는데 비어있음 → backend fallback 안 함 (디버깅 명확성)
+        ocr_entries: list = []
+        if ocr_priors is not None:
+            # AI 서버에서 받은 priors 사용. dict → OCREntry 재구성.
+            # (parsed_value_m / kind 같은 추가 필드도 보존하고 싶으면 OCREntry 확장 필요.
+            # 지금은 text/bbox/confidence 만 OCREntry 가 다루므로 그대로 매핑.)
+            for p in ocr_priors:
+                try:
+                    bbox_raw = p.get("bbox", [])
+                    bbox = tuple(int(round(float(v))) for v in bbox_raw)
+                    if len(bbox) != 4:
+                        continue
+                    ocr_entries.append(
+                        OCREntry(
+                            bbox=bbox,  # type: ignore[arg-type]
+                            text=str(p.get("text", "")),
+                            confidence=float(p.get("confidence") or 0.0),
+                        )
+                    )
+                except (TypeError, ValueError):
+                    continue
             meta.ocr_regions_count = len(ocr_entries)
-            text_mask = ocr.build_text_mask(
-                [e.bbox for e in ocr_entries], prob_resized.shape, pad=3,
-            )
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning("OCR 추출 실패: %s", exc)
+            meta.ocr_priors_source = "ai_service"
+        else:
+            try:
+                ocr_entries = ocr.detect_text_entries(image_path)
+                meta.ocr_regions_count = len(ocr_entries)
+                meta.ocr_priors_source = "backend_fallback"
+                meta.fallback_used = True
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("OCR 추출 실패: %s", exc)
+                meta.ocr_priors_source = "none"
+
+        # ocr_penalty(텍스트 위 벽 = 감점) 용 text_mask 는 **신뢰도 높은 OCR 만** 사용.
+        # strip/회전으로 늘어난 저신뢰 깨진 글자까지 넣으면 text_mask 가 부풀어
+        # ocr_penalty 가 threshold 를 과하게 올리고 강한 외벽까지 깨던 회귀 방지.
+        # (scale/span/치수 매칭은 parsed dim 을 쓰므로 이 필터와 무관 — 기능 유지)
+        TEXT_MASK_MIN_CONF = 0.5
+        text_mask = None
+        if ocr_entries:
+            try:
+                confident_bboxes = [
+                    e.bbox for e in ocr_entries if e.confidence >= TEXT_MASK_MIN_CONF
+                ]
+                text_mask = (
+                    ocr.build_text_mask(confident_bboxes, prob_resized.shape, pad=3)
+                    if confident_bboxes else None
+                )
+            except Exception:
+                text_mask = None
 
         # 진단용: 각 OCR entry 의 raw text + bbox + conf + parse 결과를 metadata 에 보관.
-        # "OCR 실패" / "parser 거부" / "parse 됐지만 매칭 실패" 를 분리해 추적 가능.
         ocr_entries_dump: list[dict] = []
         dim_entries = []
         for e in ocr_entries:
@@ -732,17 +873,51 @@ class WallExtractor:
         meta.ocr_entries = ocr_entries_dump
         meta.dimension_entries_count = len(dim_entries)
 
+        # ── Line priors 결정: priors > 자체 추출 ──────────────────────────
+        # None: AI 가 안 줌 → backend fallback
+        # []  : AI 가 줬는데 비어있음 → backend fallback 안 함
         line_mask = None
-        try:
-            segs = line_detection.detect_line_segments(image_path)
-            meta.line_segments_count = int(len(segs))
-            line_mask = (
-                line_detection.build_line_mask(segs, prob_resized.shape, thickness=3)
-                if len(segs) > 0 else None
+        if line_priors is not None:
+            import numpy as _np
+            # threshold scoring 의 line_alignment 에는 wall_candidate 만 사용한다.
+            # AI 가 dimension_line / tick 으로 분류한 선분(치수선)은 벽 점수에서 제외.
+            # kind 미지정 선분은 하위호환을 위해 wall_candidate 로 간주.
+            wall_segs = [
+                p for p in line_priors
+                if all(k in p for k in ("x1", "y1", "x2", "y2"))
+                and p.get("kind", "wall_candidate") == "wall_candidate"
+            ]
+            meta.dimension_lines_excluded = int(
+                sum(1 for p in line_priors if p.get("kind") == "dimension_line")
             )
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning("line detection 실패: %s", exc)
+            segs_arr = _np.array([
+                [int(round(float(p["x1"]))), int(round(float(p["y1"]))),
+                 int(round(float(p["x2"]))), int(round(float(p["y2"])))]
+                for p in wall_segs
+            ], dtype=_np.int32) if wall_segs else _np.empty((0, 4), dtype=_np.int32)
+            meta.line_segments_count = int(len(segs_arr))
+            meta.line_priors_source = "ai_service"
+            if len(segs_arr) > 0:
+                try:
+                    line_mask = line_detection.build_line_mask(
+                        segs_arr, prob_resized.shape, thickness=3,
+                    )
+                except Exception:
+                    line_mask = None
+        else:
+            try:
+                segs = line_detection.detect_line_segments(image_path)
+                meta.line_segments_count = int(len(segs))
+                line_mask = (
+                    line_detection.build_line_mask(segs, prob_resized.shape, thickness=3)
+                    if len(segs) > 0 else None
+                )
+                meta.line_priors_source = "backend_fallback"
+                meta.fallback_used = True
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("line detection 실패: %s", exc)
+                meta.line_priors_source = "none"
 
         best_thr, scores = threshold_scoring.pick_best_threshold(
             prob_resized,

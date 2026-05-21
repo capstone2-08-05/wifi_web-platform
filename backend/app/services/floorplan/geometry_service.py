@@ -73,31 +73,49 @@ class GeometryService:
         rooms = []
         valid_room_count = 0
         
-        # 벽 두께(약 15cm)만큼 안쪽으로 수축하여 실제 가용 면적 계산
-        shrink_dist = 0.15 / self.scale_ratio 
+        # 벽 안쪽 면 기준 가용 면적 계산을 위해 안쪽으로 수축.
+        # 폴리곤은 벽 '중심선' 으로 그려지므로(LineString w.x1,y1→x2,y2),
+        # 중심선 → 안쪽 면 거리는 벽 두께의 절반이다 → thickness/2 만큼만 수축.
+        # 두께는 calibrate_walls 가 문 폭으로 추정해 각 wall.thickness 에 채워둔 실측값 사용
+        # (calibrate 전이거나 thickness 미설정 시에만 0.15m fallback).
+        thicknesses = [
+            float(w.thickness) for w in walls
+            if getattr(w, "thickness", None) and w.thickness > 0
+        ]
+        wall_thickness_m = float(np.median(thicknesses)) if thicknesses else 0.15
+        shrink_dist = (wall_thickness_m / 2.0) / self.scale_ratio
+
+        # 노이즈 단순화 tolerance (좌표 extent 의 0.5%, 최소 2px).
+        simplify_tol = max(2.0, coord_range * 0.005)
 
         for poly in polygons:
-            # (1) 안쪽으로 수축
+            # (1) 안쪽으로 수축 (벽 중심선 → 안쪽 면, 두께 절반)
             inner_poly = poly.buffer(-shrink_dist)
             if inner_poly.is_empty:
                 continue
-            
-            # (2) 직사각형화 (Envelope)
-            rect_poly = inner_poly.envelope
-            
+            # buffer 결과가 MultiPolygon 이면 가장 큰 조각만.
+            if inner_poly.geom_type == "MultiPolygon":
+                inner_poly = max(inner_poly.geoms, key=lambda g: g.area)
+            # (2) 실제 벽 모양 유지 (envelope 사각형 대신) — 잔잔한 노이즈만 단순화.
+            shape = inner_poly.simplify(simplify_tol, preserve_topology=True)
+            if not shape.is_valid:
+                shape = shape.buffer(0)
+            if shape.is_empty or shape.geom_type != "Polygon":
+                continue
+
             # (3) 면적 계산 (m²)
-            real_area = rect_poly.area * (self.scale_ratio ** 2)
-            
+            real_area = shape.area * (self.scale_ratio ** 2)
+
             # 너무 작거나(노이즈) 너무 큰(외곽선) 공간 필터링
             if real_area < 2.0 or real_area > 300.0:
                 continue
 
-            # (4) Room 객체 생성
-            coords = [list(pt) for pt in rect_poly.exterior.coords]
+            # (4) Room 객체 생성 — 실제 폴리곤 외곽 좌표 그대로.
+            coords = [list(pt) for pt in shape.exterior.coords]
             rooms.append(Room(
                 id=f"room_{valid_room_count}",
                 points=coords,
-                center=[round(rect_poly.centroid.x, 3), round(rect_poly.centroid.y, 3)],
+                center=[round(shape.centroid.x, 3), round(shape.centroid.y, 3)],
                 area=round(real_area, 2)
             ))
             valid_room_count += 1
@@ -106,32 +124,55 @@ class GeometryService:
         return rooms
 
     def calibrate_walls(self, walls: List[Wall], detections: List[Any]) -> List[Wall]:
-        """
-        탐지된 문의 크기를 기준으로 이미지의 실제 벽 두께를 추정하고 보정합니다.
+        """벽 역할(외벽/내벽)을 추정해 현실적인 두께를 차등 적용.
+
+        한국 주거 기준: 외벽·세대간벽은 두껍고(~0.2m 콘크리트), 내부 칸막이는
+        얇다(~0.12m). 문 폭으로 기준 두께를 잡되, 건물 외곽(bbox 경계)에 있는 벽은
+        외벽으로 보고 두껍게, 안쪽 벽은 얇게.
         """
         if not walls:
             return []
 
-        # 문의 폭을 통해 벽 두께 추정
+        # 문의 폭으로 기준(외벽) 두께 추정 — 상식 범위(0.15~0.25m) 벗어나면 0.2m.
         door_px_widths = []
         for d in detections:
-            # DetectionDTO 구조에 따라 접근 (class_name 또는 class)
             label = getattr(d, 'class_name', getattr(d, 'class', None))
             if label == "door":
                 bx1, by1, bx2, by2 = d.bbox_xyxy
                 door_px_widths.append(min(abs(bx2 - bx1), abs(by2 - by1)))
-
         if door_px_widths:
-            avg_door_px = sum(door_px_widths) / len(door_px_widths)
-            estimated_thickness_m = avg_door_px * self.scale_ratio
-            # 상식적인 범위(10cm~40cm)를 벗어나면 20cm로 고정
-            wall_thickness_m = estimated_thickness_m if 0.1 <= estimated_thickness_m <= 0.4 else 0.2
+            est = (sum(door_px_widths) / len(door_px_widths)) * self.scale_ratio
+            exterior_t = est if 0.15 <= est <= 0.25 else 0.2
         else:
-            wall_thickness_m = 0.2
+            exterior_t = 0.2
+        interior_t = round(exterior_t * 0.6, 3)  # 내벽은 외벽의 ~60% (칸막이)
 
-        # 모든 벽의 두께 업데이트
+        # 건물 외곽 bbox + 경계 판정 margin (전체 extent 의 4%).
+        xs = [c for w in walls for c in (w.x1, w.x2)]
+        ys = [c for w in walls for c in (w.y1, w.y2)]
+        min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
+        margin = max(8.0, max(max_x - min_x, max_y - min_y) * 0.04)
+
+        ext_n = 0
         for wall in walls:
-            wall.thickness = round(wall_thickness_m, 3)
+            is_ext = self._wall_is_exterior(wall, min_x, max_x, min_y, max_y, margin)
+            wall.thickness = round(exterior_t, 3) if is_ext else interior_t
+            wall.role = "outer" if is_ext else "inner"
+            ext_n += 1 if is_ext else 0
 
-        logger.info(f"벽 두께 보정 완료: {wall_thickness_m:.3f}m")
+        logger.info(
+            "벽 두께 보정: 외벽 %.3fm(%d개) / 내벽 %.3fm(%d개)",
+            exterior_t, ext_n, interior_t, len(walls) - ext_n,
+        )
         return walls
+
+    @staticmethod
+    def _wall_is_exterior(w: Wall, min_x, max_x, min_y, max_y, margin: float) -> bool:
+        """벽이 건물 외곽(bbox 경계)에 평행하게 붙어 있으면 외벽으로 판정."""
+        dx, dy = abs(w.x2 - w.x1), abs(w.y2 - w.y1)
+        if dx >= dy:  # 수평 벽 → 위/아래 경계 근처면 외벽
+            y_mid = (w.y1 + w.y2) / 2.0
+            return abs(y_mid - min_y) <= margin or abs(y_mid - max_y) <= margin
+        # 수직 벽 → 좌/우 경계 근처면 외벽
+        x_mid = (w.x1 + w.x2) / 2.0
+        return abs(x_mid - min_x) <= margin or abs(x_mid - max_x) <= margin

@@ -17,7 +17,7 @@ from app.schemas.scene_draft import (
     SceneDraftDetailResponse,
     SceneDraftSummaryResponse,
 )
-from app.services import scene_draft_service
+from app.services.scene import scene_draft_service
 
 router = APIRouter(prefix="/scene-drafts", tags=["scene-drafts"])
 floor_scene_drafts_router = APIRouter(prefix="/floors", tags=["scene-drafts"])

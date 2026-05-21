@@ -34,6 +34,7 @@ class ThresholdScore:
     noise_penalty: float
     dimension_alignment: float
     total: float
+    coverage: float = 0.0  # wall 픽셀 비율 (뚱뚱할수록 감점)
 
     def to_dict(self) -> dict:
         """JSON 직렬화용 (응답 / summary_json 영속화)."""
@@ -45,6 +46,7 @@ class ThresholdScore:
             "ocr_penalty": round(self.ocr_penalty, 4),
             "noise_penalty": round(self.noise_penalty, 4),
             "dimension_alignment": round(self.dimension_alignment, 4),
+            "coverage": round(self.coverage, 4),
             "total": round(self.total, 4),
         }
 
@@ -125,11 +127,14 @@ def score_threshold(
     text_mask: np.ndarray | None,
     dim_entries=None,
     weights: tuple[float, float, float, float, float, float] = (1.0, 1.0, 1.0, 1.0, 0.5, 1.0),
+    coverage_weight: float = 0.0,
 ) -> ThresholdScore:
     """단일 threshold 평가.
 
     weights: (line_alignment, connectivity, orthogonal, ocr_penalty, noise_penalty,
     dimension_alignment). 디폴트는 dim_alignment 도 line_alignment 와 동급 1.0.
+
+    coverage: wall 픽셀 비율 (진단용으로 기록). coverage_weight=0 이면 점수에 영향 없음.
     """
     wall_mask = (prob_map > threshold).astype(np.uint8) * 255
 
@@ -138,10 +143,11 @@ def score_threshold(
     orth = _orthogonal_score(wall_mask)
     ocr_p = _ocr_penalty(wall_mask, text_mask) if text_mask is not None else 0.0
     np_pen = _noise_penalty(wall_mask)
+    coverage = float((wall_mask > 0).mean())
     dim = 0.0
     if dim_entries:
         # 지연 import — dimension_matching 이 ocr 모듈을 거치지 않도록.
-        from app.services.wall_extraction_helpers.dimension_matching import (
+        from app.services.floorplan.wall_extraction_helpers.dimension_matching import (
             dimension_alignment_score,
         )
         dim = dimension_alignment_score(wall_mask, dim_entries)
@@ -149,7 +155,7 @@ def score_threshold(
     w_la, w_cc, w_orth, w_ocr, w_np, w_dim = weights
     total = (
         w_la * la + w_cc * cc + w_orth * orth + w_dim * dim
-        - w_ocr * ocr_p - w_np * np_pen
+        - w_ocr * ocr_p - w_np * np_pen - coverage_weight * coverage
     )
 
     return ThresholdScore(
@@ -160,6 +166,7 @@ def score_threshold(
         ocr_penalty=ocr_p,
         noise_penalty=np_pen,
         dimension_alignment=dim,
+        coverage=coverage,
         total=total,
     )
 

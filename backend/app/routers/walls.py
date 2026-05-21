@@ -10,7 +10,7 @@ from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.wall import WallResponse, WallUpdate
-from app.services import wall_service
+from app.services.scene import wall_service
 
 
 router = APIRouter(prefix="/walls", tags=["walls"])

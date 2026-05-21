@@ -14,7 +14,7 @@ from app.schemas.draft_wall import (
     DraftWallResponse,
     DraftWallUpdate,
 )
-from app.services import draft_wall_service
+from app.services.scene import draft_wall_service
 
 
 scene_draft_walls_router = APIRouter(prefix="/scene-drafts", tags=["draft-walls"])

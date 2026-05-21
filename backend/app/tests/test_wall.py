@@ -6,7 +6,7 @@ from pathlib import Path
 backend_dir = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(backend_dir))
 
-from app.services.geometry_service import GeometryService
+from app.services.floorplan.geometry_service import GeometryService
 
 # 일단 테스트용으로 마스크 이미지 만들어봄
 def create_test_mask(path: Path):

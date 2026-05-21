@@ -14,7 +14,7 @@ from app.schemas.ap_layout import (
     ApLayoutResponse,
     ApLayoutUpdate,
 )
-from app.services import ap_layout_service
+from app.services.rf import ap_layout_service
 
 
 router = APIRouter(prefix="/ap-layouts", tags=["ap-layouts"])

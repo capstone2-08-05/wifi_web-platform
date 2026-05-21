@@ -587,8 +587,8 @@ def estimate_session_coverage(
         EstimatedRssiRangeDTO,
     )
     from app.services._s3 import presigned_get_url
-    from app.services.measurement_estimation.gp_estimator import estimate_coverage
-    from app.services.measurement_estimation.heatmap import render_and_upload
+    from app.services.rf.measurement_estimation.gp_estimator import estimate_coverage
+    from app.services.rf.measurement_estimation.heatmap import render_and_upload
 
     session_row = _load_owned_session(db, session_id, user)
 

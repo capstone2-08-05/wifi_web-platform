@@ -32,7 +32,7 @@ import numpy as np
 import requests
 
 from app.core.errors import AppError, ErrorCode
-from app.services.sagemaker_inference_service import InferenceResult
+from app.services.inference.sagemaker_inference_service import InferenceResult
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +109,21 @@ def run_local_inference(
             unet_out.get("wallProbOverlayPath"), mask_local_path, prob_map,
         )
 
+        # 4b) 사전 분석 priors — AI 서버가 채워주면 사용, 없으면 None → 백엔드 fallback.
+        # (rf-service contract: UnetOutput.ocrPriors / linePriors / roiTransform)
+        ocr_priors = _extract_priors_list(unet_out, "ocrPriors")
+        line_priors = _extract_priors_list(unet_out, "linePriors")
+        roi_transform = unet_out.get("roiTransform") if isinstance(
+            unet_out.get("roiTransform"), dict
+        ) else None
+        logger.info(
+            "local inference: priors job_id=%s ocr=%s lines=%s roi=%s",
+            job_id,
+            len(ocr_priors) if ocr_priors is not None else None,
+            len(line_priors) if line_priors is not None else None,
+            "yes" if roi_transform else "no",
+        )
+
         # 5) yolo 호출 (detections 는 inline list — 계약: output.detections[])
         logger.info("local inference: POST /inference/yolo job_id=%s", job_id)
         yolo_payload = _post_inference(
@@ -158,6 +173,9 @@ def run_local_inference(
             image_height_px=height_px,
             result_payload=result_payload,
             source_image_local_path=source_image_path,
+            ocr_priors=ocr_priors,
+            line_priors=line_priors,
+            roi_transform=roi_transform,
         )
     except Exception:
         # 실패하면 temp 정리하고 예외 다시 던짐 — 성공시엔 호출자 책임.
@@ -246,6 +264,24 @@ def _require_output(payload: dict[str, Any], *, task: str) -> dict[str, Any]:
             502,
         )
     return output
+
+
+def _extract_priors_list(
+    output: dict[str, Any], key: str
+) -> list[dict[str, Any]] | None:
+    """AI 응답의 priors 필드(`ocrPriors` / `linePriors`)를 list[dict] 로 정규화.
+
+    - 필드 없거나 list 가 아니면 None 반환 → 호출자가 fallback 결정.
+    - 각 항목은 BaseModel 인스턴스가 아니라 dict 이므로 그대로 통과.
+    """
+    raw = output.get(key)
+    if not isinstance(raw, list):
+        return None
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, dict):
+            out.append(item)
+    return out
 
 
 def _require_str(d: dict[str, Any], key: str) -> str:

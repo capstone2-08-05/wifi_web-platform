@@ -94,7 +94,7 @@ async def create_rf_run(
 
     # 새 흐름: SageMaker async 호출
     if payload.access_points and payload.simulation:
-        from app.services.rf_job_service import submit_rf_simulation
+        from app.services.rf.rf_job_service import submit_rf_simulation
 
         rf_run, job = await submit_rf_simulation(
             db,
@@ -104,6 +104,7 @@ async def create_rf_run(
             current_user=user,
             run_type=payload.run_type or "rf_simulate",
             metadata=payload.metadata,
+            apply_calibration=payload.apply_calibration,
         )
         summary = _to_response(rf_run)
         return RfRunCreatedResponse(**summary.model_dump(), job_id=job.id)

@@ -77,15 +77,15 @@ async def run_job_poller_forever() -> None:
 async def _poll_once() -> None:
     """한 사이클: running job 조회 → 오래된 건 스킵 → 상한만큼만 폴링."""
     # 임포트는 lazy — 순환 import 회피
-    from app.services.calibration_worker import (
+    from app.services.rf.calibration_worker import (
         JOB_TYPE_CALIBRATION,
         poll_calibration_job,
     )
-    from app.services.floorplan_job_service import (
+    from app.services.inference.floorplan_job_service import (
         JOB_TYPE_FLOORPLAN_ANALYZE,
         poll_floorplan_job,
     )
-    from app.services.rf_job_service import JOB_TYPE_RF_SIMULATE, poll_rf_job
+    from app.services.rf.rf_job_service import JOB_TYPE_RF_SIMULATE, poll_rf_job
 
     now = datetime.now(timezone.utc)
     min_created = now - timedelta(minutes=JOB_POLLER_MAX_AGE_MINUTES)

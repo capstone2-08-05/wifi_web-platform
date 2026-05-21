@@ -14,7 +14,7 @@ from app.schemas.draft_opening import (
     DraftOpeningResponse,
     DraftOpeningUpdate,
 )
-from app.services import draft_opening_service
+from app.services.scene import draft_opening_service
 
 
 scene_draft_openings_router = APIRouter(

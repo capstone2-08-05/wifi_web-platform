@@ -35,6 +35,8 @@ from app.geometry.reconciliation import (
     bridge_collinear_walls,
     project_openings_onto_walls,
     snap_wall_endpoints,
+    synthesize_opening_wall_segments,
+    synthesize_partition_walls_from_ticks,
 )
 
 __all__ = [
@@ -62,4 +64,6 @@ __all__ = [
     "bridge_collinear_walls",
     "project_openings_onto_walls",
     "snap_wall_endpoints",
+    "synthesize_opening_wall_segments",
+    "synthesize_partition_walls_from_ticks",
 ]

@@ -16,7 +16,8 @@ from pydantic import BaseModel
 
 from app.schemas.asset import AssetResponse
 from app.schemas.scene_draft import AnalyzeFromAssetRequest, AnalyzeFromAssetResponse
-from app.services import asset_service, scene_draft_service
+from app.services import asset_service
+from app.services.scene import scene_draft_service
 
 
 class AssetDownloadUrlResponse(BaseModel):

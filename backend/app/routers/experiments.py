@@ -9,7 +9,7 @@ from fastapi import APIRouter, File, Form, UploadFile
 
 from app.core.errors import AppError, ErrorCode
 from app.core.settings import MASK_DIR, UPLOAD_DIR, ai_service_url, rf_server_url
-from app.services.wall_extraction import run_rule_based_wall_extraction, wall_extractor
+from app.services.floorplan.wall_extraction import run_rule_based_wall_extraction, wall_extractor
 
 router = APIRouter(prefix="/experiments", tags=["experiments"])
 

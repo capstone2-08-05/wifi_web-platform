@@ -14,7 +14,7 @@ from app.schemas.draft_room import (
     DraftRoomResponse,
     DraftRoomUpdate,
 )
-from app.services import draft_room_service
+from app.services.scene import draft_room_service
 
 
 scene_draft_rooms_router = APIRouter(prefix="/scene-drafts", tags=["draft-rooms"])

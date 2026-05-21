@@ -17,7 +17,7 @@ from app.schemas.rf_run import (
     RfRunResponse,
     RfRunUpdate,
 )
-from app.services import rf_run_service
+from app.services.rf import rf_run_service
 
 
 router = APIRouter(prefix="/rf-runs", tags=["rf-runs"])

@@ -32,15 +32,15 @@ from app.services.asset_service import (
     create_floorplan_asset_from_bytes,
     create_floorplan_asset_from_local_path,
 )
-from app.services.fusion_service import fusion_service
-from app.services.local_inference_service import run_local_inference
-from app.services.sagemaker_inference_service import (
+from app.services.floorplan.fusion_service import fusion_service
+from app.services.inference.local_inference_service import run_local_inference
+from app.services.inference.sagemaker_inference_service import (
     InferenceResult,
     SageMakerInferenceFailure,
     map_failure_to_app_error,
     sagemaker_inference_service,
 )
-from app.services.scene_draft_service import _resolve_project_floor, save_scene_draft
+from app.services.scene.scene_draft_service import _resolve_project_floor, save_scene_draft
 
 logger = logging.getLogger(__name__)
 

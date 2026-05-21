@@ -333,6 +333,12 @@ function WallDimensionSection({
       }
     | null;
 
+  // 평행 치수(벽 자기 길이) — 세로벽↔세로치수, 가로벽↔가로치수 매칭 + scale 검증 결과.
+  // source: "dimension"(도면 치수와 일치) | "computed"(scale 계산 길이).
+  const dimLength = (meta.dimension_length ?? null) as
+    | { meters?: number; text?: string; source?: string; parse_confidence?: number }
+    | null;
+
   // 입력값 초기값: user_meters 우선, 없으면 OCR parsed_meters.
   const initialInput =
     dim?.user_meters != null
@@ -383,6 +389,18 @@ function WallDimensionSection({
         <p className="rounded-md border border-dashed bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
           이 벽에 자동 매칭된 도면 치수가 없습니다. 아래에 직접 입력해 보정할 수 있어요.
         </p>
+      )}
+
+      {dimLength?.meters != null && (
+        <div className="rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+          <div className="flex items-center justify-between gap-2">
+            <span>{dimLength.source === 'computed' ? '추정 길이 (scale 계산)' : '도면 길이 (평행 치수)'}</span>
+            <span className="font-mono text-foreground">
+              {dimLength.meters.toFixed(2)} m
+              {dimLength.text ? ` (${dimLength.text})` : ''}
+            </span>
+          </div>
+        </div>
       )}
 
       <div className="flex items-center gap-2">
