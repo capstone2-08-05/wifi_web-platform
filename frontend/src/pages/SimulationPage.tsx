@@ -85,8 +85,8 @@ export default function SimulationPage() {
 
   // 사용자가 명시적으로 선택한 run (또는 새로 실행한 run). null 이면 "최신 succeeded 자동" 모드.
   const [pickedRunId, setPickedRunId] = useState<string | null>(null);
-  // "다시 실행" 으로 idle 로 돌아간 상태를 추적 — 새로 실행하기 전까지 자동복원 OFF.
-  const [resetCleared, setResetCleared] = useState(false);
+  // "다시 실행"으로 결과를 닫고 배치 화면(idle)으로 돌아갔는지. true 면 최근 run 자동 복원 안 함.
+  const [dismissed, setDismissed] = useState(false);
 
   // 사용자가 배치한 AP 목록 + 추가 모드(true 면 다음 클릭이 새 AP 추가).
   const [aps, setAps] = useState<PlacedAp[]>([]);
@@ -112,18 +112,14 @@ export default function SimulationPage() {
 
   // 활성 run = 사용자가 명시 선택한 것 ?? 현재 scene_version 으로 돌린 최근 succeeded.
   const activeRunId = useMemo(() => {
-    if (resetCleared) return null;
     if (pickedRunId) return pickedRunId;
-    if (!currentVersion) return null;
-    return (
-      pastRuns.find(
-        (r) => r.status === 'succeeded' && r.scene_version_id === currentVersion.id,
-      )?.id ?? null
-    );
-  }, [resetCleared, pickedRunId, pastRuns, currentVersion]);
+    if (dismissed) return null; // 명시적으로 배치 화면으로 돌아감 → fallback 안 함
+    return pastRuns.find((r) => r.status === 'succeeded')?.id ?? null;
+  }, [pickedRunId, dismissed, pastRuns]);
+  // run 선택/실행 시: 그 run 활성화 + dismiss 해제. (null 전달 = 리셋: dismiss 활성)
   const setActiveRunId = (id: string | null) => {
-    setResetCleared(false);
     setPickedRunId(id);
+    setDismissed(id === null);
   };
 
   // Dual 모드: 2.4GHz 전용 보조 run 추적.
