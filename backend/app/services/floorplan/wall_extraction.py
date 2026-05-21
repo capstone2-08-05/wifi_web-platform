@@ -173,21 +173,28 @@ class WallExtractor:
         line_priors,
         prob_map: np.ndarray,
         threshold: float,
-        thickness: int = 5,
-        min_mean_ratio: float = 0.8,
-        min_coverage: float = 0.35,
-        min_len_px: float = 12.0,
+        band_px: int = 4,
+        min_run_px: float = 25.0,
+        max_gap_px: float = 40.0,
         meta: "PostprocessMetadata | None" = None,
     ) -> List[List[float]]:
-        """AI 원본 Hough line prior 중 U-Net prob 으로 검증 통과분만 최종 후보로.
+        """AI 원본 Hough line 을 따라 'prob 위에 얹힌 구간'만 추출 (segment 단위).
 
-        wall_candidate 만 대상(치수선/tick 제외). 선 주변 corridor(두께 thickness)의
-        prob 평균 ≥ threshold*min_mean_ratio 이고 coverage(prob>threshold 비율) ≥
-        min_coverage 일 때 채택. corridor 라 원본 선↔prob 가 2~3px 어긋나도 매칭됨.
+        whole-line coverage 는 patchy U-Net 에선 외벽(일부만 prob)을 떨구거나, 느슨하면
+        방 가로지르는 노이즈를 통과시킨다. 그래서 선을 따라가며:
+          1) wall_mask = prob>threshold 를 band_px dilate (선↔prob 오프셋 흡수)
+          2) 선 1px 샘플별 on-wall 여부 → 연속 on-wall run 추출 (max_gap_px 이하 끊김은
+             bridge: 문/창·U-Net dropout 메움)
+          3) min_run_px 이상인 run 만 벽 후보 sub-segment 로 채택
+        → patchy 외벽은 긴 on-wall run 으로 복원, 방 가로지르는 선은 교차점의 짧은 run
+           뿐이라 min_run 미달로 탈락.
         """
         accepted: List[List[float]] = []
-        cand = acc = rej_prob = rej_cov = 0
+        cand = acc_lines = rej = seg_n = 0
         h, w = prob_map.shape[:2]
+        wall = (prob_map > threshold).astype(np.uint8)
+        k = 2 * max(1, int(band_px)) + 1
+        wall_dil = cv2.dilate(wall, np.ones((k, k), np.uint8))
         for p in line_priors or []:
             if p.get("kind", "wall_candidate") != "wall_candidate":
                 continue
@@ -196,34 +203,63 @@ class WallExtractor:
                 x2, y2 = float(p["x2"]), float(p["y2"])
             except (KeyError, TypeError, ValueError):
                 continue
-            if (x2 - x1) ** 2 + (y2 - y1) ** 2 < min_len_px ** 2:
+            length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+            if length < min_run_px:
                 continue
             cand += 1
-            line_mask = np.zeros((h, w), dtype=np.uint8)
-            cv2.line(
-                line_mask,
-                (int(round(x1)), int(round(y1))),
-                (int(round(x2)), int(round(y2))),
-                255, max(1, int(thickness)),
-            )
-            vals = prob_map[line_mask > 0]
-            if vals.size == 0:
-                continue
-            if float(vals.mean()) < threshold * min_mean_ratio:
-                rej_prob += 1
-                continue
-            if float((vals > threshold).mean()) < min_coverage:
-                rej_cov += 1
-                continue
-            accepted.append([x1, y1, x2, y2])
-            acc += 1
+            n = max(int(length), 1)
+            xs = np.clip(np.linspace(x1, x2, n).astype(int), 0, w - 1)
+            ys = np.clip(np.linspace(y1, y2, n).astype(int), 0, h - 1)
+            on = wall_dil[ys, xs] > 0  # 샘플별 on-wall (≈1px/sample)
+            runs = self._onwall_runs(on, max_gap=int(max_gap_px))
+            kept = False
+            for a, b in runs:
+                if (b - a) >= min_run_px:
+                    accepted.append([float(xs[a]), float(ys[a]),
+                                     float(xs[b]), float(ys[b])])
+                    seg_n += 1
+                    kept = True
+            if kept:
+                acc_lines += 1
+            else:
+                rej += 1
         if meta is not None:
             meta.prior_line_candidates_count = cand
-            meta.prior_line_accepted_count = acc
-            meta.prior_line_rejected_low_prob_count = rej_prob
-            meta.prior_line_rejected_coverage_count = rej_cov
+            meta.prior_line_accepted_count = seg_n          # 채택된 sub-segment 수
+            meta.prior_line_rejected_low_prob_count = 0
+            meta.prior_line_rejected_coverage_count = rej   # on-wall run 없던 선 수
             meta.prior_line_fusion_applied = line_priors is not None
         return accepted
+
+    @staticmethod
+    def _onwall_runs(on: np.ndarray, max_gap: int) -> List[tuple]:
+        """bool 배열에서 True run 추출 — max_gap 이하 False 끊김은 이어붙임(bridge).
+
+        반환: (start_idx, end_idx) 리스트.
+        """
+        n = len(on)
+        runs: List[tuple] = []
+        i = 0
+        while i < n:
+            if not on[i]:
+                i += 1
+                continue
+            j = i + 1
+            while j < n:
+                if on[j]:
+                    j += 1
+                    continue
+                # False 구간 — max_gap 이내에 다음 True 있으면 bridge
+                k = j
+                while k < n and not on[k]:
+                    k += 1
+                if k < n and (k - j) <= max_gap:
+                    j = k
+                else:
+                    break
+            runs.append((i, j - 1))
+            i = j
+        return runs
 
 
     # ── 3. 선분 검출 ──────────────────────────────────────────────────────
@@ -728,8 +764,7 @@ class WallExtractor:
         # 3.5 prior-guided fusion: AI 원본 Hough line(wall_candidate) 중 prob corridor
         # 검증 통과분을 최종 후보에 합침 → U-Net mask 끊김으로 짧게/누락된 벽 복원.
         prior_lines = self._filter_line_priors_by_probability(
-            line_priors, prob, float(thr),
-            thickness=max(3, int(wall_thickness)), meta=meta,
+            line_priors, prob, float(thr), band_px=4, meta=meta,
         )
         if prior_lines:
             filtered = self._merge_lines(

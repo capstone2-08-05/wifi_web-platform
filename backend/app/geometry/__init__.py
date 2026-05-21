@@ -33,6 +33,7 @@ from app.geometry.matching import (
 )
 from app.geometry.reconciliation import (
     bridge_collinear_walls,
+    cut_walls_at_openings,
     project_openings_onto_walls,
     snap_wall_endpoints,
     synthesize_opening_wall_segments,
@@ -62,6 +63,7 @@ __all__ = [
     "segment_orientation",
     # reconciliation
     "bridge_collinear_walls",
+    "cut_walls_at_openings",
     "project_openings_onto_walls",
     "snap_wall_endpoints",
     "synthesize_opening_wall_segments",

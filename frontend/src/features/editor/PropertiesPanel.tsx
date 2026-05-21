@@ -339,12 +339,18 @@ function WallDimensionSection({
     | { meters?: number; text?: string; source?: string; parse_confidence?: number }
     | null;
 
-  // 입력값 초기값: user_meters 우선, 없으면 OCR parsed_meters.
+  // 이 벽의 길이 = 평행 치수(dimension_length) 우선. (예: 외벽=도면 전체 길이 17,450)
+  // dimension_match(근접 매칭)는 세그먼트에 잘못 붙는 경우가 있어 fallback 으로만.
+  const isComputed = dimLength?.source === 'computed';
+  const lengthM = dimLength?.meters ?? dim?.parsed_meters ?? null;
+  const lengthText = dimLength?.text ?? dim?.text ?? null;
+
+  // 실측값 초기값: 사용자 입력 우선, 없으면 벽 길이(도면 치수)를 기본으로 채움.
   const initialInput =
     dim?.user_meters != null
       ? String(dim.user_meters)
-      : dim?.parsed_meters != null
-        ? String(dim.parsed_meters)
+      : lengthM != null
+        ? String(lengthM)
         : '';
 
   const [input, setInput] = useState(initialInput);
@@ -372,16 +378,12 @@ function WallDimensionSection({
 
   return (
     <div className="space-y-2.5">
-      {dim ? (
+      {lengthM != null ? (
         <div className="rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
           <div className="flex items-center justify-between gap-2">
-            <span>OCR 인식</span>
-            <span className="font-mono text-foreground">{dim.text ?? '-'}</span>
-          </div>
-          <div className="mt-1 flex items-center justify-between gap-2">
-            <span>자동 추정</span>
+            <span>{isComputed ? '추정 길이 (scale 계산)' : '도면 길이 (평행 치수)'}</span>
             <span className="font-mono text-foreground">
-              {dim.parsed_meters != null ? `${dim.parsed_meters.toFixed(2)} m` : '-'}
+              {lengthM.toFixed(2)} m{lengthText ? ` (${lengthText})` : ''}
             </span>
           </div>
         </div>
@@ -389,18 +391,6 @@ function WallDimensionSection({
         <p className="rounded-md border border-dashed bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
           이 벽에 자동 매칭된 도면 치수가 없습니다. 아래에 직접 입력해 보정할 수 있어요.
         </p>
-      )}
-
-      {dimLength?.meters != null && (
-        <div className="rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
-          <div className="flex items-center justify-between gap-2">
-            <span>{dimLength.source === 'computed' ? '추정 길이 (scale 계산)' : '도면 길이 (평행 치수)'}</span>
-            <span className="font-mono text-foreground">
-              {dimLength.meters.toFixed(2)} m
-              {dimLength.text ? ` (${dimLength.text})` : ''}
-            </span>
-          </div>
-        </div>
       )}
 
       <div className="flex items-center gap-2">
@@ -419,7 +409,7 @@ function WallDimensionSection({
             }
           }}
           disabled={disabled || !onUpdate}
-          placeholder={dim?.parsed_meters != null ? String(dim.parsed_meters) : '예: 3.5'}
+          placeholder={lengthM != null ? String(lengthM) : '예: 3.5'}
           className="w-24 rounded-md border bg-background px-2 py-1.5 text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-70"
         />
         <span className="text-xs text-muted-foreground">m</span>

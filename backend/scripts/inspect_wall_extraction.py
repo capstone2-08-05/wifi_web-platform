@@ -48,12 +48,24 @@ from app.services.floorplan.wall_extraction_helpers import dimension_matching as
 _UNET_OUT = _BACKEND_ROOT.parents[1] / "rf-service" / "apps" / "ai_api" / "data" / "output" / "unet"
 
 
-def _find_latest_prob() -> Path | None:
+def _find_latest_prob(img_aspect: float | None = None, tol: float = 0.06) -> Path | None:
+    """최근 prob map. img_aspect(=w/h) 주면 종횡비 맞는 것 우선 (다른 도면 prob mismatch 방지)."""
     if not _UNET_OUT.exists():
         return None
     npys = list(_UNET_OUT.rglob("*_wall_prob.npy"))
     if not npys:
         return None
+    if img_aspect:
+        matched = []
+        for p in npys:
+            try:
+                shp = np.load(str(p), mmap_mode="r").shape
+                if abs((shp[1] / shp[0]) - img_aspect) / img_aspect <= tol:
+                    matched.append(p)
+            except Exception:
+                pass
+        if matched:
+            return max(matched, key=lambda p: p.stat().st_mtime)
     return max(npys, key=lambda p: p.stat().st_mtime)
 
 
@@ -71,27 +83,30 @@ def main() -> None:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--prob", type=Path, help="U-Net prob map (.npy)")
     g.add_argument("--auto-prob", action="store_true", help="가장 최근 prob map 자동 탐색")
-    ap.add_argument("--out", type=Path, default=Path("wall_debug"), help="오버레이 저장 폴더")
+    ap.add_argument("--out", type=Path, default=Path("data/wall_debug"), help="오버레이 저장 폴더 (gitignore: data/)")
     ap.add_argument("--no-ocr", action="store_true", help="OCR text_mask 생략(빠름)")
     args = ap.parse_args()
 
     if not args.image.exists():
         sys.exit(f"이미지 없음: {args.image}")
-    prob_path = args.prob if args.prob else _find_latest_prob()
-    if prob_path is None or not prob_path.exists():
-        sys.exit(f"prob map 없음: {prob_path} (--prob 로 직접 지정하세요)")
-    print(f"이미지   : {args.image}")
-    print(f"prob map : {prob_path}")
-
     bgr = cv2.imread(str(args.image))
     if bgr is None:
         sys.exit("이미지 디코드 실패")
     h_img, w_img = bgr.shape[:2]
 
+    prob_path = args.prob if args.prob else _find_latest_prob(img_aspect=w_img / h_img)
+    if prob_path is None or not prob_path.exists():
+        sys.exit(f"prob map 없음: {prob_path} (--prob 로 직접 지정하세요)")
+    print(f"이미지   : {args.image} ({w_img}x{h_img})")
+    print(f"prob map : {prob_path}")
+
     prob = np.load(str(prob_path)).astype(np.float32)
     print(f"prob shape={prob.shape}, image shape=({h_img},{w_img})")
     # 실제 파이프라인처럼 prob 를 이미지 좌표계로 resize
     if prob.shape[:2] != (h_img, w_img):
+        pa = prob.shape[1] / prob.shape[0]
+        if abs(pa - w_img / h_img) / (w_img / h_img) > 0.06:
+            print("  ⚠️ prob 종횡비 ≠ 이미지 — 다른 도면의 prob 일 수 있음! --prob 로 맞는 것 지정 권장.")
         prob = cv2.resize(prob, (w_img, h_img), interpolation=cv2.INTER_LINEAR)
         print("  → prob 를 이미지 크기로 resize 함")
 
