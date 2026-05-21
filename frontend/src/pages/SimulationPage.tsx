@@ -48,6 +48,8 @@ export default function SimulationPage() {
 
   // 사용자가 명시적으로 선택한 run (또는 새로 실행한 run). null 이면 "최신 succeeded 자동" 모드.
   const [pickedRunId, setPickedRunId] = useState<string | null>(null);
+  // "다시 실행" 으로 idle 로 돌아간 상태를 추적 — 새로 실행하기 전까지 자동복원 OFF.
+  const [resetCleared, setResetCleared] = useState(false);
 
   // 사용자가 배치한 AP 목록 + 추가 모드(true 면 다음 클릭이 새 AP 추가).
   const [aps, setAps] = useState<PlacedAp[]>([]);
@@ -62,11 +64,16 @@ export default function SimulationPage() {
 
   // 활성 run = 사용자가 명시 선택한 것 ?? 최근 succeeded fallback.
   // → 새로고침/재진입 시에도 가장 최근 succeeded 자동 활성.
+  // 단 사용자가 명시적으로 "다시 실행" 누른 직후엔 idle 유지.
   const activeRunId = useMemo(() => {
+    if (resetCleared) return null;
     if (pickedRunId) return pickedRunId;
     return pastRuns.find((r) => r.status === 'succeeded')?.id ?? null;
-  }, [pickedRunId, pastRuns]);
-  const setActiveRunId = setPickedRunId;
+  }, [resetCleared, pickedRunId, pastRuns]);
+  const setActiveRunId = (id: string | null) => {
+    setResetCleared(false);
+    setPickedRunId(id);
+  };
 
   // 시뮬레이션 페이지는 배경 도면 이미지를 안 깔음 — 도형만 + 히트맵 오버레이.
   // (배경 이미지는 공간편집/대시보드 한정.)
@@ -125,7 +132,8 @@ export default function SimulationPage() {
   };
 
   const handleReset = () => {
-    setActiveRunId(null);
+    setPickedRunId(null);
+    setResetCleared(true);
   };
 
   const handleAddAp = (ap: PlacedAp) => setAps((prev) => [...prev, ap]);
@@ -141,22 +149,28 @@ export default function SimulationPage() {
   );
 
   // 시뮬레이션 기록 — 백엔드의 RF Run 목록을 표시. 클릭하면 해당 run 으로 전환.
+  // 실제 메트릭(rss_dbm.mean, coverage_summary)은 RfRun 이 아닌 RfMap 에 들어있어서
+  // 활성 run 한정으로 rfMapsQuery 데이터를 머지. 나머지는 null → "—" 로 표시.
+  const activeMapMetrics = rfMapsQuery.data?.[0]?.metrics_json;
   const history: SimulationHistoryItem[] = useMemo(
     () =>
       pastRuns
         .filter((r) => r.status === 'succeeded')
         .map((r) => {
-          const m = parseMetrics(r.metrics_json);
+          const m =
+            r.id === activeRunId
+              ? parseMetrics(r.metrics_json, activeMapMetrics)
+              : parseMetrics(r.metrics_json);
           return {
             id: r.id,
             label: `시뮬레이션 결과 #${r.id.slice(0, 6)}`,
             timeLabel: formatRunTime(r.created_at),
-            avgRssiDbm: m.avgRssiDbm ?? 0,
-            coveragePercent: m.coveragePercent ?? 0,
+            avgRssiDbm: m.avgRssiDbm,
+            coveragePercent: m.coveragePercent,
             active: r.id === activeRunId,
           };
         }),
-    [pastRuns, activeRunId],
+    [pastRuns, activeRunId, activeMapMetrics],
   );
 
   return (
