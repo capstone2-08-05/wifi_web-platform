@@ -34,8 +34,8 @@ from app.models.rf_run import RfRun
 from app.models.scene_version import SceneVersion
 from app.models.user import User
 from app.services import ai_api_client
-from app.services.calibration_worker import bo_optimizer
-from app.services.calibration_worker.path_loss import (
+from app.services.rf.calibration_worker import bo_optimizer
+from app.services.rf.calibration_worker.path_loss import (
     CALIBRATABLE_MATERIALS,
     AccessPoint,
     CalibrationParams,
@@ -43,7 +43,7 @@ from app.services.calibration_worker.path_loss import (
     WallSegment,
     compute_error_metrics,
 )
-from app.services.scene_version_export import export_scene_version_to_scene_json
+from app.services.scene.scene_version_export import export_scene_version_to_scene_json
 from app.core.geom import wkb_to_geojson
 
 
