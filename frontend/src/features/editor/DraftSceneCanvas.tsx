@@ -16,6 +16,10 @@ import {
   type Coord,
   type GeoJsonGeometry,
 } from './geometry-utils';
+import {
+  loadCachedViewBox as loadCachedViewBoxShared,
+  viewBoxCacheKey as viewBoxCacheKeyShared,
+} from './viewbox-cache';
 import type { EditorTool } from '@/stores/editor-store';
 
 interface Bounds {
@@ -106,32 +110,13 @@ function computeViewBox(
 // 같은 층 안에선 어떤 draft/version 이든 동일한 캔버스 영역을 공유해야 자연스럽다.
 // 이미지 extent (real_width_m + natural dims) 가 있는 경우엔 union viewBox 가 자연스럽게
 // 안정적이므로 캐시 불필요.
-const VIEWBOX_CACHE_PREFIX = 'draft-viewbox:v2:';
-
 function loadCachedViewBox(key: string): ViewBox | null {
-  try {
-    const raw = localStorage.getItem(VIEWBOX_CACHE_PREFIX + key);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<ViewBox>;
-    if (
-      typeof parsed.x === 'number' &&
-      typeof parsed.y === 'number' &&
-      typeof parsed.w === 'number' &&
-      typeof parsed.h === 'number' &&
-      parsed.w > 0 &&
-      parsed.h > 0
-    ) {
-      return parsed as ViewBox;
-    }
-  } catch {
-    // localStorage 접근 실패 / JSON parse 실패: 캐시 무시.
-  }
-  return null;
+  return loadCachedViewBoxShared(key);
 }
 
 function saveCachedViewBox(key: string, vb: ViewBox) {
   try {
-    localStorage.setItem(VIEWBOX_CACHE_PREFIX + key, JSON.stringify(vb));
+    localStorage.setItem(viewBoxCacheKeyShared(key), JSON.stringify(vb));
   } catch {
     // quota exceeded / private mode: 무시. 캐시 없이도 동작.
   }

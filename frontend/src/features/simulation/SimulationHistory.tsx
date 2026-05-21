@@ -5,8 +5,9 @@ export interface SimulationHistoryItem {
   id: string;
   label: string;
   timeLabel: string;
-  avgRssiDbm: number;
-  coveragePercent: number;
+  /** 메트릭이 RfMap 에 있어서 history list 에선 비어있을 수 있음. null → "—" 표시. */
+  avgRssiDbm: number | null;
+  coveragePercent: number | null;
   active?: boolean;
 }
 
@@ -50,11 +51,16 @@ export function SimulationHistory({ items, showCompareButton, onSelect, emptyMes
                 </div>
                 <div className="mt-2 flex items-center gap-3 text-[12px] text-muted-foreground">
                   <span>
-                    평균: <span className="font-semibold text-foreground">{formatNum(item.avgRssiDbm)}dBm</span>
+                    평균:{' '}
+                    <span className="font-semibold text-foreground">
+                      {item.avgRssiDbm == null ? '—' : `${formatNum(item.avgRssiDbm)}dBm`}
+                    </span>
                   </span>
                   <span>
                     커버리지:{' '}
-                    <span className="font-semibold text-foreground">{formatNum(item.coveragePercent)}%</span>
+                    <span className="font-semibold text-foreground">
+                      {item.coveragePercent == null ? '—' : `${formatNum(item.coveragePercent)}%`}
+                    </span>
                   </span>
                 </div>
               </button>
