@@ -104,6 +104,7 @@ async def create_rf_run(
             current_user=user,
             run_type=payload.run_type or "rf_simulate",
             metadata=payload.metadata,
+            apply_calibration=payload.apply_calibration,
         )
         summary = _to_response(rf_run)
         return RfRunCreatedResponse(**summary.model_dump(), job_id=job.id)

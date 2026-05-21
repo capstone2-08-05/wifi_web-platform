@@ -2,7 +2,7 @@
 
 job_poller 가 calibration job 을 픽업하면 `runner.run_calibration` 이 호출됨.
 """
-from app.services.calibration_worker.runner import (
+from app.services.rf.calibration_worker.runner import (
     JOB_TYPE_CALIBRATION,
     poll_calibration_job,
 )
