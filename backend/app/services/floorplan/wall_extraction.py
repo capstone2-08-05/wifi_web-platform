@@ -46,6 +46,14 @@ class PostprocessMetadata:
     coord_resized: bool = False              # prob_map → image dims resize 발생 여부
     coord_aligned: bool = False              # 최종 prob 이 image 좌표계와 정렬됐는지
 
+    # prior-guided line fusion 진단 — AI 원본 Hough line prior 를 prob 로 검증해 최종
+    # 벽 후보에 합친 결과. wall_candidate 만 대상, corridor mean+coverage 통과만 채택.
+    prior_line_candidates_count: int = 0       # wall_candidate prior 입력 수
+    prior_line_accepted_count: int = 0         # prob 검증 통과해 fusion 된 수
+    prior_line_rejected_low_prob_count: int = 0  # mean prob 미달 탈락
+    prior_line_rejected_coverage_count: int = 0  # coverage 미달 탈락
+    prior_line_fusion_applied: bool = False    # fusion 단계 실행 여부
+
     def to_dict(self) -> dict:
         return {
             "applied": self.applied,
@@ -68,6 +76,11 @@ class PostprocessMetadata:
             "image_shape": self.image_shape,
             "coord_resized": self.coord_resized,
             "coord_aligned": self.coord_aligned,
+            "prior_line_candidates_count": self.prior_line_candidates_count,
+            "prior_line_accepted_count": self.prior_line_accepted_count,
+            "prior_line_rejected_low_prob_count": self.prior_line_rejected_low_prob_count,
+            "prior_line_rejected_coverage_count": self.prior_line_rejected_coverage_count,
+            "prior_line_fusion_applied": self.prior_line_fusion_applied,
         }
 
 
@@ -154,7 +167,64 @@ class WallExtractor:
             if prob_map[ys, xs].mean() >= min_conf:
                 result.append([x1, y1, x2, y2])
         return result
-        
+
+    def _filter_line_priors_by_probability(
+        self,
+        line_priors,
+        prob_map: np.ndarray,
+        threshold: float,
+        thickness: int = 5,
+        min_mean_ratio: float = 0.8,
+        min_coverage: float = 0.35,
+        min_len_px: float = 12.0,
+        meta: "PostprocessMetadata | None" = None,
+    ) -> List[List[float]]:
+        """AI 원본 Hough line prior 중 U-Net prob 으로 검증 통과분만 최종 후보로.
+
+        wall_candidate 만 대상(치수선/tick 제외). 선 주변 corridor(두께 thickness)의
+        prob 평균 ≥ threshold*min_mean_ratio 이고 coverage(prob>threshold 비율) ≥
+        min_coverage 일 때 채택. corridor 라 원본 선↔prob 가 2~3px 어긋나도 매칭됨.
+        """
+        accepted: List[List[float]] = []
+        cand = acc = rej_prob = rej_cov = 0
+        h, w = prob_map.shape[:2]
+        for p in line_priors or []:
+            if p.get("kind", "wall_candidate") != "wall_candidate":
+                continue
+            try:
+                x1, y1 = float(p["x1"]), float(p["y1"])
+                x2, y2 = float(p["x2"]), float(p["y2"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (x2 - x1) ** 2 + (y2 - y1) ** 2 < min_len_px ** 2:
+                continue
+            cand += 1
+            line_mask = np.zeros((h, w), dtype=np.uint8)
+            cv2.line(
+                line_mask,
+                (int(round(x1)), int(round(y1))),
+                (int(round(x2)), int(round(y2))),
+                255, max(1, int(thickness)),
+            )
+            vals = prob_map[line_mask > 0]
+            if vals.size == 0:
+                continue
+            if float(vals.mean()) < threshold * min_mean_ratio:
+                rej_prob += 1
+                continue
+            if float((vals > threshold).mean()) < min_coverage:
+                rej_cov += 1
+                continue
+            accepted.append([x1, y1, x2, y2])
+            acc += 1
+        if meta is not None:
+            meta.prior_line_candidates_count = cand
+            meta.prior_line_accepted_count = acc
+            meta.prior_line_rejected_low_prob_count = rej_prob
+            meta.prior_line_rejected_coverage_count = rej_cov
+            meta.prior_line_fusion_applied = line_priors is not None
+        return accepted
+
 
     # ── 3. 선분 검출 ──────────────────────────────────────────────────────
     def _detect_lines(self, skeleton: np.ndarray) -> List[List[float]]:
@@ -654,6 +724,28 @@ class WallExtractor:
         # 3. 신뢰도 필터 — min_conf 를 선택된 threshold 에 맞춤. mask 가 이미 prob>thr 로
         #    1차 필터된 상태라 동일 floor 로 두어 "마스크엔 있는데 여기서 또 떨궈지는" 이중 게이팅 방지.
         filtered  = self._filter_by_confidence(filtered, prob, min_conf=float(thr))
+
+        # 3.5 prior-guided fusion: AI 원본 Hough line(wall_candidate) 중 prob corridor
+        # 검증 통과분을 최종 후보에 합침 → U-Net mask 끊김으로 짧게/누락된 벽 복원.
+        prior_lines = self._filter_line_priors_by_probability(
+            line_priors, prob, float(thr),
+            thickness=max(3, int(wall_thickness)), meta=meta,
+        )
+        if prior_lines:
+            filtered = self._merge_lines(
+                filtered + prior_lines, pos_thresh=int(wall_thickness * 3.0)
+            )
+            filtered = self._snap_to_hv(filtered)
+            filtered = self._filter_hv(filtered, angle_thresh=5.0)
+            filtered = self._snap_intersections(filtered, tol=25.0)
+            filtered = self._snap_endpoints(filtered, tol=20.0)
+            import logging
+            logging.getLogger(__name__).info(
+                "prior line fusion: %d/%d 채택 (저prob %d, 저coverage %d)",
+                meta.prior_line_accepted_count, meta.prior_line_candidates_count,
+                meta.prior_line_rejected_low_prob_count,
+                meta.prior_line_rejected_coverage_count,
+            )
 
         filled = self._fill_opening_gaps(filtered, detections or [])
         filled = self._merge_lines(filled, pos_thresh=int(wall_thickness * 3.0))
