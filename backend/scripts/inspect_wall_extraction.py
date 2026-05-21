@@ -36,13 +36,13 @@ if str(_BACKEND_ROOT) not in sys.path:
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
-from app.services.wall_extraction import wall_extractor  # noqa: E402
-from app.services.wall_extraction_helpers import (  # noqa: E402
+from app.services.floorplan.wall_extraction import wall_extractor  # noqa: E402
+from app.services.floorplan.wall_extraction_helpers import (  # noqa: E402
     line_detection,
     ocr,
     threshold_scoring,
 )
-from app.services.wall_extraction_helpers import dimension_matching as dm  # noqa: E402
+from app.services.floorplan.wall_extraction_helpers import dimension_matching as dm  # noqa: E402
 
 # AI 서버가 prob map 을 저장하는 위치 (repo 루트 기준).
 _UNET_OUT = _BACKEND_ROOT.parents[1] / "rf-service" / "apps" / "ai_api" / "data" / "output" / "unet"

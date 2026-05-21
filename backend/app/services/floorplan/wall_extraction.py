@@ -694,7 +694,7 @@ class WallExtractor:
         #    (b) wall-length fallback: 둘 다 실패하면 OCR ↔ 벽 길이 매칭. (legacy)
         if ocr_entries:
             try:
-                from app.services.wall_extraction_helpers import dimension_matching
+                from app.services.floorplan.wall_extraction_helpers import dimension_matching
 
                 # (a0) Anchored 교차검증 (긴 기준선 cluster 합의)
                 est = dimension_matching.estimate_scale_crossvalidated(
@@ -749,10 +749,10 @@ class WallExtractor:
         반환: `(PostprocessMetadata, ocr_entries)` — ocr_entries 는 후속 dimension
         매칭에 재사용. scoring 비활성이면 빈 리스트.
         """
-        from app.services.wall_extraction_helpers.threshold_scoring import (
+        from app.services.floorplan.wall_extraction_helpers.threshold_scoring import (
             DEFAULT_THRESHOLDS,
         )
-        from app.services.wall_extraction_helpers.ocr import OCREntry
+        from app.services.floorplan.wall_extraction_helpers.ocr import OCREntry
 
         meta = PostprocessMetadata(
             applied=False,
@@ -769,7 +769,7 @@ class WallExtractor:
             return meta, []
 
         try:
-            from app.services.wall_extraction_helpers import (
+            from app.services.floorplan.wall_extraction_helpers import (
                 dimension_matching,
                 line_detection,
                 ocr,

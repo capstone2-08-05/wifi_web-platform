@@ -147,7 +147,7 @@ def score_threshold(
     dim = 0.0
     if dim_entries:
         # 지연 import — dimension_matching 이 ocr 모듈을 거치지 않도록.
-        from app.services.wall_extraction_helpers.dimension_matching import (
+        from app.services.floorplan.wall_extraction_helpers.dimension_matching import (
             dimension_alignment_score,
         )
         dim = dimension_alignment_score(wall_mask, dim_entries)

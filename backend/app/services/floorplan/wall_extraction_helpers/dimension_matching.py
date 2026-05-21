@@ -260,7 +260,7 @@ def _bbox_along_overlap(
 
 
 def match_dimensions_to_walls(
-    entries,  # list[OCREntry] (app.services.wall_extraction_helpers.ocr.OCREntry)
+    entries,  # list[OCREntry] (app.services.floorplan.wall_extraction_helpers.ocr.OCREntry)
     walls: Sequence[Sequence[float]],
     max_perpendicular_dist_px: float = 80.0,
     min_along_overlap: float = 0.2,

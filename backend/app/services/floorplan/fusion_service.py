@@ -32,10 +32,10 @@ from app.schemas.ai_response import (
     WallSegmentationDTO,
 )
 from app.schemas.scene import Opening, Room, SceneSchema, Wall
-from app.services.geometry_service import GeometryService
-from app.services.sagemaker_inference_service import InferenceResult
-from app.services.topology_service import TopologyService
-from app.services.wall_extraction import wall_extractor
+from app.services.floorplan.geometry_service import GeometryService
+from app.services.inference.sagemaker_inference_service import InferenceResult
+from app.services.floorplan.topology_service import TopologyService
+from app.services.floorplan.wall_extraction import wall_extractor
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +81,8 @@ class FusionService:
             dim_matches = getattr(postprocess, "dimension_matches", None) or []
             if not dim_matches or not walls or not scale_ratio or scale_ratio <= 0:
                 return []
-            from app.services.wall_extraction_helpers import dimension_matching as _dm
-            from app.services.wall_extraction_helpers.ocr import OCREntry
+            from app.services.floorplan.wall_extraction_helpers import dimension_matching as _dm
+            from app.services.floorplan.wall_extraction_helpers.ocr import OCREntry
 
             entries = []
             for m in dim_matches:

@@ -22,8 +22,8 @@ from app.schemas.rf_run import (
     RfRunCreatedResponse,
     RfRunResponse,
 )
-from app.services.rf_job_service import poll_rf_job, retry_rf_job
-from app.services.sagemaker_rf_inference_service import sagemaker_rf_inference_service
+from app.services.rf.rf_job_service import poll_rf_job, retry_rf_job
+from app.services.rf.sagemaker_rf_inference_service import sagemaker_rf_inference_service
 
 router = APIRouter(prefix="/rf-jobs", tags=["rf-jobs"])
 

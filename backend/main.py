@@ -44,7 +44,7 @@ from app.routers.ap_layouts import (
 from app.routers.calibration_runs import router as calibration_runs_router
 from app.routers.jobs import router as jobs_router
 from app.routers.floorplan_jobs import router as floorplan_jobs_router
-from app.services.job_poller import job_poller_lifespan
+from app.services.inference.job_poller import job_poller_lifespan
 
 
 app = FastAPI(

@@ -88,8 +88,8 @@ def _build_wall_dimension_match_map(
     # dimension_matches 자체에 OCR 결과 (bbox + parsed meters) 가 있으므로 OCR 호출
     # 다시 안 해도 됨. dimension_matching 의 매칭 알고리즘만 재사용.
     try:
-        from app.services.wall_extraction_helpers import dimension_matching
-        from app.services.wall_extraction_helpers.ocr import OCREntry
+        from app.services.floorplan.wall_extraction_helpers import dimension_matching
+        from app.services.floorplan.wall_extraction_helpers.ocr import OCREntry
     except Exception:
         return {}
 
@@ -164,8 +164,8 @@ def _build_span_maps(
         return empty
 
     try:
-        from app.services.wall_extraction_helpers import dimension_matching
-        from app.services.wall_extraction_helpers.ocr import OCREntry
+        from app.services.floorplan.wall_extraction_helpers import dimension_matching
+        from app.services.floorplan.wall_extraction_helpers.ocr import OCREntry
     except Exception:
         return empty
 
@@ -463,7 +463,7 @@ async def analyze_from_asset(
     """
     from app.services import _s3
     from app.services.asset_service import _get_owned_asset_or_404
-    from app.services.floorplan_job_service import submit_floorplan_analysis
+    from app.services.inference.floorplan_job_service import submit_floorplan_analysis
 
     asset, _floor, _project = _get_owned_asset_or_404(db, asset_id, current_user)
 

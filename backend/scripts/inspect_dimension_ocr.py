@@ -38,8 +38,8 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
-from app.services.wall_extraction_helpers import dimension_matching as dm  # noqa: E402
-from app.services.wall_extraction_helpers.ocr import OCREntry  # noqa: E402
+from app.services.floorplan.wall_extraction_helpers import dimension_matching as dm  # noqa: E402
+from app.services.floorplan.wall_extraction_helpers.ocr import OCREntry  # noqa: E402
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ from app.services.wall_extraction_helpers.ocr import OCREntry  # noqa: E402
 def _entries_from_image(image_path: Path) -> list[OCREntry]:
     """easyocr 로 라이브 OCR. 미설치 시 친절한 에러."""
     try:
-        from app.services.wall_extraction_helpers import ocr
+        from app.services.floorplan.wall_extraction_helpers import ocr
     except Exception as exc:  # pragma: no cover
         sys.exit(f"OCR 모듈 import 실패: {exc}")
     try:
