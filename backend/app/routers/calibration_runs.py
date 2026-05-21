@@ -16,7 +16,7 @@ from app.schemas.calibration_run import (
     ParameterUpdateCreate,
     ParameterUpdateResponse,
 )
-from app.services import calibration_run_service
+from app.services.rf import calibration_run_service
 
 
 router = APIRouter(prefix="/calibration-runs", tags=["calibration"])

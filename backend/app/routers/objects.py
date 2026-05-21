@@ -10,7 +10,7 @@ from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.scene_object import ObjectResponse, ObjectUpdate
-from app.services import object_service
+from app.services.scene import object_service
 
 
 router = APIRouter(prefix="/objects", tags=["objects"])

@@ -19,13 +19,7 @@ from app.schemas.scene_version import (
     SceneVersionResponse,
 )
 from app.schemas.wall import WallCreate, WallResponse
-from app.services import (
-    object_service,
-    opening_service,
-    room_service,
-    scene_version_service,
-    wall_service,
-)
+from app.services.scene import object_service, opening_service, room_service, scene_version_service, wall_service
 
 
 promote_router = APIRouter(prefix="/scene-drafts", tags=["scene-versions"])

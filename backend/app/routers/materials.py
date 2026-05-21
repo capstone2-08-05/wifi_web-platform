@@ -12,7 +12,7 @@ from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.material import MaterialResponse, MaterialRfProfileResponse
-from app.services import material_service
+from app.services.catalog import material_service
 
 
 router = APIRouter(prefix="/materials", tags=["materials"])
