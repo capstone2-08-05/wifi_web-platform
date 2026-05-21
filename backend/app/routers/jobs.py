@@ -12,7 +12,7 @@ from app.db.session import get_db
 from app.models.user import User
 from app.schemas.job import JobResponse
 from app.schemas.pagination import PaginatedResponse
-from app.services import job_service
+from app.services.inference import job_service
 
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])

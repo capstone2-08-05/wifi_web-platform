@@ -32,7 +32,7 @@ import numpy as np
 import requests
 
 from app.core.errors import AppError, ErrorCode
-from app.services.sagemaker_inference_service import InferenceResult
+from app.services.inference.sagemaker_inference_service import InferenceResult
 
 logger = logging.getLogger(__name__)
 

@@ -1258,11 +1258,10 @@ export function DraftSceneCanvas({
           />
         )}
         {/* 일반 렌더: 선택된 항목은 제외하고 그린 뒤, 마지막에 다시 위에 올림. */}
-        {/* [room 비활성화] room 렌더링 제거 — 시뮬레이션·AP 후보에 필수 입력 아님.
-            다시 켜려면 아래 블록 주석 해제. */}
-        {/*
+        {/* 타입 있는 방(화장실 등)만 표시 — 벽으로 둘러싸인 영역 + 라벨. 표시 전용
+            (이름 없는 일반 방 room_0/1/2 는 잡동사니라 숨김). */}
         {draft.rooms
-          .filter((r) => !isSelected('room', r.id))
+          .filter((r) => r.room_type)
           .map((room) => (
             <RoomShape
               key={room.id}
@@ -1270,13 +1269,10 @@ export function DraftSceneCanvas({
               selected={false}
               drag={matchDrag(drag, 'room', room.id)}
               handleSize={handleSize}
-              onShapePointerDown={(e) => startShapeDrag(e, { kind: 'room', id: room.id })}
-              onVertexPointerDown={(e, idx) =>
-                startVertexDrag(e, { kind: 'room', id: room.id }, idx)
-              }
+              onShapePointerDown={() => {}}
+              onVertexPointerDown={() => {}}
             />
           ))}
-        */}
 
         {draft.walls
           .filter((w) => !isSelected('wall', w.id))

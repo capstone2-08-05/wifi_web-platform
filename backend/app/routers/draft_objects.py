@@ -14,7 +14,7 @@ from app.schemas.draft_object import (
     DraftObjectResponse,
     DraftObjectUpdate,
 )
-from app.services import draft_object_service
+from app.services.scene import draft_object_service
 
 
 scene_draft_objects_router = APIRouter(

@@ -10,7 +10,7 @@ from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.room import RoomResponse, RoomUpdate
-from app.services import room_service
+from app.services.scene import room_service
 
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])

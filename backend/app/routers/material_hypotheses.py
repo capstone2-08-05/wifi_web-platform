@@ -10,7 +10,7 @@ from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.material_hypothesis import MaterialHypothesisResponse
-from app.services import material_hypothesis_service
+from app.services.catalog import material_hypothesis_service
 
 
 wall_hypotheses_router = APIRouter(prefix="/walls", tags=["material-hypotheses"])

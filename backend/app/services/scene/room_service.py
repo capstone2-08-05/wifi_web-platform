@@ -14,7 +14,7 @@ from app.models.scene_version import SceneVersion
 from app.models.user import User
 from app.schemas.room import RoomCreate, RoomResponse, RoomUpdate
 from app.services._patch_log_helpers import record_patch, snapshot_room
-from app.services.scene_version_service import (
+from app.services.scene.scene_version_service import (
     _get_owned_scene_version,
     _room_to_response,
 )

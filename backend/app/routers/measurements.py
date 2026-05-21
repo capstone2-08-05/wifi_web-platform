@@ -18,7 +18,7 @@ from app.schemas.measurement import (
     MeasurementSessionResponseDTO,
 )
 from app.schemas.pagination import PaginatedResponse
-from app.services import measurement_service
+from app.services.rf import measurement_service
 
 router = APIRouter(tags=["measurement"])
 

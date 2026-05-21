@@ -22,12 +22,12 @@ from sqlalchemy.orm import Session
 from app.core.errors import AppError, ErrorCode
 from app.models import Job, Project, RfRun, SceneVersion, User
 from app.models.rf_map import RfMap
-from app.services.sagemaker_rf_inference_service import (
+from app.services.rf.sagemaker_rf_inference_service import (
     SageMakerRfInferenceFailure,
     map_rf_failure_to_app_error,
     sagemaker_rf_inference_service,
 )
-from app.services.scene_version_export import export_scene_version_to_scene_json
+from app.services.scene.scene_version_export import export_scene_version_to_scene_json
 
 logger = logging.getLogger(__name__)
 
