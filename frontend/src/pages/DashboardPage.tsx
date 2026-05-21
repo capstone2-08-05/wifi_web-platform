@@ -218,7 +218,7 @@ function FloorEmptyState({ hasProject }: { hasProject: boolean }) {
       <p className="text-sm font-medium">
         {hasProject ? '층을 선택해주세요' : '프로젝트를 먼저 선택해주세요'}
       </p>
-      <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
+      <p className="max-w-sm break-keep text-xs leading-relaxed text-muted-foreground">
         상단 셀렉터에서 작업할 도면(층)을 선택하면 현재 작업 중인 도면 미리보기가 표시됩니다.
       </p>
     </div>
@@ -241,7 +241,7 @@ function FloorNotConfirmedState() {
         <Map className="h-5 w-5 text-muted-foreground" />
       </div>
       <p className="text-sm font-medium">아직 확정된 도면이 없습니다</p>
-      <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
+      <p className="max-w-sm break-keep text-xs leading-relaxed text-muted-foreground">
         공간 편집에서 도면을 업로드하고 AI 분석 후 저장하면 이곳에 미리보기가 표시됩니다.
       </p>
       <Link

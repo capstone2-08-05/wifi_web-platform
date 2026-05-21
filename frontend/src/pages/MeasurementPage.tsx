@@ -31,6 +31,12 @@ import {
 } from '@/hooks/use-measurement-session';
 import { useFloorRfRuns, useRfMaps } from '@/hooks/use-rf-run';
 import { useApLayouts } from '@/hooks/use-ap-layouts';
+import {
+  useCalibrationParameterUpdates,
+  useCalibrationRun,
+  useCreateCalibrationRun,
+} from '@/hooks/use-calibration-run';
+import { CalibrationCard } from '@/features/calibration/CalibrationCard';
 import { parseGeometry } from '@/features/editor/geometry-utils';
 import {
   MeasurementCanvas,
@@ -95,6 +101,37 @@ export default function MeasurementPage() {
   const hasVersion = versions.length > 0;
   const hasMeasurement = points.length > 0;
 
+  // §11 캘리브레이션 — 현재 측정 세션 + 최근 RF Run + 현재 버전을 입력으로 사용.
+  // 측정 페이지에 둠: 진단 카드에서 차이를 발견한 직후 보정 가능.
+  const createCalibration = useCreateCalibrationRun();
+  const [activeCalibrationId, setActiveCalibrationId] = useState<string | null>(null);
+  const calibrationPoll = useCalibrationRun(activeCalibrationId);
+  const paramUpdatesQuery = useCalibrationParameterUpdates(
+    activeCalibrationId,
+    calibrationPoll.isSucceeded,
+  );
+  const canCalibrate =
+    !!activeSession?.id &&
+    !!latestRfRunId &&
+    !!currentVersion?.id &&
+    hasMeasurement;
+  const calibrationDisabledReason = !hasMeasurement
+    ? '먼저 측정을 진행해주세요.'
+    : !latestRfRunId
+    ? '비교할 시뮬레이션 결과가 없습니다. 시뮬레이션 페이지에서 실행해주세요.'
+    : null;
+  const handleCalibrate = () => {
+    if (!canCalibrate || !activeSession || !latestRfRunId || !currentVersion) return;
+    createCalibration.mutate(
+      {
+        session_id: activeSession.id,
+        rf_run_id: latestRfRunId,
+        version_id: currentVersion.id,
+      },
+      { onSuccess: (run) => setActiveCalibrationId(run.id) },
+    );
+  };
+
   return (
     <div className="relative flex h-full flex-col gap-5 p-6">
       <PageHeader
@@ -138,6 +175,15 @@ export default function MeasurementPage() {
               points={canvasPoints}
               predictedAvgDbm={predictedAvgDbm}
               measuredAvgDbm={measuredAvgDbm}
+            />
+            <CalibrationCard
+              run={calibrationPoll.run}
+              isPolling={calibrationPoll.isPolling}
+              isStarting={createCalibration.isPending}
+              canCalibrate={canCalibrate}
+              disabledReason={calibrationDisabledReason}
+              onCalibrate={handleCalibrate}
+              parameterUpdates={paramUpdatesQuery.data ?? []}
             />
             <CauseAnalysisCard
               hasData={hasMeasurement}
