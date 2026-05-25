@@ -19,6 +19,7 @@ from app.core.settings import MASK_DIR
 from app.geometry import (
     assign_wall_refs,
     bridge_collinear_walls,
+    cut_walls_at_openings,
     nms_filter_indices,
     project_openings_onto_walls,
     snap_wall_endpoints,
@@ -359,6 +360,48 @@ class FusionService:
                 matched_count, len(openings), projected,
             )
 
+        # ── OCR 방 라벨 seed → flood-fill 방 추출 + polygonize 방과 병합 ──────
+        # 라벨(욕실/201호/승강기 등) 위치를 seed 로, 벽+개구부 장벽 안에서 영역을 채워
+        # 방을 만든다 (polygonize 가 못 닫는 방도 라벨이 있으면 잡힘 + 이름 부여).
+        from app.services.floorplan.geometry_service import classify_room_label
+        label_seeds = []
+        for e in (wall_result.postprocess.ocr_entries or []):
+            cls = classify_room_label(str(e.get("text", "")))
+            if cls is None:
+                continue
+            bb = e.get("bbox") or []
+            if len(bb) != 4:
+                continue
+            cx = (float(bb[0]) + float(bb[2])) / 2.0
+            cy = (float(bb[1]) + float(bb[3])) / 2.0
+            label_seeds.append((cx, cy, cls[0], cls[1]))
+        label_rooms = geo_service.extract_rooms_from_labels(
+            calibrated_walls, openings, label_seeds
+        ) if label_seeds else []
+        if label_rooms:
+            from shapely.geometry import Polygon as _Poly
+            lbl_polys = []
+            for r in label_rooms:
+                try:
+                    lbl_polys.append(_Poly(r.points))
+                except Exception:
+                    pass
+            # 라벨 방이 덮는 polygonize 방은 제거(중복) → 라벨 방 + 비겹침 polygonize
+            kept = []
+            for r in extracted_rooms:
+                try:
+                    c = _Poly(r.points).centroid
+                    if any(lp.contains(c) for lp in lbl_polys):
+                        continue
+                except Exception:
+                    pass
+                kept.append(r)
+            extracted_rooms = label_rooms + kept
+            topology_result = topo_service.analyze(extracted_rooms, ml_output.detections)
+            logger.info(
+                "라벨 seed 방 %d개 병합 (총 방 %d개)", len(label_rooms), len(extracted_rooms),
+            )
+
         # 객체는 bbox×scale 로 실제 크기(width_m/height_m) 부여 → 떠다니는 고정 1.6m
         # 박스 대신 탐지된 실제 크기로 렌더 (화장실 등이 거대하게 그려지던 문제 해결).
         def _obj_dump(obj: DetectionDTO) -> dict:
@@ -371,9 +414,20 @@ class FusionService:
                 pass
             return d
 
+        # ── 최종 단계: 문/창이 박힌 자리에서 벽 절단 ────────────────────────
+        # 방 추출(폐합)이 모두 끝난 뒤에만 자른다 — 연속 벽으로 방을 닫은 다음
+        # 개구부 폭만큼 gap 을 내므로 방 폐합엔 영향 없음. 첫 조각은 원래 id 유지
+        # → opening.wall_ref 등 기존 참조가 깨지지 않음.
+        n_before_cut = len(calibrated_walls)
+        final_walls = cut_walls_at_openings(calibrated_walls, openings)
+        if len(final_walls) != n_before_cut:
+            logger.info(
+                "문/창 자리 벽 절단: %d → %d개", n_before_cut, len(final_walls),
+            )
+
         return SceneSchema(
             scale_ratio=scale_ratio,
-            walls=[w.model_dump() for w in calibrated_walls],
+            walls=[w.model_dump() for w in final_walls],
             openings=[o.model_dump() for o in openings],
             rooms=[r.model_dump() for r in extracted_rooms],
             topology=topology_result.model_dump(),

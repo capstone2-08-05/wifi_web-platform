@@ -25,6 +25,7 @@ htmlcov/
 .hypothesis/
 backend/tests/
 backend/wall_debug/
+backend/prior_fusion_debug/
 
 # build
 *.egg-info/

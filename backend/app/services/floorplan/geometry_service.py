@@ -1,5 +1,7 @@
 import logging
+import re
 import numpy as np
+import cv2
 from typing import List, Any
 from shapely.geometry import LineString
 from shapely.ops import polygonize_full, unary_union, snap
@@ -8,6 +10,75 @@ from shapely.ops import polygonize_full, unary_union, snap
 from app.schemas.scene import Wall, Room
 
 logger = logging.getLogger(__name__)
+
+
+# ── 방 라벨 분류 — OCR 텍스트 → (표시이름, 종류) | None ────────────────────
+# 백엔드에서 직접 분류 (AI kind 에 의존 안 함 → AI 재시작 없이도 ~호/승강기 인식).
+_ROOM_NO_RE = re.compile(r"\d{2,4}\s*[호도요오]")  # 호 + OCR 오인식 변형(도/요/오)
+_ROOM_KO = {
+    "bathroom": ("욕실", "화장실", "샤워실"),
+    "bedroom": ("안방", "침실", "방"),
+    "living": ("거실",),
+    "kitchen": ("주방", "부엌", "식당"),
+    "entrance": ("현관",),
+    "balcony": ("발코니", "베란다"),
+    "storage": ("드레스룸", "다용도실", "팬트리", "창고"),
+    "study": ("서재",),
+    "elevator": ("승강기", "엘리베이터"),
+    "stairs": ("계단",),
+}
+_ROOM_EN = {
+    "bathroom": ("bath", "toilet", "wc", "rest"),
+    "bedroom": ("bedroom", "master", "room"),
+    "living": ("living",),
+    "kitchen": ("kitchen", "pantry", "dining"),
+    "entrance": ("entry", "entrance", "hall"),
+    "balcony": ("balcony",),
+    "elevator": ("elevator", "lift"),
+    "stairs": ("stair",),
+}
+
+
+def _fuzzy_contains(text: str, word: str, max_diff: int = 1) -> bool:
+    """text 안에 word 와 ≤max_diff 글자만 다른 부분문자열이 있으면 True (OCR 오인식 흡수).
+
+    길이 2+ 단어만 — 1글자 단어는 fuzzy 가 너무 느슨해 위험.
+    """
+    L = len(word)
+    if L < 2 or len(text) < L:
+        return False
+    for i in range(len(text) - L + 1):
+        if sum(a != b for a, b in zip(text[i:i + L], word)) <= max_diff:
+            return True
+    return False
+
+
+def classify_room_label(text: str) -> tuple[str, str] | None:
+    """OCR 텍스트 → (표시이름, room_type). 방 라벨 아니면 None. OCR 깨짐에 관대.
+
+    예: "201호"/"201요"/"705도"→unit, "욕실"/"여실"→bathroom,
+        "E/V"/"승강기"→elevator, "KITCHEN"→kitchen.
+    """
+    s = (text or "").strip()
+    if not s:
+        return None
+    # 호실: 2~4자리 숫자 + 호(또는 OCR 오인식 도/요/오). 치수(3,500/17500)와 구분됨.
+    if _ROOM_NO_RE.search(s):
+        return s, "unit"
+    low = s.lower()
+    if re.fullmatch(r"e\s*/?\s*v", low) or low == "ev":
+        return "승강기", "elevator"
+    # 한글 방 단어 — exact 우선, 안 되면 1글자 오차 fuzzy (욕실→여실 등).
+    for rtype, words in _ROOM_KO.items():
+        if any(wd in s for wd in words):
+            return s, rtype
+    for rtype, words in _ROOM_KO.items():
+        if any(_fuzzy_contains(s, wd) for wd in words):
+            return s, rtype
+    for rtype, words in _ROOM_EN.items():
+        if any(wd in low for wd in words):
+            return s, rtype
+    return None
 
 DEFAULT_FALLBACK_SCALE_M_PER_PX = 0.01  # OCR 치수 추정 실패 시 임시값 (1px = 1cm).
 # 명백히 잘못된 추정 가능성 있음 — 사용자가 PropertiesPanel 에서 벽별 실측값 입력해
@@ -176,3 +247,99 @@ class GeometryService:
         # 수직 벽 → 좌/우 경계 근처면 외벽
         x_mid = (w.x1 + w.x2) / 2.0
         return abs(x_mid - min_x) <= margin or abs(x_mid - max_x) <= margin
+
+    def extract_rooms_from_labels(
+        self,
+        walls: List[Wall],
+        openings: List[Any],
+        seeds: List[tuple],
+        wall_thickness_px: int = 0,
+    ) -> List[Room]:
+        """OCR 방 라벨을 seed 로 flood-fill 해 방 영역 추출 (벽/개구부 = 장벽).
+
+        seeds: (cx, cy, name, room_type) 픽셀 좌표 + 라벨. polygonize 가 못 닫는
+        방도, 라벨이 있으면 그 자리에서 벽에 막힐 때까지 영역을 채워 방으로 만든다.
+        개구부(문/창)는 장벽으로 그려 flood 가 옆방/바깥으로 새는 것 방지.
+        """
+        if not seeds or not walls:
+            return []
+        h, w = int(self.pixel_height), int(self.pixel_width)
+        if h <= 0 or w <= 0:
+            return []
+
+        # 1) 장벽 마스크 = 벽(두껍게) + 개구부(채움)
+        barrier = np.zeros((h, w), dtype=np.uint8)
+        for wl in walls:
+            t = wall_thickness_px or max(
+                3, int(round((getattr(wl, "thickness", 0.15) or 0.15) / self.scale_ratio))
+            )
+            cv2.line(barrier, (int(wl.x1), int(wl.y1)), (int(wl.x2), int(wl.y2)), 255, t)
+        for op in openings or []:
+            try:
+                cv2.rectangle(
+                    barrier, (int(op.x1), int(op.y1)), (int(op.x2), int(op.y2)), 255, -1
+                )
+            except (AttributeError, TypeError, ValueError):
+                continue
+
+        # 건물 bbox 면적 (방 크기 sanity 를 scale 무관하게 — 픽셀 비율로 판정).
+        bxs = [c for wl in walls for c in (wl.x1, wl.x2)]
+        bys = [c for wl in walls for c in (wl.y1, wl.y2)]
+        bldg_area = max(1.0, (max(bxs) - min(bxs)) * (max(bys) - min(bys)))
+
+        # 2) free space connected components
+        free = (barrier == 0).astype(np.uint8)
+        num, labels, stats, _ = cv2.connectedComponentsWithStats(free, connectivity=4)
+
+        def _comp_at(cx: int, cy: int) -> int:
+            """seed 위치 컴포넌트. barrier 위면 ±6px 이웃에서 free 탐색."""
+            if 0 <= cy < h and 0 <= cx < w and labels[cy, cx] != 0 and barrier[cy, cx] == 0:
+                return int(labels[cy, cx])
+            for r in range(1, 7):
+                for dy in (-r, 0, r):
+                    for dx in (-r, 0, r):
+                        ny, nx = cy + dy, cx + dx
+                        if 0 <= ny < h and 0 <= nx < w and barrier[ny, nx] == 0:
+                            return int(labels[ny, nx])
+            return 0
+
+        # 3) seed → 컴포넌트별 그룹 (같은 방에 라벨 여러 개면 묶임)
+        comp_names: dict[int, tuple] = {}
+        for (cx, cy, name, rtype) in seeds:
+            c = _comp_at(int(round(cx)), int(round(cy)))
+            if c <= 0:
+                continue
+            comp_names.setdefault(c, (name, rtype))  # 첫 라벨 채택
+
+        rooms: List[Room] = []
+        idx = 0
+        for c, (name, rtype) in comp_names.items():
+            x, y, bw, bh, area_px = stats[c]
+            # 이미지 전체를 덮는 컴포넌트 = 건물 바깥 → 제외
+            if x <= 1 and y <= 1 and (x + bw) >= w - 1 and (y + bh) >= h - 1:
+                continue
+            # 크기 sanity 는 건물 bbox 대비 픽셀 비율로 (scale 불확실해도 견고).
+            frac = float(area_px) / bldg_area
+            if frac < 0.003 or frac > 0.6:
+                continue
+            area_m2 = float(area_px) * (self.scale_ratio ** 2)
+            region = (labels == c).astype(np.uint8)
+            cnts, _ = cv2.findContours(region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not cnts:
+                continue
+            cnt = max(cnts, key=cv2.contourArea)
+            eps = 0.01 * cv2.arcLength(cnt, True)
+            poly = cv2.approxPolyDP(cnt, eps, True).reshape(-1, 2)
+            if len(poly) < 3:
+                continue
+            pts = [[float(px), float(py)] for px, py in poly]
+            cxc = float(np.mean([p[0] for p in pts]))
+            cyc = float(np.mean([p[1] for p in pts]))
+            rooms.append(Room(
+                id=f"room_lbl_{idx}", points=pts,
+                center=[round(cxc, 2), round(cyc, 2)], area=round(area_m2, 2),
+                type=rtype, name=name,
+            ))
+            idx += 1
+        logger.info("라벨 seed 방 추출: %d개 (seed %d개)", len(rooms), len(seeds))
+        return rooms

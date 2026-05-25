@@ -478,3 +478,92 @@ def synthesize_partition_walls_from_ticks(
         segments.append((min(ax, bx), t, max(ax, bx), t))
 
     return segments
+
+
+# ============================================================
+# 6. 문/창 자리에서 벽 절단 (방 추출 끝난 뒤 마지막 단계)
+# ============================================================
+def cut_walls_at_openings(
+    walls: Sequence[_WallLike],
+    openings: Iterable[_OpeningLike],
+    *,
+    min_seg_px: float = 3.0,
+) -> list[_WallLike]:
+    """opening(문/창) 이 박힌 벽을 opening 폭만큼 잘라 gap 을 낸다 (문/창 자리엔 벽 없음).
+
+    ⚠️ 반드시 **방 추출이 끝난 뒤** 최종 단계에서 호출 — 연속 벽으로 방을 닫은 다음
+    벽만 자르므로 방 폐합엔 영향 없음. (먼저 자르면 polygonize 가 방을 못 닫음)
+
+    opening.wall_ref 가 가리키는 벽을 그 opening 의 (벽 축 투영) 구간만큼 제거하고
+    남는 구간들을 새 wall 로. 첫 조각은 원래 id 유지 → 기존 opening 참조 안 깨짐.
+    """
+    walls = list(walls)
+    by_id = {str(getattr(w, "id", "")): w for w in walls}
+
+    # 벽별로 잘라낼 구간(벽 축 좌표) 모으기
+    cuts: dict[str, list[tuple[float, float]]] = {}
+    for op in openings:
+        wid = getattr(op, "wall_ref", None)
+        if wid is None:
+            continue
+        w = by_id.get(str(wid))
+        if w is None:
+            continue
+        orient = segment_orientation(w.x1, w.y1, w.x2, w.y2)
+        ocx = (op.x1 + op.x2) / 2.0
+        ocy = (op.y1 + op.y2) / 2.0
+        ow = max(abs(op.x2 - op.x1), abs(op.y2 - op.y1))  # 개구부 폭(긴 축)
+        if orient == "horizontal":
+            lo, hi = ocx - ow / 2.0, ocx + ow / 2.0
+        elif orient == "vertical":
+            lo, hi = ocy - ow / 2.0, ocy + ow / 2.0
+        else:
+            continue
+        cuts.setdefault(str(wid), []).append((min(lo, hi), max(lo, hi)))
+
+    def _clone(w, x1, y1, x2, y2, new_id):
+        mc = getattr(w, "model_copy", None)
+        if mc is not None:
+            return mc(update={"id": new_id, "x1": float(x1), "y1": float(y1),
+                              "x2": float(x2), "y2": float(y2)})
+        import copy
+        nw = copy.copy(w)
+        nw.id, nw.x1, nw.y1, nw.x2, nw.y2 = new_id, float(x1), float(y1), float(x2), float(y2)
+        return nw
+
+    result: list[_WallLike] = []
+    for w in walls:
+        wid = str(getattr(w, "id", ""))
+        if wid not in cuts:
+            result.append(w)
+            continue
+        orient = segment_orientation(w.x1, w.y1, w.x2, w.y2)
+        if orient == "horizontal":
+            a0, a1, perp, horiz = w.x1, w.x2, (w.y1 + w.y2) / 2.0, True
+        elif orient == "vertical":
+            a0, a1, perp, horiz = w.y1, w.y2, (w.x1 + w.x2) / 2.0, False
+        else:
+            result.append(w)
+            continue
+        lo_end, hi_end = min(a0, a1), max(a0, a1)
+        intervals = sorted(
+            (max(lo_end, c0), min(hi_end, c1))
+            for c0, c1 in cuts[wid] if c1 > lo_end and c0 < hi_end
+        )
+        # 남는 구간 = [lo_end, hi_end] − intervals
+        segs: list[tuple[float, float]] = []
+        cur = lo_end
+        for c0, c1 in intervals:
+            if c0 - cur > min_seg_px:
+                segs.append((cur, c0))
+            cur = max(cur, c1)
+        if hi_end - cur > min_seg_px:
+            segs.append((cur, hi_end))
+
+        for i, (s, e) in enumerate(segs):
+            new_id = wid if i == 0 else f"{wid}_{i}"
+            if horiz:
+                result.append(_clone(w, s, perp, e, perp, new_id))
+            else:
+                result.append(_clone(w, perp, s, perp, e, new_id))
+    return result
