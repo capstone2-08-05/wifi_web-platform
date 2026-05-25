@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, ChevronDown, RotateCcw, ScanLine, Sparkles, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, Ruler, RotateCcw, ScanLine, Sparkles, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   materialLabel,
@@ -37,6 +37,12 @@ interface PropertiesPanelProps {
   onUpdateMaterial?: (next: string) => void;
   /** 벽의 실측 길이(m) 변경 — metadata_json.dimension_match.user_meters 갱신. */
   onUpdateWallDimension?: (meters: number | null) => void;
+  /**
+   * 선택된 벽/문/창의 실측값(m)을 기준으로 도면 전체를 재스케일.
+   * EditorPage 가 selectedRef 로 소스 엔티티의 현재 길이를 구해 factor 계산 후
+   * 모든 벽·문/창·방·가구 좌표 + SceneDraft summary scale_ratio 를 갱신.
+   */
+  onScaleAll?: (targetMeters: number) => void;
   /** 객체의 object_type 변경. 백엔드 PATCH /draft-objects/{id}. */
   onUpdateObjectType?: (next: string) => void;
   /** 객체 위치(X/Y) 변경 — 보류 편집에 저장. */
@@ -62,6 +68,7 @@ export function PropertiesPanel({
   onRotate,
   onUpdateMaterial,
   onUpdateWallDimension,
+  onScaleAll,
   onUpdateObjectType,
   onUpdateObjectPosition,
   onUpdateObjectSize,
@@ -88,6 +95,7 @@ export function PropertiesPanel({
           onRotate={onRotate}
           onUpdateMaterial={onUpdateMaterial}
           onUpdateWallDimension={onUpdateWallDimension}
+          onScaleAll={onScaleAll}
           onUpdateObjectType={onUpdateObjectType}
           onUpdateObjectPosition={onUpdateObjectPosition}
           onUpdateObjectSize={onUpdateObjectSize}
@@ -145,6 +153,7 @@ function SelectedBody({
   onRotate,
   onUpdateMaterial,
   onUpdateWallDimension,
+  onScaleAll,
   onUpdateObjectType,
   onUpdateObjectPosition,
   onUpdateObjectSize,
@@ -156,6 +165,7 @@ function SelectedBody({
   onRotate?: () => void;
   onUpdateMaterial?: (next: string) => void;
   onUpdateWallDimension?: (meters: number | null) => void;
+  onScaleAll?: (targetMeters: number) => void;
   onUpdateObjectType?: (next: string) => void;
   onUpdateObjectPosition?: (ref: SelectedEntityRef, x: number, y: number) => void;
   onUpdateObjectSize?: (ref: SelectedEntityRef, widthM: number, heightM: number) => void;
@@ -182,6 +192,17 @@ function SelectedBody({
           <WallDimensionSection
             wall={selected.data}
             onUpdate={onUpdateWallDimension}
+            onScaleAll={onScaleAll}
+            disabled={isSaving}
+          />
+        </Section>
+      )}
+
+      {selected.kind === 'opening' && (
+        <Section label="실측 폭으로 전체 scale">
+          <OpeningDimensionSection
+            opening={selected.data}
+            onScaleAll={onScaleAll}
             disabled={isSaving}
           />
         </Section>
@@ -316,10 +337,12 @@ function WallFields({ wall }: { wall: DraftWall }) {
 function WallDimensionSection({
   wall,
   onUpdate,
+  onScaleAll,
   disabled,
 }: {
   wall: DraftWall;
   onUpdate?: (meters: number | null) => void;
+  onScaleAll?: (targetMeters: number) => void;
   disabled?: boolean;
 }) {
   const meta = (wall.metadata_json ?? {}) as Record<string, unknown>;
@@ -376,6 +399,14 @@ function WallDimensionSection({
     onUpdate(v);
   };
 
+  const parseInput = (): number | null => {
+    const trimmed = input.trim();
+    if (trimmed === '') return null;
+    const v = Number(trimmed);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  };
+  const targetForScale = parseInput();
+
   return (
     <div className="space-y-2.5">
       {lengthM != null ? (
@@ -428,8 +459,95 @@ function WallDimensionSection({
         )}
       </div>
 
+      {onScaleAll && (
+        <button
+          type="button"
+          onClick={() => targetForScale != null && onScaleAll(targetForScale)}
+          disabled={disabled || targetForScale == null}
+          title="이 벽이 실제로 이 길이가 되도록 도면 전체(벽·문/창·방·가구)를 비례 스케일"
+          className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Ruler className="h-3.5 w-3.5" />
+          이 값으로 전체 scale
+        </button>
+      )}
+
       <p className="text-[11px] leading-relaxed text-muted-foreground">
-        실측값을 입력하면 이 벽의 길이 기준으로 scale 보정에 활용됩니다.
+        실측값 입력 후 "전체 scale" 을 누르면, 이 벽이 입력값과 같아지도록 도면 전체가
+        비례로 재스케일됩니다.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * 선택된 문/창의 실측 폭(m) 입력 → 전체 scale 버튼.
+ * - opening.width_m 을 현재 폭(도면 길이)으로 보여주고, 그것의 실측 대안값 입력.
+ * - 버튼 클릭 시 onScaleAll(targetMeters) — EditorPage 가 factor 계산 + 전체 PATCH.
+ */
+function OpeningDimensionSection({
+  opening,
+  onScaleAll,
+  disabled,
+}: {
+  opening: DraftOpening;
+  onScaleAll?: (targetMeters: number) => void;
+  disabled?: boolean;
+}) {
+  const currentWidth = Number(opening.width_m);
+  const currentValid = Number.isFinite(currentWidth) && currentWidth > 0;
+  const [input, setInput] = useState<string>(currentValid ? currentWidth.toFixed(2) : '');
+
+  const parseInput = (): number | null => {
+    const trimmed = input.trim();
+    if (trimmed === '') return null;
+    const v = Number(trimmed);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  };
+  const target = parseInput();
+
+  return (
+    <div className="space-y-2.5">
+      <div className="rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+        <div className="flex items-center justify-between gap-2">
+          <span>현재 폭 (도면)</span>
+          <span className="font-mono text-foreground">
+            {currentValid ? `${currentWidth.toFixed(2)} m` : '-'}
+          </span>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <label className="text-xs text-muted-foreground">실측 폭</label>
+        <input
+          type="number"
+          step="0.01"
+          min="0"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          disabled={disabled || !onScaleAll}
+          placeholder={currentValid ? String(currentWidth) : '예: 0.9'}
+          className="w-24 rounded-md border bg-background px-2 py-1.5 text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-70"
+        />
+        <span className="text-xs text-muted-foreground">m</span>
+      </div>
+
+      {onScaleAll && (
+        <button
+          type="button"
+          onClick={() => target != null && onScaleAll(target)}
+          disabled={disabled || target == null}
+          title="이 문/창이 실제로 이 폭이 되도록 도면 전체를 비례 스케일"
+          className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Ruler className="h-3.5 w-3.5" />
+          이 값으로 전체 scale
+        </button>
+      )}
+
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        실측 폭 입력 후 "전체 scale" 을 누르면, 이 문/창이 입력값과 같아지도록 도면 전체가
+        비례로 재스케일됩니다.
       </p>
     </div>
   );

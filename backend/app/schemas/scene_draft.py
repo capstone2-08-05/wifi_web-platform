@@ -34,6 +34,18 @@ class SaveSceneDraftResultDTO(BaseModel):
     scene_draft_id: str
 
 
+class SceneDraftUpdateRequest(BaseModel):
+    """PATCH /scene-drafts/{id} — summary_json 일부 필드 갱신.
+
+    현재는 사용자가 도면 편집기에서 한 벽·문/창의 실측값으로 전체를 재스케일할 때
+    summary_json["scale_ratio_m_per_px"] 와 wall_postprocess.scale_source 를 같이
+    갱신하는 용도. 좌표 PATCH(/draft-walls, /draft-openings, ...) 와 묶여 호출.
+    """
+    scale_ratio_m_per_px: float | None = None
+    # 예: "manual_rescale" (사용자가 실측 입력 후 scale 버튼).
+    scale_source: str | None = None
+
+
 class AnalyzeFromAssetRequest(BaseModel):
     """POST /assets/{asset_id}/analyze 본문.
 

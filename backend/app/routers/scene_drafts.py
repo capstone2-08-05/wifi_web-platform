@@ -16,6 +16,7 @@ from app.schemas.scene_draft import (
     SceneDraftCreateRequest,
     SceneDraftDetailResponse,
     SceneDraftSummaryResponse,
+    SceneDraftUpdateRequest,
 )
 from app.services.scene import scene_draft_service
 
@@ -78,6 +79,27 @@ def get_scene_draft(
     current_user: User = Depends(get_current_user),
 ) -> SceneDraftDetailResponse:
     return scene_draft_service.get_scene_draft(db, scene_draft_id, current_user)
+
+
+@router.patch(
+    "/{scene_draft_id}",
+    response_model=SceneDraftDetailResponse,
+    summary="Scene Draft summary 갱신 (scale_ratio 등)",
+)
+def patch_scene_draft(
+    payload: SceneDraftUpdateRequest,
+    scene_draft_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SceneDraftDetailResponse:
+    # 좌표 PATCH(/draft-walls, /draft-openings, ...) 와 묶여 호출됨 — 자식은 안 건드림.
+    return scene_draft_service.update_scene_draft_summary(
+        db,
+        scene_draft_id,
+        current_user,
+        scale_ratio_m_per_px=payload.scale_ratio_m_per_px,
+        scale_source=payload.scale_source,
+    )
 
 
 @router.delete(

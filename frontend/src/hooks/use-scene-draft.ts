@@ -93,6 +93,29 @@ export function useCreateEmptyDraft() {
   });
 }
 
+/**
+ * PATCH /scene-drafts/{id} — summary 일부(scale_ratio_m_per_px / scale_source) 갱신.
+ * 사용자가 한 벽·문/창 실측값으로 전체 재스케일할 때 좌표 PATCH 들과 묶여 호출됨.
+ * 성공 시 draft detail 캐시는 무효화 (좌표 PATCH 들도 같은 캐시 무효화하므로 한 번에 refetch).
+ */
+export function usePatchSceneDraft() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: {
+      id: UUID;
+      body: { scale_ratio_m_per_px?: number; scale_source?: string };
+    }) => sceneDraftApi.patch(vars.id, vars.body),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['scene-draft', vars.id] });
+    },
+    onError: (err) => {
+      const e = err as HttpError | null;
+      toast.error('scale 저장 실패', e?.message ?? '잠시 후 다시 시도해주세요.');
+    },
+  });
+}
+
+
 export function useDeleteSceneDraft() {
   const qc = useQueryClient();
   return useMutation({

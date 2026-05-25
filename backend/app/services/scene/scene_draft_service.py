@@ -559,6 +559,57 @@ def get_scene_draft(
     )
 
 
+def update_scene_draft_summary(
+    db: Session,
+    scene_draft_id: str,
+    current_user: User,
+    *,
+    scale_ratio_m_per_px: float | None,
+    scale_source: str | None,
+) -> SceneDraftDetailResponse:
+    """summary_json 일부 필드 갱신 (현재는 scale 관련만).
+
+    좌표 PATCH(/draft-walls, /draft-openings, ...) 와 묶여 호출되는 흐름이라
+    summary 갱신 외 자식 엔티티는 건드리지 않는다 (반환은 GET 과 동일 detail).
+    JSONB 변경은 dict 새로 할당 → SQLAlchemy 가 자동 감지.
+    """
+    scene_draft = (
+        db.query(SceneDraft)
+        .join(Project, SceneDraft.project_id == Project.id)
+        .filter(
+            SceneDraft.id == scene_draft_id,
+            Project.owner_user_id == current_user.id,
+        )
+        .first()
+    )
+    if scene_draft is None:
+        raise AppError(
+            ErrorCode.SCENE_DRAFT_NOT_FOUND,
+            "Scene draft not found.",
+            status_code=404,
+        )
+
+    summary = dict(scene_draft.summary_json or {})
+    if scale_ratio_m_per_px is not None:
+        if scale_ratio_m_per_px <= 0:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST_BODY,
+                "scale_ratio_m_per_px must be positive.",
+                status_code=400,
+            )
+        summary["scale_ratio_m_per_px"] = float(scale_ratio_m_per_px)
+    if scale_source is not None:
+        # scale_source 는 wall_postprocess 하위에 기록됨 (fusion 흐름과 일치).
+        wp = dict(summary.get("wall_postprocess") or {})
+        wp["scale_source"] = scale_source
+        summary["wall_postprocess"] = wp
+
+    scene_draft.summary_json = summary
+    db.commit()
+    db.refresh(scene_draft)
+    return get_scene_draft(db, scene_draft_id, current_user)
+
+
 # ---------------------------------------------------------------------------
 # ORM → DTO 변환 (WKB → GeoJSON 변환 포함)
 # ---------------------------------------------------------------------------
