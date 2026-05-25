@@ -1,14 +1,25 @@
-import { BarChart3, Save } from 'lucide-react';
+import { BarChart3 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface Props {
-  avgRssiDbm: number;
-  coveragePercent: number;
+  /** null 이면 "—" 표시 (버전 mismatch 등으로 비교 불가). */
+  avgRssiDbm: number | null;
+  coveragePercent: number | null;
+  /** 비활성 사유 안내 (옛 버전이라 표시 안함 등). */
+  staleReason?: string | null;
 }
 
-export function SimulationResultCard({ avgRssiDbm, coveragePercent }: Props) {
+export function SimulationResultCard({
+  avgRssiDbm,
+  coveragePercent,
+  staleReason,
+}: Props) {
   // mock: rssi -100~-30 범위를 0~100 으로 매핑
-  const rssiFillPct = Math.max(0, Math.min(100, ((avgRssiDbm + 100) / 70) * 100));
+  const rssiFillPct =
+    avgRssiDbm == null
+      ? 0
+      : Math.max(0, Math.min(100, ((avgRssiDbm + 100) / 70) * 100));
+  const coverageFillPct = coveragePercent ?? 0;
 
   return (
     <section className="rounded-2xl border bg-background p-5 shadow-sm">
@@ -19,8 +30,8 @@ export function SimulationResultCard({ avgRssiDbm, coveragePercent }: Props) {
 
       <Metric
         label="평균 신호 강도"
-        valueText={formatNum(avgRssiDbm)}
-        unit="dBm"
+        valueText={avgRssiDbm == null ? '—' : formatNum(avgRssiDbm)}
+        unit={avgRssiDbm == null ? '' : 'dBm'}
         fillPct={rssiFillPct}
         barColor="bg-emerald-500"
       />
@@ -28,19 +39,18 @@ export function SimulationResultCard({ avgRssiDbm, coveragePercent }: Props) {
       <div className="mt-5">
         <Metric
           label="면적 커버리지 (양호)"
-          valueText={formatNum(coveragePercent)}
-          unit="%"
-          fillPct={coveragePercent}
+          valueText={coveragePercent == null ? '—' : formatNum(coveragePercent)}
+          unit={coveragePercent == null ? '' : '%'}
+          fillPct={coverageFillPct}
           barColor="bg-primary"
         />
       </div>
 
-      <button
-        type="button"
-        className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-lg border bg-background py-2.5 text-sm font-medium text-foreground/80 hover:bg-accent"
-      >
-        <Save className="h-4 w-4 text-muted-foreground" />이 배치 시나리오 저장
-      </button>
+      {staleReason && (
+        <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
+          {staleReason}
+        </p>
+      )}
     </section>
   );
 }

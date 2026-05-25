@@ -49,8 +49,12 @@ async def submit_rf_simulation(
     current_user: User,
     run_type: str = "rf_simulate",
     metadata: dict[str, Any] | None = None,
+    apply_calibration: bool = True,
 ) -> tuple[RfRun, Job]:
     """SceneVersion 확인 + scene.json export + SageMaker submit + Job/RfRun row 생성.
+
+    apply_calibration=True 면 해당 scene_version 의 최신 completed CalibrationRun
+    보정값을 scene_json/simulation 에 미리 반영한다 (#88).
 
     반환: (rf_run, job) — 둘 다 commit 완료된 상태.
     """
@@ -67,6 +71,25 @@ async def submit_rf_simulation(
             f"Failed to build scene.json from SceneVersion {sv.id}: {exc}",
             500,
         ) from exc
+
+    # 1.5) calibration 보정값 반영 (#88) — scene_json/simulation in-place mutation
+    calibration_meta: dict[str, Any] = {"applied": False}
+    if apply_calibration:
+        from app.services.rf.calibration_worker.apply import (
+            apply_to_scene_and_sim,
+            get_latest_calibration,
+        )
+
+        cr = get_latest_calibration(db, str(sv.id))
+        if cr is not None:
+            best_params = (cr.metrics_json or {}).get("best_params") or {}
+            if best_params:
+                summary = apply_to_scene_and_sim(scene_json, simulation, best_params)
+                calibration_meta = {
+                    "applied": True,
+                    "calibration_run_id": cr.id,
+                    "summary": summary,
+                }
 
     # 2) SageMaker submit (블록 X)
     submit_result = await sagemaker_rf_inference_service.submit(
@@ -96,6 +119,7 @@ async def submit_rf_simulation(
             "access_points": access_points,
             "simulation": simulation,
             "metadata": metadata or {},
+            "calibration": calibration_meta,
         },
         metrics_json={},
     )

@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { parseGeometry, type Coord } from '@/features/editor/geometry-utils';
+import { loadCachedViewBox } from '@/features/editor/viewbox-cache';
 import type {
   DraftObject,
   DraftOpening,
@@ -111,10 +112,14 @@ export function SimulationCanvas({
   readOnly = false,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
-  // viewBox 는 scene version id 가 바뀔 때만 재계산 → 같은 도면 안에서 도형이 변해도
-  // 캔버스가 자동 줌인/아웃 하지 않도록 고정.
+  // viewBox 는 editor 와 동일하게 — 같은 floor_id 의 editor 캐시(localStorage) 를 우선.
+  // 없으면 scene 도형 기준으로 계산. 캐시 사용으로 공간편집·시뮬·실측 페이지가 동일한 영역 표시.
   const sceneId = sceneVersion?.id ?? null;
-  const vb = useMemo(() => computeViewBox(sceneVersion), [sceneId]);
+  const vb = useMemo(() => {
+    const cached = loadCachedViewBox(sceneVersion?.floor_id ?? null);
+    if (cached) return cached;
+    return computeViewBox(sceneVersion);
+  }, [sceneId, sceneVersion?.floor_id]);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<Coord>([0, 0]);
 
@@ -188,12 +193,21 @@ export function SimulationCanvas({
         ref={svgRef}
         viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
         preserveAspectRatio="xMidYMid meet"
-        className={cn('h-full w-full select-none', cursorClass)}
+        overflow="hidden"
+        className={cn('h-full w-full select-none overflow-hidden', cursorClass)}
         onPointerDown={handleSvgPointerDown}
         onPointerMove={handleSvgPointerMove}
         onPointerUp={handleSvgPointerUp}
         onPointerCancel={handleSvgPointerUp}
       >
+        <defs>
+          {/* viewBox(=도면) 영역으로 클립. AP/히트맵/이전 버전 도형이 도면 밖이어도
+              튀어나가지 않도록 잘라낸다 (도면 비례 유지). */}
+          <clipPath id="sc-viewbox-clip">
+            <rect x={vb.x} y={vb.y} width={vb.w} height={vb.h} />
+          </clipPath>
+        </defs>
+        <g clipPath="url(#sc-viewbox-clip)">
         {backgroundImageUrl && (
           <image
             href={backgroundImageUrl}
@@ -253,6 +267,7 @@ export function SimulationCanvas({
             onRemove={() => onRemove(ap.id)}
           />
         ))}
+        </g>
       </svg>
     </div>
   );

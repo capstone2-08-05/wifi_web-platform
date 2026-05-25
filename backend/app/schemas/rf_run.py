@@ -47,6 +47,9 @@ class RfRunCreate(BaseModel):
     access_points: Optional[conlist(AccessPointDTO, min_length=1, max_length=8)] = None  # type: ignore[valid-type]
     simulation: Optional[RfSimulationParams] = None
     metadata: Optional[dict[str, Any]] = None
+    # 해당 scene_version 의 최신 completed CalibrationRun 보정값을 시뮬에 반영할지 (#88).
+    # true(기본): 보정 적용 / false: raw 시뮬 (보정 전후 비교용).
+    apply_calibration: bool = True
     # 옛 호출자 호환 (deprecated)
     request_json: Optional[dict[str, Any]] = None
 

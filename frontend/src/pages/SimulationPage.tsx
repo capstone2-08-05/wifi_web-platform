@@ -48,6 +48,8 @@ export default function SimulationPage() {
 
   // 사용자가 명시적으로 선택한 run (또는 새로 실행한 run). null 이면 "최신 succeeded 자동" 모드.
   const [pickedRunId, setPickedRunId] = useState<string | null>(null);
+  // "다시 실행" 으로 idle 로 돌아간 상태를 추적 — 새로 실행하기 전까지 자동복원 OFF.
+  const [resetCleared, setResetCleared] = useState(false);
 
   // 사용자가 배치한 AP 목록 + 추가 모드(true 면 다음 클릭이 새 AP 추가).
   const [aps, setAps] = useState<PlacedAp[]>([]);
@@ -62,11 +64,16 @@ export default function SimulationPage() {
 
   // 활성 run = 사용자가 명시 선택한 것 ?? 최근 succeeded fallback.
   // → 새로고침/재진입 시에도 가장 최근 succeeded 자동 활성.
+  // 단 사용자가 명시적으로 "다시 실행" 누른 직후엔 idle 유지.
   const activeRunId = useMemo(() => {
+    if (resetCleared) return null;
     if (pickedRunId) return pickedRunId;
     return pastRuns.find((r) => r.status === 'succeeded')?.id ?? null;
-  }, [pickedRunId, pastRuns]);
-  const setActiveRunId = setPickedRunId;
+  }, [resetCleared, pickedRunId, pastRuns]);
+  const setActiveRunId = (id: string | null) => {
+    setResetCleared(false);
+    setPickedRunId(id);
+  };
 
   // 시뮬레이션 페이지는 배경 도면 이미지를 안 깔음 — 도형만 + 히트맵 오버레이.
   // (배경 이미지는 공간편집/대시보드 한정.)
@@ -74,12 +81,20 @@ export default function SimulationPage() {
   const createRfRun = useCreateRfRun();
   const rfRunPoll = useRfRun(activeRunId);
   const rfMapsQuery = useRfMaps(activeRunId, rfRunPoll.isSucceeded);
+  // 활성 RfRun 이 현재 버전이 아닌 옛 버전에서 돌린 것이면 → 도면이 바뀌어서 히트맵이 도면과 안 맞음.
+  // 사용자 혼란 방지로 그런 경우엔 히트맵 숨김 (메트릭은 그대로 표시).
+  const activeRunSceneVersionId = rfRunPoll.rfRun?.scene_version_id ?? null;
+  const isRunForCurrentVersion =
+    !activeRunSceneVersionId ||
+    !currentVersion ||
+    activeRunSceneVersionId === currentVersion.id;
   // 백엔드가 RfMapResponse 에 presigned `url` 을 자동 채워주므로 (PR #70)
   // /rf-jobs 별도 호출 없이 /maps 응답 하나로 heatmap URL + bounds 둘 다 처리.
   const heatmapMap = useMemo(() => {
+    if (!isRunForCurrentVersion) return null;
     const maps = rfMapsQuery.data ?? [];
     return maps.find((m) => m.map_type === 'heatmap') ?? maps[0] ?? null;
-  }, [rfMapsQuery.data]);
+  }, [rfMapsQuery.data, isRunForCurrentVersion]);
   const heatmapUrl = heatmapMap?.url ?? null;
   const heatmapBounds = useMemo(
     () => parseHeatmapBounds(heatmapMap?.bounds_json),
@@ -125,7 +140,8 @@ export default function SimulationPage() {
   };
 
   const handleReset = () => {
-    setActiveRunId(null);
+    setPickedRunId(null);
+    setResetCleared(true);
   };
 
   const handleAddAp = (ap: PlacedAp) => setAps((prev) => [...prev, ap]);
@@ -141,22 +157,28 @@ export default function SimulationPage() {
   );
 
   // 시뮬레이션 기록 — 백엔드의 RF Run 목록을 표시. 클릭하면 해당 run 으로 전환.
+  // 실제 메트릭(rss_dbm.mean, coverage_summary)은 RfRun 이 아닌 RfMap 에 들어있어서
+  // 활성 run 한정으로 rfMapsQuery 데이터를 머지. 나머지는 null → "—" 로 표시.
+  const activeMapMetrics = rfMapsQuery.data?.[0]?.metrics_json;
   const history: SimulationHistoryItem[] = useMemo(
     () =>
       pastRuns
         .filter((r) => r.status === 'succeeded')
         .map((r) => {
-          const m = parseMetrics(r.metrics_json);
+          const m =
+            r.id === activeRunId
+              ? parseMetrics(r.metrics_json, activeMapMetrics)
+              : parseMetrics(r.metrics_json);
           return {
             id: r.id,
             label: `시뮬레이션 결과 #${r.id.slice(0, 6)}`,
             timeLabel: formatRunTime(r.created_at),
-            avgRssiDbm: m.avgRssiDbm ?? 0,
-            coveragePercent: m.coveragePercent ?? 0,
+            avgRssiDbm: m.avgRssiDbm,
+            coveragePercent: m.coveragePercent,
             active: r.id === activeRunId,
           };
         }),
-    [pastRuns, activeRunId],
+    [pastRuns, activeRunId, activeMapMetrics],
   );
 
   return (
@@ -215,32 +237,48 @@ export default function SimulationPage() {
               </div>
             ) : (
               // 'complete' — 도형/AP + 히트맵 오버레이를 한 SVG 안에 겹쳐 표시 (read-only).
-              <SimulationCanvas
-                sceneVersion={versionDetailQuery.data}
-                backgroundImageUrl={null}
-                aps={aps}
-                onAdd={handleAddAp}
-                onMove={handleMoveAp}
-                onRemove={handleRemoveAp}
-                pending={false}
-                onClearPending={() => {}}
-                heatmapUrl={heatmapUrl}
-                heatmapBounds={heatmapBounds}
-                readOnly
-              />
+              <>
+                {!isRunForCurrentVersion && (
+                  <div className="absolute left-3 right-3 top-3 z-10 rounded-md border border-amber-300 bg-amber-50/95 px-3 py-2 text-[11px] leading-relaxed text-amber-900 shadow-sm backdrop-blur">
+                    이 시뮬레이션은 이전 버전 도면 기준이라 현재 도면과 다를 수 있어
+                    히트맵을 표시하지 않습니다. 새 버전으로 다시 실행해주세요.
+                  </div>
+                )}
+                <SimulationCanvas
+                  sceneVersion={versionDetailQuery.data}
+                  backgroundImageUrl={null}
+                  aps={aps}
+                  onAdd={handleAddAp}
+                  onMove={handleMoveAp}
+                  onRemove={handleRemoveAp}
+                  pending={false}
+                  onClearPending={() => {}}
+                  heatmapUrl={heatmapUrl}
+                  heatmapBounds={heatmapBounds}
+                  readOnly
+                />
+              </>
             )}
           </div>
 
           <aside className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1">
             {state === 'complete' && (
               <SimulationResultCard
-                avgRssiDbm={metrics.avgRssiDbm ?? -65}
-                coveragePercent={metrics.coveragePercent ?? 0}
+                avgRssiDbm={isRunForCurrentVersion ? metrics.avgRssiDbm : null}
+                coveragePercent={isRunForCurrentVersion ? metrics.coveragePercent : null}
+                staleReason={
+                  isRunForCurrentVersion
+                    ? null
+                    : '이전 버전 도면에서 돌린 시뮬레이션이라 현재 도면과 비교 가치가 없어 결과를 숨겼습니다.'
+                }
               />
             )}
+            {/* AP 배치 (§14) 카드 — 백엔드 ap-candidates 미구현 상태라 임시로 숨김.
+                백엔드 붙으면 다시 노출.
             {state === 'complete' && activeRunId && (
               <ApPlacementPanel rfRunId={activeRunId} />
             )}
+            */}
             <SimulationHistory
               items={history}
               showCompareButton={false}
@@ -450,7 +488,9 @@ function EmptyState({
 /**
  * §14 AP 후보/배치 패널.
  * RF Run 이 succeeded 된 후에만 표시되고, 후보 생성 + 후보 선택 → 배치 저장 흐름.
+ * 백엔드 ap-candidates 미구현으로 시연 동안 사용처에서만 주석 처리됨 (정의 유지).
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function ApPlacementPanel({ rfRunId }: { rfRunId: string }) {
   const generate = useGenerateApCandidates();
   const candidatesQuery = useApCandidates(rfRunId);
