@@ -151,9 +151,10 @@ def _load_aps(
 
     if fallback_request_json:
         for entry in fallback_request_json.get("access_points") or []:
-            pos = entry.get("position") or entry
-            x = pos.get("x") if isinstance(pos, dict) else None
-            y = pos.get("y") if isinstance(pos, dict) else None
+            pos = entry.get("position") if isinstance(entry.get("position"), dict) else entry
+            # 프론트는 x_m/y_m, 옛 흐름은 x/y, position:{x,y} 등 — 다 받아줌.
+            x = pos.get("x_m", pos.get("x")) if isinstance(pos, dict) else None
+            y = pos.get("y_m", pos.get("y")) if isinstance(pos, dict) else None
             if x is None or y is None:
                 continue
             aps.append(AccessPoint(
