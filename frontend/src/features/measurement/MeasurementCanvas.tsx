@@ -1,6 +1,10 @@
 import { useMemo, useRef } from 'react';
 import { parseGeometry } from '@/features/editor/geometry-utils';
 import { loadCachedViewBox } from '@/features/editor/viewbox-cache';
+import {
+  deriveImageExtent,
+  useImageNaturalDimensions,
+} from '@/features/editor/floorplan-image-extent';
 import type {
   DraftObject,
   DraftOpening,
@@ -31,6 +35,8 @@ export type MeasurementViewMode = 'route' | 'heatmap' | 'both';
 
 interface Props {
   sceneVersion: SceneVersion | null | undefined;
+  /** 원본 도면 이미지 (배경에 연하게 깔림). 공간편집/시뮬과 동일한 방식. */
+  backgroundImageUrl?: string | null;
   points: MeasurementPoint[];
   aps: PlacedApSimple[];
   mode: MeasurementViewMode;
@@ -64,8 +70,12 @@ function extendBounds(b: Bounds, x: number, y: number) {
   if (y > b.maxY) b.maxY = y;
 }
 
-/** viewBox 는 도형(walls/openings) 기준. 객체는 건물 밖으로 나갈 수 있어 제외. */
-function computeViewBox(scene: SceneVersion | null | undefined) {
+/** viewBox 는 도형(walls/openings) 기준. imageExtent 주어지면 union 으로 잡아서
+ *  배경 이미지와 벽이 같은 좌표계로 정렬 표시. 객체는 건물 밖으로 나갈 수 있어 제외. */
+function computeViewBox(
+  scene: SceneVersion | null | undefined,
+  imageExtent: { w: number; h: number } | null,
+) {
   const b = emptyBounds();
   for (const wall of scene?.walls ?? []) {
     const g = parseGeometry(wall.centerline_geom);
@@ -74,6 +84,10 @@ function computeViewBox(scene: SceneVersion | null | undefined) {
   for (const op of scene?.openings ?? []) {
     const g = parseGeometry(op.line_geom);
     if (g?.type === 'LineString') for (const [x, y] of g.coordinates) extendBounds(b, x, y);
+  }
+  if (imageExtent) {
+    extendBounds(b, 0, 0);
+    extendBounds(b, imageExtent.w, imageExtent.h);
   }
   if (!isFinite(b.minX)) return { x: 0, y: 0, w: 10, h: 10 };
   const w = b.maxX - b.minX || 1;
@@ -101,6 +115,7 @@ const QUALITY_HEATMAP_RGBA: Record<MeasurementPointQuality, string> = {
  */
 export function MeasurementCanvas({
   sceneVersion,
+  backgroundImageUrl,
   points,
   aps,
   mode,
@@ -108,14 +123,28 @@ export function MeasurementCanvas({
   estimatedHeatmap,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
-  // viewBox 는 editor 와 동일하게 — 같은 floor_id 의 editor 캐시(localStorage) 를 우선.
-  // 없으면 scene 도형 기준 계산. 페이지 간 캔버스 영역 일관성 유지.
   const sceneId = sceneVersion?.id ?? null;
+
+  // 배경 이미지를 editor 와 동일한 좌표계로 배치하기 위해 imageExtent (미터) 계산.
+  // image 는 (0,0)~(extent.w, extent.h) 에 그림 → 벽과 정확히 정렬.
+  const imageDims = useImageNaturalDimensions(backgroundImageUrl ?? null);
+  const imageExtent = useMemo(
+    () =>
+      deriveImageExtent(imageDims, {
+        sourceAssetId: sceneVersion?.source_asset_id ?? null,
+        floorId: sceneVersion?.floor_id ?? null,
+      }),
+    [imageDims, sceneVersion?.source_asset_id, sceneVersion?.floor_id],
+  );
+
+  // viewBox: imageExtent 있으면 union(walls, image) 자체 계산 (가장 안정적).
+  // 없을 때만 editor 캐시 fallback → 도형 bounds 최후.
   const vb = useMemo(() => {
+    if (imageExtent) return computeViewBox(sceneVersion, imageExtent);
     const cached = loadCachedViewBox(sceneVersion?.floor_id ?? null);
     if (cached) return cached;
-    return computeViewBox(sceneVersion);
-  }, [sceneId, sceneVersion?.floor_id]);
+    return computeViewBox(sceneVersion, null);
+  }, [sceneId, sceneVersion?.floor_id, imageExtent]);
   const sortedPoints = useMemo(
     () => [...points].sort((a, b) => a.order - b.order),
     [points],
@@ -158,6 +187,29 @@ export function MeasurementCanvas({
 
         {/* 모든 콘텐츠를 도면 영역으로 클립. */}
         <g clipPath="url(#mc-viewbox-clip)">
+
+        {/* 배경 원본 도면 이미지 — 가장 아래에 연하게 (공간편집/시뮬과 동일).
+            imageExtent 있으면 실제 미터 좌표 배치 → 벽과 정렬. 없으면 viewBox fit. */}
+        {backgroundImageUrl && (
+          <image
+            href={backgroundImageUrl}
+            xlinkHref={backgroundImageUrl}
+            x={imageExtent ? 0 : vb.x}
+            y={imageExtent ? 0 : vb.y}
+            width={imageExtent ? imageExtent.w : vb.w}
+            height={imageExtent ? imageExtent.h : vb.h}
+            preserveAspectRatio={imageExtent ? 'none' : 'xMidYMid meet'}
+            opacity={0.35}
+            pointerEvents="none"
+            crossOrigin="anonymous"
+            onError={() => {
+              console.warn(
+                '[MeasurementCanvas] 배경 도면 이미지 로드 실패:',
+                backgroundImageUrl,
+              );
+            }}
+          />
+        )}
 
         {/* 히트맵: 도형보다 아래에 깔아 도면이 위에 보이도록.
             GP regression dense heatmap 이 있으면 그것을 우선 표시 (전체 도면 커버).

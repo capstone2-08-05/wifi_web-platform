@@ -31,6 +31,9 @@ import {
 } from '@/hooks/use-measurement-session';
 import { useFloorRfRuns, useRfMaps } from '@/hooks/use-rf-run';
 import { useApLayouts } from '@/hooks/use-ap-layouts';
+import { useFloorAssets, useAssetDownloadUrl } from '@/hooks/use-assets';
+import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
+import { versionToDraftShape } from '@/features/editor/version-as-draft';
 import {
   useCalibrationParameterUpdates,
   useCalibrationRun,
@@ -55,6 +58,22 @@ export default function MeasurementPage() {
   const currentVersion = versions.find((v) => v.is_current) ?? versions[0] ?? null;
   const versionDetailQuery = useSceneVersion(currentVersion?.id ?? null);
   const sceneVersion = versionDetailQuery.data ?? null;
+
+  // 배경 원본 도면 이미지 — 공간편집/시뮬과 동일한 방식.
+  const versionAsDraft = sceneVersion ? versionToDraftShape(sceneVersion) : null;
+  const sourceAssetId = versionAsDraft?.source_asset_id ?? null;
+  const floorAssetsQuery = useFloorAssets(floorId, 'floorplan_image');
+  const fallbackAsset = (floorAssetsQuery.data ?? [])
+    .slice()
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+  const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
+  const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
+  // sourceAssetId 우선 — 히스토리 버전 클릭 시 그 자산 이미지로 정확히 복원.
+  const localImage = useLocalFloorplanImage({ floorId, sourceAssetId });
+  const assetUrl = assetUrlQuery.data?.url ?? null;
+  const usableAssetUrl =
+    assetUrl && /^https?:\/\//i.test(assetUrl) ? assetUrl : null;
+  const backgroundImageUrl = usableAssetUrl ?? localImage ?? null;
 
   // 측정 세션. 기본은 최근 세션 자동 선택, 사용자가 '이력 보기' 로 다른 세션 선택 가능.
   const sessionsQuery = useFloorMeasurementSessions(floorId);
@@ -160,6 +179,7 @@ export default function MeasurementPage() {
               <div className="relative min-h-112 flex-1">
                 <MeasurementCanvas
                   sceneVersion={sceneVersion}
+                  backgroundImageUrl={backgroundImageUrl}
                   points={canvasPoints}
                   aps={canvasAps}
                   mode={mode}

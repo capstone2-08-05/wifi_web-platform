@@ -1,6 +1,10 @@
 import { useMemo, useRef, useState } from 'react';
 import { parseGeometry, type Coord } from '@/features/editor/geometry-utils';
 import { loadCachedViewBox } from '@/features/editor/viewbox-cache';
+import {
+  deriveImageExtent,
+  useImageNaturalDimensions,
+} from '@/features/editor/floorplan-image-extent';
 import type {
   DraftObject,
   DraftOpening,
@@ -61,11 +65,17 @@ function extendBounds(b: Bounds, x: number, y: number) {
 }
 
 /**
- * 캔버스 viewBox 는 도면 구조(rooms/walls/openings) 만 기준으로 계산.
+ * 캔버스 viewBox 계산. imageExtent 가 주어지면 union(walls, image) 로 잡아서
+ * 이미지와 벽이 같은 좌표계로 함께 표시되도록 함. 없으면 도형(walls/rooms/openings)
+ * bounds 기준 fallback.
+ *
  * 객체(가구/공간 박스) 는 건물 밖으로 삐져나갈 수 있어 viewBox 에서 제외 — 캔버스가
- * 일그러지지 않도록 고정. 밖으로 나간 객체는 잘려 보이지만 캔버스 비율은 안정적.
+ * 일그러지지 않도록 고정. 밖으로 나간 객체는 잘려 보이지만 비율은 안정적.
  */
-function computeViewBox(scene: SceneVersion | null | undefined): {
+function computeViewBox(
+  scene: SceneVersion | null | undefined,
+  imageExtent: { w: number; h: number } | null,
+): {
   x: number;
   y: number;
   w: number;
@@ -84,6 +94,11 @@ function computeViewBox(scene: SceneVersion | null | undefined): {
   for (const op of scene?.openings ?? []) {
     const g = parseGeometry(op.line_geom);
     if (g?.type === 'LineString') for (const [x, y] of g.coordinates) extendBounds(b, x, y);
+  }
+  // image extent 가 있으면 (0,0)~(extent.w, extent.h) 도 bounds 에 포함 → union.
+  if (imageExtent) {
+    extendBounds(b, 0, 0);
+    extendBounds(b, imageExtent.w, imageExtent.h);
   }
   if (!isFinite(b.minX)) return { x: 0, y: 0, w: 10, h: 10 };
   const w = b.maxX - b.minX || 1;
@@ -112,14 +127,29 @@ export function SimulationCanvas({
   readOnly = false,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
-  // viewBox 는 editor 와 동일하게 — 같은 floor_id 의 editor 캐시(localStorage) 를 우선.
-  // 없으면 scene 도형 기준으로 계산. 캐시 사용으로 공간편집·시뮬·실측 페이지가 동일한 영역 표시.
   const sceneId = sceneVersion?.id ?? null;
+
+  // 배경 이미지를 editor 와 동일한 좌표계로 배치하기 위해 imageExtent (미터) 계산.
+  // 있으면 image 는 (0,0)~(extent.w, extent.h) 에 그림 → 벽과 정확히 정렬.
+  // 없으면 viewBox 영역에 fit 으로 fallback (정렬은 안 맞아도 결과는 보임).
+  const imageDims = useImageNaturalDimensions(backgroundImageUrl ?? null);
+  const imageExtent = useMemo(
+    () =>
+      deriveImageExtent(imageDims, {
+        sourceAssetId: sceneVersion?.source_asset_id ?? null,
+        floorId: sceneVersion?.floor_id ?? null,
+      }),
+    [imageDims, sceneVersion?.source_asset_id, sceneVersion?.floor_id],
+  );
+
+  // viewBox: image extent 있으면 union(walls, image) 우선 — 가장 안정적인 자체 계산.
+  // 없을 때만 editor 캐시 fallback (이전 페이지에서 잡아둔 영역 유지) → 도형 bounds 최후.
   const vb = useMemo(() => {
+    if (imageExtent) return computeViewBox(sceneVersion, imageExtent);
     const cached = loadCachedViewBox(sceneVersion?.floor_id ?? null);
     if (cached) return cached;
-    return computeViewBox(sceneVersion);
-  }, [sceneId, sceneVersion?.floor_id]);
+    return computeViewBox(sceneVersion, null);
+  }, [sceneId, sceneVersion?.floor_id, imageExtent]);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<Coord>([0, 0]);
 
@@ -212,13 +242,16 @@ export function SimulationCanvas({
           <image
             href={backgroundImageUrl}
             xlinkHref={backgroundImageUrl}
-            x={vb.x}
-            y={vb.y}
-            width={vb.w}
-            height={vb.h}
-            preserveAspectRatio="xMidYMid meet"
+            // imageExtent 가 있으면 실제 미터 좌표 (0,0)~(extent.w, extent.h) 에 배치 →
+            // 벽 좌표와 동일 좌표계 → 정렬 일치. 없으면 vb 영역에 fitting (fallback).
+            x={imageExtent ? 0 : vb.x}
+            y={imageExtent ? 0 : vb.y}
+            width={imageExtent ? imageExtent.w : vb.w}
+            height={imageExtent ? imageExtent.h : vb.h}
+            preserveAspectRatio={imageExtent ? 'none' : 'xMidYMid meet'}
             opacity={0.35}
             pointerEvents="none"
+            crossOrigin="anonymous"
             onError={() => {
               console.warn('[SimulationCanvas] 배경 도면 이미지 로드 실패:', backgroundImageUrl);
             }}

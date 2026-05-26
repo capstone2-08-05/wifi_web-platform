@@ -92,7 +92,7 @@ async def create_rf_run(
     """
     sv = _get_owned_scene_version(db, payload.scene_version_id, user)
 
-    # 새 흐름: SageMaker async 호출
+    # 새 흐름: backend 선택형 (sagemaker async 또는 local ai_api)
     if payload.access_points and payload.simulation:
         from app.services.rf.rf_job_service import submit_rf_simulation
 
@@ -105,6 +105,7 @@ async def create_rf_run(
             run_type=payload.run_type or "rf_simulate",
             metadata=payload.metadata,
             apply_calibration=payload.apply_calibration,
+            backend=payload.backend,
         )
         summary = _to_response(rf_run)
         return RfRunCreatedResponse(**summary.model_dump(), job_id=job.id)
@@ -207,9 +208,13 @@ def list_by_floor(
 
 
 def _rf_map_to_response(m: RfMap) -> RfMapResponse:
-    """storage_url 이 s3:// 면 presigned URL 도 같이 채워서 반환."""
+    """storage_url 이 s3:// 면 presigned URL, http(s):// (local backend) 면 그대로 url 채움."""
     resp = RfMapResponse.model_validate(m, from_attributes=True)
-    if m.storage_url and m.storage_url.startswith("s3://"):
+    if not m.storage_url:
+        return resp
+    if m.storage_url.startswith("http://") or m.storage_url.startswith("https://"):
+        return resp.model_copy(update={"url": m.storage_url})
+    if m.storage_url.startswith("s3://"):
         from app.services import _s3
         try:
             resp = resp.model_copy(update={"url": _s3.presigned_get_url(m.storage_url)})

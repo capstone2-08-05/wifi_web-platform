@@ -19,6 +19,7 @@ import {
 } from '@/hooks/use-scene-version';
 import { useAssetDownloadUrl, useFloorAssets } from '@/hooks/use-assets';
 import {
+  linkFloorImageToAsset,
   saveLocalFloorplanImage,
   useLocalFloorplanImage,
 } from '@/hooks/use-local-floorplan-image';
@@ -178,7 +179,15 @@ export default function EditorPage() {
   const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
   const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
   // 3순위: 사용자가 업로드한 파일을 base64 로 캐시해둔 로컬 이미지 (백엔드 미지원 우회).
-  const localImage = useLocalFloorplanImage(floorId);
+  // sourceAssetId 알면 자산별 키 우선, 없으면 floor 키 fallback — 히스토리 버전 클릭 시
+  // 그 당시 업로드 이미지가 별도 키로 보존돼 있어 정확히 복원됨.
+  const localImage = useLocalFloorplanImage({ floorId, sourceAssetId });
+  // 업로드 직후엔 floor 키에만 임시 저장돼있음 → draft.source_asset_id 알게 되는 순간
+  // asset 키로 복사해 보존 (덮어쓰진 않음). 새 업로드가 floor 키를 덮어써도 이전 자산은
+  // 자기 자산 키에 그대로 남음.
+  useEffect(() => {
+    if (floorId && sourceAssetId) linkFloorImageToAsset(floorId, sourceAssetId);
+  }, [floorId, sourceAssetId]);
   // 자산 URL 은 <image href> 에서 직접 로드 가능한 절대 http(s) 만 사용.
   // local 모드의 `/assets/{id}/raw` 같은 상대경로는 (a) 프론트 origin 기준이라 백엔드를
   // 못 가리키고 (b) JWT 인증 헤더를 못 실어서 못 씀 → localStorage 캐시(base64) 로 fallback.

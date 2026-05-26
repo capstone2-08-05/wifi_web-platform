@@ -36,6 +36,9 @@ JOB_STATUS_RUNNING = "running"
 JOB_STATUS_DONE = "done"
 JOB_STATUS_FAILED = "failed"
 
+RF_BACKEND_SAGEMAKER = "sagemaker"
+RF_BACKEND_LOCAL = "local"
+
 
 # ============================================================
 # Submit
@@ -50,14 +53,28 @@ async def submit_rf_simulation(
     run_type: str = "rf_simulate",
     metadata: dict[str, Any] | None = None,
     apply_calibration: bool = True,
+    backend: str = RF_BACKEND_SAGEMAKER,
 ) -> tuple[RfRun, Job]:
-    """SceneVersion 확인 + scene.json export + SageMaker submit + Job/RfRun row 생성.
+    """SceneVersion 확인 + scene.json export + 백엔드로 submit + Job/RfRun row 생성.
 
     apply_calibration=True 면 해당 scene_version 의 최신 completed CalibrationRun
     보정값을 scene_json/simulation 에 미리 반영한다 (#88).
 
+    backend:
+      - "sagemaker" (기본): S3 + invoke_endpoint_async, /rf-jobs/{id} 폴링으로 완료 확인
+      - "local":           로컬 ai_api `/internal/sionna/run` 호출 (백그라운드 thread).
+                            poll 은 DB status 만 읽음 — 외부 호출 X.
+
     반환: (rf_run, job) — 둘 다 commit 완료된 상태.
     """
+    if backend not in {RF_BACKEND_SAGEMAKER, RF_BACKEND_LOCAL}:
+        raise AppError(
+            ErrorCode.INVALID_RF_RUN_STATUS,
+            f"Unsupported RF backend: {backend!r}. "
+            f"Allowed: {RF_BACKEND_SAGEMAKER}, {RF_BACKEND_LOCAL}",
+            400,
+        )
+
     sv = _get_owned_scene_version(db, scene_version_id, current_user)
 
     # 1) scene.json 빌드 (DB → dict)
@@ -91,7 +108,47 @@ async def submit_rf_simulation(
                     "summary": summary,
                 }
 
-    # 2) SageMaker submit (블록 X)
+    if backend == RF_BACKEND_LOCAL:
+        from app.services.rf.rf_backend_local import submit_via_local_ai_api
+
+        return await submit_via_local_ai_api(
+            db,
+            sv=sv,
+            scene_json=scene_json,
+            access_points=access_points,
+            simulation=simulation,
+            current_user=current_user,
+            run_type=run_type,
+            metadata=metadata,
+            calibration_meta=calibration_meta,
+        )
+
+    return await _submit_via_sagemaker(
+        db,
+        sv=sv,
+        scene_json=scene_json,
+        access_points=access_points,
+        simulation=simulation,
+        current_user=current_user,
+        run_type=run_type,
+        metadata=metadata,
+        calibration_meta=calibration_meta,
+    )
+
+
+async def _submit_via_sagemaker(
+    db: Session,
+    *,
+    sv: SceneVersion,
+    scene_json: dict[str, Any],
+    access_points: list[dict[str, Any]],
+    simulation: dict[str, Any],
+    current_user: User,
+    run_type: str,
+    metadata: dict[str, Any] | None,
+    calibration_meta: dict[str, Any],
+) -> tuple[RfRun, Job]:
+    """SageMaker async backend: scene/input 을 S3 에 올리고 invoke_endpoint_async."""
     submit_result = await sagemaker_rf_inference_service.submit(
         scene_json=scene_json,
         project_id=str(sv.project_id),
@@ -108,7 +165,6 @@ async def submit_rf_simulation(
 
     now = _now_utc()
 
-    # 3) RfRun row
     rf_run = RfRun(
         project_id=sv.project_id,
         floor_id=sv.floor_id,
@@ -120,17 +176,18 @@ async def submit_rf_simulation(
             "simulation": simulation,
             "metadata": metadata or {},
             "calibration": calibration_meta,
+            "backend": RF_BACKEND_SAGEMAKER,
         },
         metrics_json={},
     )
 
-    # 4) Job row (input_json 에 sagemaker meta 보관 — AI 패턴과 동일)
     input_json: dict[str, Any] = {
         "rf_run_id": None,  # rf_run.id 는 flush 후 채움
         "scene_version_id": str(sv.id),
         "access_points": access_points,
         "simulation": simulation,
         "requested_by": current_user.email,
+        "backend": RF_BACKEND_SAGEMAKER,
         "sagemaker": {
             "inference_id": submit_result.sagemaker_inference_id,
             "scene_s3_uri": submit_result.scene_s3_uri,
@@ -168,7 +225,7 @@ async def submit_rf_simulation(
         ) from exc
 
     logger.info(
-        "RF job submitted job_id=%s rf_run_id=%s sagemaker_inference_id=%s",
+        "RF job submitted (sagemaker) job_id=%s rf_run_id=%s sagemaker_inference_id=%s",
         job.id, rf_run.id, submit_result.sagemaker_inference_id,
     )
     return rf_run, job
@@ -212,6 +269,7 @@ async def retry_rf_job(
 
     metadata = input_meta.get("metadata") or {}
     metadata["retry_of_job_id"] = str(job.id)
+    original_backend = input_meta.get("backend") or RF_BACKEND_SAGEMAKER
 
     return await submit_rf_simulation(
         db,
@@ -220,6 +278,7 @@ async def retry_rf_job(
         simulation=simulation,
         current_user=current_user,
         metadata=metadata,
+        backend=original_backend,
     )
 
 
@@ -229,13 +288,22 @@ async def poll_rf_job(
     job_id: str,
     current_user: User,
 ) -> Job:
-    """RF Job 조회 + (running 이면 S3 확인) + 완료/실패 시 본 트랜잭션에서 마무리.
+    """RF Job 조회 + 완료/실패 시 본 트랜잭션에서 마무리.
 
-    AI 패턴과 동일: race-safe 를 위해 finalize 직전 row lock + status 재확인.
+    backend 별 분기:
+      - sagemaker: running 이면 S3 확인 후 완료/실패 처리 (race-safe row lock + status 재확인)
+      - local:     백그라운드 thread 가 직접 DB 를 업데이트하므로 DB read 만 함.
     """
     job = _get_owned_rf_job_or_404(db, job_id, current_user)
 
     if job.status != JOB_STATUS_RUNNING:
+        return job
+
+    backend = (job.input_json or {}).get("backend") or RF_BACKEND_SAGEMAKER
+    if backend == RF_BACKEND_LOCAL:
+        # 백그라운드 thread 가 완료시 DB 직접 업데이트 — 폴링은 단순 read.
+        # 세션 캐시 회피 위해 refresh.
+        db.refresh(job)
         return job
 
     sagemaker_meta = (job.input_json or {}).get("sagemaker") or {}
