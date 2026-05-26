@@ -31,6 +31,20 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, ErrorCode
+from app.core.rf_defaults import (
+    DEFAULT_DIFFRACTION,
+    DEFAULT_DIFFUSE_REFLECTION,
+    DEFAULT_FREQUENCY_HZ,
+    DEFAULT_LOS,
+    DEFAULT_MAX_DEPTH,
+    DEFAULT_MEASUREMENT_PLANE_Z_M,
+    DEFAULT_REFRACTION,
+    DEFAULT_RESOLUTION_M,
+    DEFAULT_SAMPLES_PER_TX,
+    DEFAULT_SEED,
+    DEFAULT_SPECULAR_REFLECTION,
+    DEFAULT_TX_POWER_DBM,
+)
 from app.db.session import SessionLocal
 from app.models import Job, RfRun, SceneVersion, User
 from app.models.rf_map import RfMap
@@ -165,6 +179,16 @@ def _background_run_ai_api(
     *, job_id: str, rf_run_id: str, payload: dict[str, Any]
 ) -> None:
     """Thread entry point: ai_api 호출 + 결과 DB 영속화 (성공/실패 분기)."""
+    # 디버그: 어떤 simulation 설정으로 호출되는지 확인 — 3초 미만으로 끝나는 등 의심
+    # 상황에서 실제 적용된 값이 무엇인지 빠르게 검증하기 위한 단일 로그.
+    sim_cfg = payload.get("simulation") or {}
+    logger.info(
+        "RF job %s: sending to ai_api — solver=%s, propagation=%s, mp=%s",
+        job_id,
+        sim_cfg.get("solver"),
+        sim_cfg.get("propagation"),
+        payload.get("measurement_plane"),
+    )
     try:
         response = ai_api_client.run_sionna_simulation(payload=payload)
     except ai_api_client.AiApiClientError as exc:
@@ -402,8 +426,12 @@ def _build_sionna_request_payload(
         float(primary_ap.get("z_m") or primary_ap.get("z") or 1.2),
     ]
 
-    frequency_hz = float(simulation.get("frequency_hz") or 5e9)
+    # 모든 fallback 은 `app/core/rf_defaults.py` 에서 import — 같은 source of truth 유지.
+    # 정상 flow 에선 `RfSimulationParams.model_dump()` 가 디폴트 채워서 들어오므로
+    # .get(key, FALLBACK) 의 fallback 은 dead-code 지만, 직접 호출 시 안전망.
+    frequency_hz = float(simulation.get("frequency_hz") or DEFAULT_FREQUENCY_HZ)
     frequency_ghz = frequency_hz / 1e9
+    tx_power_dbm = float(simulation.get("tx_power_dbm") or DEFAULT_TX_POWER_DBM)
 
     return {
         "engine": "sionna_rt",
@@ -418,22 +446,34 @@ def _build_sionna_request_payload(
         "access_point": {
             "id": ap_id,
             "position_m": ap_position,
-            "tx_power_dbm": float(simulation.get("tx_power_dbm")) if simulation.get("tx_power_dbm") is not None else None,
+            "tx_power_dbm": tx_power_dbm,
             "frequency_ghz": frequency_ghz,
         },
         "measurement_plane": {
-            "z_m": float(simulation.get("measurement_plane_z_m") or 1.0),
-            "cell_size_m": float(simulation.get("resolution_m") or 0.5),
+            "z_m": float(simulation.get("measurement_plane_z_m") or DEFAULT_MEASUREMENT_PLANE_Z_M),
+            "cell_size_m": float(simulation.get("resolution_m") or DEFAULT_RESOLUTION_M),
         },
         "simulation": {
             "physical": {
                 "frequency_ghz": frequency_ghz,
-                "tx_power_dbm": float(simulation.get("tx_power_dbm") or 20.0),
+                "tx_power_dbm": tx_power_dbm,
             },
             "solver": {
-                "max_depth": int(simulation.get("max_depth") or 3),
-                "samples_per_tx": int(simulation.get("samples_per_tx") or 100_000),
-                "seed": int(simulation.get("seed") or 42),
+                "max_depth": int(simulation.get("max_depth") or DEFAULT_MAX_DEPTH),
+                "samples_per_tx": int(simulation.get("samples_per_tx") or DEFAULT_SAMPLES_PER_TX),
+                "seed": int(simulation.get("seed") or DEFAULT_SEED),
+            },
+            # Propagation — 항상 명시 전송. ai_api 디폴트로 fallback 안 함.
+            "propagation": {
+                "los": bool(simulation.get("los", DEFAULT_LOS)),
+                "specular_reflection": bool(
+                    simulation.get("specular_reflection", DEFAULT_SPECULAR_REFLECTION)
+                ),
+                "refraction": bool(simulation.get("refraction", DEFAULT_REFRACTION)),
+                "diffuse_reflection": bool(
+                    simulation.get("diffuse_reflection", DEFAULT_DIFFUSE_REFLECTION)
+                ),
+                "diffraction": bool(simulation.get("diffraction", DEFAULT_DIFFRACTION)),
             },
         },
     }

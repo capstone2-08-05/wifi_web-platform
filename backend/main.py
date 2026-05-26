@@ -1,3 +1,14 @@
+import logging
+
+# 앱 로거 활성화 — `logger = logging.getLogger(__name__)` 로 만든 logger.info() 가
+# 콘솔에 보이도록. uvicorn 자체 INFO 와는 별개 (uvicorn 은 자체 로거 사용).
+# force=True: uvicorn 이 이미 root logger 에 handler 를 박았을 경우 덮어쓰기.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    force=True,
+)
+
 from fastapi import FastAPI, Request
 from app.routers.experiments import router as experiments_router
 from app.routers.health import router as health_router

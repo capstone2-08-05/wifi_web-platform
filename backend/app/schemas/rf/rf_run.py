@@ -11,12 +11,17 @@ from typing import Literal
 
 from app.core.enums import normalize_job_status
 from app.core.rf_defaults import (
+    DEFAULT_DIFFRACTION,
+    DEFAULT_DIFFUSE_REFLECTION,
     DEFAULT_FREQUENCY_HZ,
+    DEFAULT_LOS,
     DEFAULT_MAX_DEPTH,
     DEFAULT_MEASUREMENT_PLANE_Z_M,
+    DEFAULT_REFRACTION,
     DEFAULT_RESOLUTION_M,
     DEFAULT_SAMPLES_PER_TX,
     DEFAULT_SEED,
+    DEFAULT_SPECULAR_REFLECTION,
     DEFAULT_TX_POWER_DBM,
 )
 
@@ -39,17 +44,26 @@ class RfSimulationParams(BaseModel):
     """RF 시뮬 파라미터. 모든 필드 optional — 미지정 시 `app/core/rf_defaults.py` 값 적용.
 
     프론트엔드는 사용자가 명시적으로 정한 값만 보내면 됨 (예: AP 가 정해진 frequency band).
-    Solver 하이퍼파라미터 (max_depth, samples_per_tx 등) 는 보통 backend 디폴트 그대로.
+    Solver/propagation 하이퍼파라미터는 보통 backend 디폴트 그대로.
     """
     model_config = ConfigDict(extra="forbid")
 
+    # 물리값
     frequency_hz: float = Field(default=DEFAULT_FREQUENCY_HZ, gt=0)
     tx_power_dbm: float = DEFAULT_TX_POWER_DBM
+    # 측정 grid
     resolution_m: float = Field(default=DEFAULT_RESOLUTION_M, gt=0)
     measurement_plane_z_m: float = DEFAULT_MEASUREMENT_PLANE_Z_M
+    # Solver
     max_depth: int = Field(default=DEFAULT_MAX_DEPTH, ge=0)
     samples_per_tx: int = Field(default=DEFAULT_SAMPLES_PER_TX, ge=1000)
     seed: int = DEFAULT_SEED
+    # Propagation mechanisms — ai_api PropagationConfig 와 매핑.
+    los: bool = DEFAULT_LOS
+    specular_reflection: bool = DEFAULT_SPECULAR_REFLECTION
+    refraction: bool = DEFAULT_REFRACTION
+    diffuse_reflection: bool = DEFAULT_DIFFUSE_REFLECTION
+    diffraction: bool = DEFAULT_DIFFRACTION
 
 
 class RfRunCreate(BaseModel):
