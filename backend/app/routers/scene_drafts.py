@@ -15,6 +15,7 @@ from app.schemas.pagination import PaginatedResponse
 from app.schemas.scene_draft import (
     SceneDraftCreateRequest,
     SceneDraftDetailResponse,
+    SceneDraftRescaleRequest,
     SceneDraftSummaryResponse,
     SceneDraftUpdateRequest,
 )
@@ -98,6 +99,28 @@ def patch_scene_draft(
         scene_draft_id,
         current_user,
         scale_ratio_m_per_px=payload.scale_ratio_m_per_px,
+        scale_source=payload.scale_source,
+    )
+
+
+@router.post(
+    "/{scene_draft_id}/rescale",
+    response_model=SceneDraftDetailResponse,
+    summary="SceneDraft 전체 비례 재스케일 (단일 트랜잭션)",
+)
+def rescale_scene_draft(
+    payload: SceneDraftRescaleRequest,
+    scene_draft_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SceneDraftDetailResponse:
+    # walls·openings·rooms·objects + dependent metadata + summary scale_ratio 를 한 번에 ×factor.
+    # 프론트의 N-PATCH 패턴을 단일 요청으로 통합 (대규모 도면에서 클라이언트 폭주 방지).
+    return scene_draft_service.rescale_scene_draft(
+        db,
+        scene_draft_id,
+        current_user,
+        factor=payload.factor,
         scale_source=payload.scale_source,
     )
 

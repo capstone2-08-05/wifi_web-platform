@@ -94,18 +94,22 @@ export function useCreateEmptyDraft() {
 }
 
 /**
- * PATCH /scene-drafts/{id} — summary 일부(scale_ratio_m_per_px / scale_source) 갱신.
- * 사용자가 한 벽·문/창 실측값으로 전체 재스케일할 때 좌표 PATCH 들과 묶여 호출됨.
- * 성공 시 draft detail 캐시는 무효화 (좌표 PATCH 들도 같은 캐시 무효화하므로 한 번에 refetch).
+ * POST /scene-drafts/{id}/rescale — draft 전체를 factor 만큼 비례 재스케일.
+ * 백엔드가 한 트랜잭션으로 walls·openings·rooms·objects geometry 와 종속 metadata,
+ * summary.scale_ratio 를 일괄 ×factor 처리. 프론트는 단일 요청만 보내고
+ * 응답으로 draft detail 캐시를 1회 무효화.
  */
-export function usePatchSceneDraft() {
+export function useRescaleSceneDraft() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: {
-      id: UUID;
-      body: { scale_ratio_m_per_px?: number; scale_source?: string };
-    }) => sceneDraftApi.patch(vars.id, vars.body),
-    onSuccess: (_data, vars) => {
+    mutationFn: (vars: { id: UUID; factor: number; scaleSource?: string }) =>
+      sceneDraftApi.rescale(vars.id, {
+        factor: vars.factor,
+        ...(vars.scaleSource ? { scale_source: vars.scaleSource } : {}),
+      }),
+    onSuccess: (data, vars) => {
+      // 응답이 갱신된 detail 이라 캐시에 직접 채우고 invalidate (좌표·summary 한 번에 반영).
+      qc.setQueryData(['scene-draft', vars.id], data);
       qc.invalidateQueries({ queryKey: ['scene-draft', vars.id] });
     },
     onError: (err) => {

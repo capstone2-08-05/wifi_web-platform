@@ -75,12 +75,11 @@ export const sceneDraftApi = {
       .post<SceneDraft>(`/floors/${floorId}/scene-drafts`, { source_mode: 'manual' })
       .then((r) => r.data),
 
-  // PATCH /scene-drafts/{id} — summary_json 일부(scale_ratio_m_per_px 등) 갱신.
-  // 사용자가 한 벽/문/창 실측값으로 전체 재스케일할 때 좌표 PATCH 들과 묶여 호출.
-  patch: (
-    id: UUID,
-    body: { scale_ratio_m_per_px?: number; scale_source?: string },
-  ) => api.patch<SceneDraft>(`/scene-drafts/${id}`, body).then((r) => r.data),
+  // POST /scene-drafts/{id}/rescale — 한 트랜잭션 안에서 draft 전체를 factor 만큼 비례 재스케일.
+  // walls·openings·rooms·objects 의 geometry + 종속 metadata + summary.scale_ratio 를 일괄 갱신.
+  // 프론트가 entity 별로 PATCH N번 보내던 패턴을 단일 요청으로 통합.
+  rescale: (id: UUID, body: { factor: number; scale_source?: string }) =>
+    api.post<SceneDraft>(`/scene-drafts/${id}/rescale`, body).then((r) => r.data),
 
   // §6.5 DELETE /scene-drafts/{id}
   remove: (id: UUID) => api.delete<void>(`/scene-drafts/${id}`).then((r) => r.data),
