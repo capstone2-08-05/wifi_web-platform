@@ -158,7 +158,8 @@ export default function SimulationPage() {
   const handleReset = () => {
     setPickedRunId(null);
     setResetCleared(true);
-    setAps([]); // 배치 화면으로 돌아가면 새로 찍도록 초기화
+    // AP 위치는 유지 — 보정 후 동일 배치로 재시뮬하는 케이스가 많음.
+    // 새로 찍고 싶으면 캔버스에서 개별 삭제하면 됨.
   };
 
   const handleAddAp = (ap: PlacedAp) => setAps((prev) => [...prev, ap]);

@@ -183,6 +183,58 @@ def _floorplan_info_from_asset(db: Session, asset_id: str | None) -> FloorplanIn
     )
 
 
+def _bounds_from_scene_walls(db: Session, floor_id: str) -> FloorBoundsDTO | None:
+    """Confirmed scene 의 벽/개구부 좌표로 bbox 계산.
+
+    프론트 MeasurementCanvas 의 viewBox 도 같은 (walls + openings) 기준으로 잡힘.
+    히트맵 PNG 가 도면 위에 정확히 깔리려면 같은 좌표계 bounds 가 필요.
+    confirmed scene 이 없거나 벽이 0개면 None — 호출측에서 다음 fallback 사용.
+    """
+    from app.core.geom import wkb_to_geojson
+    from app.models.opening import Opening
+    from app.models.wall import Wall
+
+    scene = db.execute(
+        select(SceneVersion)
+        .where(
+            SceneVersion.floor_id == floor_id,
+            SceneVersion.is_confirmed.is_(True),
+        )
+        .order_by(SceneVersion.version_no.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if scene is None:
+        return None
+
+    minx = miny = float("inf")
+    maxx = maxy = float("-inf")
+    for w in db.execute(
+        select(Wall).where(Wall.scene_version_id == scene.id)
+    ).scalars().all():
+        gj = wkb_to_geojson(w.centerline_geom)
+        if not gj or gj.get("type") != "LineString":
+            continue
+        for x, y in gj["coordinates"]:
+            if x < minx: minx = x
+            if y < miny: miny = y
+            if x > maxx: maxx = x
+            if y > maxy: maxy = y
+    for o in db.execute(
+        select(Opening).where(Opening.scene_version_id == scene.id)
+    ).scalars().all():
+        gj = wkb_to_geojson(o.line_geom)
+        if not gj or gj.get("type") != "LineString":
+            continue
+        for x, y in gj["coordinates"]:
+            if x < minx: minx = x
+            if y < miny: miny = y
+            if x > maxx: maxx = x
+            if y > maxy: maxy = y
+    if minx == float("inf"):
+        return None
+    return FloorBoundsDTO(min_x=minx, min_y=miny, max_x=maxx, max_y=maxy)
+
+
 def _bounds_from_floorplan(floorplan: FloorplanInfoDTO) -> FloorBoundsDTO:
     if (
         floorplan.width_px is None
@@ -617,10 +669,13 @@ def estimate_session_coverage(
             400,
         )
 
-    # bounds — floor 의 floorplan 메타데이터 → 없으면 측정점 bbox
-    asset = _latest_floorplan_asset(db, str(session_row.floor_id))
-    floorplan = _floorplan_info_from_asset(db, asset.id if asset else None)
-    bounds_dto = _bounds_from_floorplan(floorplan)
+    # bounds — confirmed scene 의 벽/개구부 bbox 우선 (프론트 캔버스가 이 좌표계로 도면을 그림).
+    # 도면 이미지 픽셀 bounds 는 scene 좌표계와 어긋날 수 있어 후순위.
+    bounds_dto = _bounds_from_scene_walls(db, str(session_row.floor_id))
+    if bounds_dto is None:
+        asset = _latest_floorplan_asset(db, str(session_row.floor_id))
+        floorplan = _floorplan_info_from_asset(db, asset.id if asset else None)
+        bounds_dto = _bounds_from_floorplan(floorplan)
     if bounds_dto.max_x <= 0 or bounds_dto.max_y <= 0:
         # fallback: 측정점 bbox + 1m 마진
         xs = [p[0] for p in points]

@@ -33,35 +33,27 @@ def _render_to_png(
     colorbar_label: str,
     overlay_points: list[tuple[float, float]] | None = None,
 ) -> bytes:
-    """grid + 컬러맵 → PNG bytes. 좌표축 = 미터."""
+    """grid → 컬러맵 적용한 raw PNG bytes (chrome 없음).
+
+    프론트가 PNG 전체를 bounds 사각형에 stretch 하기 때문에 축/제목/컬러바 같은
+    matplotlib chrome 이 박히면 데이터 영역이 어긋남. axes 만 figure 전체에 깔고
+    축 끄기 + padding 0 으로 저장 — PNG 한 픽셀이 grid 한 셀.
+    """
     H, W = grid.shape
-    # 도면 비율 그대로 (figsize 약간 조정)
-    aspect = (xs[-1] - xs[0]) / max(ys[-1] - ys[0], 1e-6)
-    fig_h = 6
-    fig_w = max(4.0, min(16.0, fig_h * aspect))
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=120)
-    im = ax.imshow(
+    fig = plt.figure(figsize=(W / 100.0, H / 100.0), dpi=100, frameon=False)
+    ax = fig.add_axes((0.0, 0.0, 1.0, 1.0))
+    ax.set_axis_off()
+    ax.imshow(
         grid,
-        extent=(xs[0], xs[-1], ys[-1], ys[0]),  # y 뒤집기 — top_left 원점
         cmap=cmap,
         vmin=vmin,
         vmax=vmax,
         interpolation="bilinear",
         aspect="auto",
     )
-    if overlay_points:
-        pxs = [p[0] for p in overlay_points]
-        pys = [p[1] for p in overlay_points]
-        ax.scatter(pxs, pys, s=8, c="white", edgecolors="black", linewidths=0.5, alpha=0.8)
-    ax.set_xlabel("x (m)")
-    ax.set_ylabel("y (m)")
-    ax.set_title(title)
-    cb = plt.colorbar(im, ax=ax, shrink=0.85)
-    cb.set_label(colorbar_label)
-    plt.tight_layout()
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png")
+    fig.savefig(buf, format="png", pad_inches=0)
     plt.close(fig)
     return buf.getvalue()
 
