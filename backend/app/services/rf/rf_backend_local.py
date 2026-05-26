@@ -189,32 +189,38 @@ def _background_run_ai_api(
         sim_cfg.get("propagation"),
         payload.get("measurement_plane"),
     )
+    # try 범위를 호출 + 응답 파싱 + 영속화 전체로 확장 — 어디서 예외 나도 job 이
+    # running 으로 dangling 되지 않도록 (백그라운드 thread 가 silent 크래시 했을 때 폴링이
+    # 영원히 running 응답을 받게 되는 버그 방지).
     try:
         response = ai_api_client.run_sionna_simulation(payload=payload)
+        status = str(response.get("status") or "").lower()
+        if status != "succeeded":
+            detail = (
+                response.get("detail")
+                or response.get("error")
+                or "ai_api returned non-success status"
+            )
+            _persist_local_failure(
+                job_id=job_id, rf_run_id=rf_run_id,
+                message=f"ai_api status={status or 'unknown'}: {detail}",
+            )
+            return
+
+        _persist_local_success(job_id=job_id, rf_run_id=rf_run_id, response=response)
     except ai_api_client.AiApiClientError as exc:
         logger.warning(
             "RF job %s: local ai_api call failed: %s", job_id, exc,
         )
         _persist_local_failure(job_id=job_id, rf_run_id=rf_run_id, message=str(exc))
-        return
     except Exception as exc:  # pragma: no cover — 방어
+        # response 파싱 (KeyError/TypeError 등) 이나 _persist_local_success 내부에서
+        # 새 예외가 터질 수 있음. 그 경우도 반드시 failure 로 기록.
         logger.exception("RF job %s: unexpected error during local ai_api call", job_id)
         _persist_local_failure(
             job_id=job_id, rf_run_id=rf_run_id,
             message=f"unexpected error: {exc}",
         )
-        return
-
-    status = str(response.get("status") or "").lower()
-    if status != "succeeded":
-        detail = response.get("detail") or response.get("error") or "ai_api returned non-success status"
-        _persist_local_failure(
-            job_id=job_id, rf_run_id=rf_run_id,
-            message=f"ai_api status={status or 'unknown'}: {detail}",
-        )
-        return
-
-    _persist_local_success(job_id=job_id, rf_run_id=rf_run_id, response=response)
 
 
 def _persist_local_success(
