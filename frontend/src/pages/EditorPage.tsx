@@ -8,7 +8,7 @@ import {
   useCreateEmptyDraft,
   useDeleteSceneDraft,
   useDraftsForFloor,
-  usePatchSceneDraft,
+  useRescaleSceneDraft,
   useSceneDraft,
 } from '@/hooks/use-scene-draft';
 import { useFloorplanJob } from '@/hooks/use-floorplan-job';
@@ -72,7 +72,7 @@ export default function EditorPage() {
   const createEmptyDraft = useCreateEmptyDraft();
   const promote = usePromoteDraft();
   const removeDraft = useDeleteSceneDraft();
-  const patchSceneDraft = usePatchSceneDraft();
+  const rescaleSceneDraft = useRescaleSceneDraft();
   const patchEntity = usePatchDraftEntity();
   const deleteEntity = useDeleteDraftEntity();
   const createEntity = useCreateDraftEntity();
@@ -570,10 +570,10 @@ export default function EditorPage() {
   /**
    * 선택된 벽/문/창의 실측값(m)을 기준으로 도면 전체를 비례 스케일.
    * - factor = targetMeters / 현재 도형 길이(centerline_geom 또는 line_geom).
-   * - 모든 벽 centerline_geom, 문/창 line_geom + width_m, 방 polygon_geom,
-   *   가구 point_geom + metadata width_m/height_m 에 factor 곱.
-   * - SceneDraft.summary_json.scale_ratio_m_per_px *= factor, scale_source='manual_rescale'.
-   * - Undo 한 번에 되돌리기 어렵고 (N 개 엔티티 분산 변경) → skipHistory + 확인 다이얼로그.
+   * - 백엔드 POST /scene-drafts/{id}/rescale 단일 호출 — walls·openings·rooms·objects
+   *   geometry 와 종속 metadata(dimension_length, dimension_match, object size 등)
+   *   + summary.scale_ratio 까지 한 트랜잭션 안에서 ×factor.
+   * - 프론트가 N-PATCH 보내던 패턴을 1요청으로 통합 → 큰 도면에서 네트워크·캐시 폭주 방지.
    */
   const handleScaleAll = (targetMeters: number) => {
     if (!selectedRef || (selectedRef.kind !== 'wall' && selectedRef.kind !== 'opening')) return;
@@ -595,7 +595,7 @@ export default function EditorPage() {
       return len;
     };
 
-    // 1) 소스 엔티티의 현재 길이
+    // 소스 엔티티의 현재 길이로 factor 계산
     let currentLength: number | null = null;
     if (selectedRef.kind === 'wall') {
       const wall = activeDraft.walls.find((w) => w.id === selectedRef.id);
@@ -633,112 +633,16 @@ export default function EditorPage() {
     );
     if (!ok) return;
 
-    const scaleXY = (x: number, y: number): [number, number] => [x * factor, y * factor];
-
-    // 2) walls: centerline_geom 좌표 + 표시용 metadata 길이도 같이 × factor.
-    //    (PropertiesPanel 은 metadata.dimension_length.meters / dimension_match.parsed_meters
-    //     를 "도면 길이" 로 보여줘서, 좌표만 갱신하면 패널에 옛 값이 계속 보임.)
-    //    matched_wall_px_len 은 픽셀이라 안 건드림. user_meters 도 사용자 입력 truth 이므로
-    //    같은 factor 로 같이 옮겨 일관성 유지.
-    for (const w of activeDraft.walls) {
-      const g = parseGeometry(w.centerline_geom);
-      if (g?.type !== 'LineString') continue;
-      const scaled = {
-        type: 'LineString' as const,
-        coordinates: g.coordinates.map(([x, y]) => scaleXY(x, y)),
-      };
-      const meta = (w.metadata_json ?? {}) as Record<string, unknown>;
-      const newMeta: Record<string, unknown> = { ...meta };
-      const dimLen = meta.dimension_length as { meters?: number } | undefined;
-      if (dimLen && typeof dimLen.meters === 'number') {
-        newMeta.dimension_length = { ...dimLen, meters: dimLen.meters * factor };
-      }
-      const dimMatch = meta.dimension_match as
-        | { parsed_meters?: number; user_meters?: number | null }
-        | undefined;
-      if (dimMatch) {
-        const nextDim: Record<string, unknown> = { ...dimMatch };
-        if (typeof dimMatch.parsed_meters === 'number') {
-          nextDim.parsed_meters = dimMatch.parsed_meters * factor;
-        }
-        if (typeof dimMatch.user_meters === 'number') {
-          nextDim.user_meters = dimMatch.user_meters * factor;
-        }
-        newMeta.dimension_match = nextDim;
-      }
-      runPatch(
-        'wall',
-        w.id,
-        { centerline_geom: scaled, metadata_json: newMeta },
-        { silent: true, skipHistory: true },
-      );
-    }
-    // 3) openings: line_geom 좌표 + width_m
-    for (const o of activeDraft.openings) {
-      const g = parseGeometry(o.line_geom);
-      const patch: Record<string, unknown> = {};
-      if (g?.type === 'LineString') {
-        patch.line_geom = {
-          type: 'LineString',
-          coordinates: g.coordinates.map(([x, y]) => scaleXY(x, y)),
-        };
-      }
-      const ow = Number(o.width_m);
-      if (Number.isFinite(ow) && ow > 0) {
-        patch.width_m = (ow * factor).toFixed(3);
-      }
-      if (Object.keys(patch).length > 0) {
-        runPatch('opening', o.id, patch, { silent: true, skipHistory: true });
-      }
-    }
-    // 4) rooms: polygon_geom 좌표
-    for (const r of activeDraft.rooms) {
-      const g = parseGeometry(r.polygon_geom);
-      if (g?.type !== 'Polygon') continue;
-      const scaled = {
-        type: 'Polygon' as const,
-        coordinates: g.coordinates.map((ring) => ring.map(([x, y]) => scaleXY(x, y))),
-      };
-      runPatch('room', r.id, { polygon_geom: scaled }, { silent: true, skipHistory: true });
-    }
-    // 5) objects: point_geom + metadata width_m/height_m
-    for (const obj of activeDraft.objects) {
-      const g = parseGeometry(obj.point_geom);
-      const meta = (obj.metadata_json ?? {}) as Record<string, unknown>;
-      const patch: Record<string, unknown> = {};
-      if (g?.type === 'Point') {
-        const [x, y] = g.coordinates;
-        patch.point_geom = { type: 'Point', coordinates: scaleXY(x, y) };
-      }
-      const curW = typeof meta.width_m === 'number' ? meta.width_m : null;
-      const curH = typeof meta.height_m === 'number' ? meta.height_m : null;
-      if (curW != null || curH != null) {
-        patch.metadata_json = {
-          ...meta,
-          ...(curW != null ? { width_m: curW * factor } : {}),
-          ...(curH != null ? { height_m: curH * factor } : {}),
-        };
-      }
-      if (Object.keys(patch).length > 0) {
-        runPatch('object', obj.id, patch, { silent: true, skipHistory: true });
-      }
-    }
-    // 6) SceneDraft summary scale_ratio: 픽셀↔미터 일관성 유지를 위해 같은 factor 곱.
-    const summary = (activeDraft.summary_json ?? {}) as Record<string, unknown>;
-    const oldScale = Number(summary.scale_ratio_m_per_px);
-    const newScale =
-      Number.isFinite(oldScale) && oldScale > 0 ? oldScale * factor : undefined;
-    patchSceneDraft.mutate({
-      id: activeDraft.id,
-      body: {
-        ...(newScale != null ? { scale_ratio_m_per_px: newScale } : {}),
-        scale_source: 'manual_rescale',
+    rescaleSceneDraft.mutate(
+      { id: activeDraft.id, factor, scaleSource: 'manual_rescale' },
+      {
+        onSuccess: () => {
+          toast.info(
+            '도면 전체를 재스케일했습니다',
+            `${factor.toFixed(3)}× — ${currentLength.toFixed(2)} m → ${targetMeters.toFixed(2)} m`,
+          );
+        },
       },
-    });
-
-    toast.info(
-      '도면 전체를 재스케일했습니다',
-      `${factor.toFixed(3)}× — ${currentLength.toFixed(2)} m → ${targetMeters.toFixed(2)} m`,
     );
   };
 

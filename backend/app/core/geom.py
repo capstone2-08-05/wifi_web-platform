@@ -39,3 +39,17 @@ def wkb_to_geojson(geom: Any) -> Optional[dict[str, Any]]:
     if geom is None:
         return None
     return mapping(to_shape(geom))
+
+
+def scale_wkb(geom: Any, factor: float) -> Optional[WKBElement]:
+    """SceneDraft 전체 비례 재스케일용 — geometry 좌표 × factor (origin=0,0).
+
+    좌표 origin 이 도면 top-left 라 (0,0) 기준 곱셈만으로 충분.
+    NULL 통과 (요청 못 받는 컬럼도 안전).
+    """
+    if geom is None:
+        return None
+    from shapely.affinity import scale as shapely_scale
+    shp = to_shape(geom)
+    scaled = shapely_scale(shp, xfact=factor, yfact=factor, origin=(0, 0))
+    return from_shape(scaled, srid=0)

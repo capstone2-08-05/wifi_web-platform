@@ -46,6 +46,21 @@ class SceneDraftUpdateRequest(BaseModel):
     scale_source: str | None = None
 
 
+class SceneDraftRescaleRequest(BaseModel):
+    """POST /scene-drafts/{id}/rescale — 한 트랜잭션 안에서 draft 전체 비례 재스케일.
+
+    프론트에서 entity 별로 PATCH 를 N번 보내던 흐름을 단일 요청으로 통합.
+    백엔드가 walls·openings·rooms·objects geometry 및 dependent metadata 를 일괄 곱하고,
+    summary_json.scale_ratio_m_per_px 도 같이 ×factor.
+
+    factor: 실측값 / 현재 도형 길이. 1.0 이면 no-op. 범위 [0.001, 1000] 강제.
+            DTO 단에서 막아 422 로 일찍 거절 + Swagger 문서에 명시.
+    scale_source: 보통 "manual_rescale" — summary.wall_postprocess.scale_source 에 기록.
+    """
+    factor: float = Field(ge=0.001, le=1000.0)
+    scale_source: str | None = None
+
+
 class AnalyzeFromAssetRequest(BaseModel):
     """POST /assets/{asset_id}/analyze 본문.
 

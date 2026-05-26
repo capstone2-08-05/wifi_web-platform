@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.schemas.pagination import PaginatedResponse
 
 from app.core.errors import AppError, ErrorCode
-from app.core.geom import wkb_to_geojson
+from app.core.geom import scale_wkb, wkb_to_geojson
 from app.core.settings import (
     DEFAULT_DRAFT_ANALYSIS_METHOD,
     DEFAULT_DRAFT_FLOOR_NAME,
@@ -607,6 +607,157 @@ def update_scene_draft_summary(
     scene_draft.summary_json = summary
     db.commit()
     db.refresh(scene_draft)
+    return get_scene_draft(db, scene_draft_id, current_user)
+
+
+def rescale_scene_draft(
+    db: Session,
+    scene_draft_id: str,
+    current_user: User,
+    *,
+    factor: float,
+    scale_source: str | None = None,
+) -> SceneDraftDetailResponse:
+    """한 트랜잭션 안에서 SceneDraft 전체를 비례 재스케일 (한 벽/문 실측 기반).
+
+    프론트에서 entity 별 PATCH 를 N 번 보내던 흐름을 단일 요청으로 통합:
+      - walls.centerline_geom / polygon_geom × factor
+        + metadata.dimension_length.meters / dimension_match.parsed_meters / user_meters × factor
+        (matched_wall_px_len 은 픽셀이라 안 건드림)
+      - openings.line_geom / polygon_geom × factor, width_m × factor
+        (height_m 은 수직 방향이라 안 건드림)
+      - rooms.polygon_geom / centroid_geom × factor
+      - objects.point_geom × factor, metadata.width_m / height_m × factor
+      - summary_json.scale_ratio_m_per_px × factor (있을 때),
+        summary_json.wall_postprocess.scale_source = scale_source (있을 때)
+
+    factor 범위: 0.001 ≤ factor ≤ 1000. 1.0 근처면 no-op 으로 현재 상태만 반환.
+    """
+    # DTO Field 가 이미 [0.001, 1000] 막지만 서비스 단에서도 한 번 더 — 내부 호출 안전망.
+    if not (0.001 <= factor <= 1000.0):
+        raise AppError(
+            ErrorCode.INVALID_REQUEST_BODY,
+            f"factor must be in [0.001, 1000], got {factor}",
+            status_code=400,
+        )
+
+    scene_draft = (
+        db.query(SceneDraft)
+        .join(Project, SceneDraft.project_id == Project.id)
+        .filter(
+            SceneDraft.id == scene_draft_id,
+            Project.owner_user_id == current_user.id,
+        )
+        .options(
+            selectinload(SceneDraft.draft_rooms),
+            selectinload(SceneDraft.draft_walls),
+            selectinload(SceneDraft.draft_openings),
+            selectinload(SceneDraft.draft_objects),
+        )
+        .first()
+    )
+    if scene_draft is None:
+        raise AppError(
+            ErrorCode.SCENE_DRAFT_NOT_FOUND,
+            "Scene draft not found.",
+            status_code=404,
+        )
+
+    if abs(factor - 1.0) < 1e-9:
+        # no-op (입력 = 현재 길이) — summary 만 갱신 (사용자가 source 만 바꾸려는 경우 대비).
+        if scale_source is not None:
+            summary = dict(scene_draft.summary_json or {})
+            wp = dict(summary.get("wall_postprocess") or {})
+            wp["scale_source"] = scale_source
+            summary["wall_postprocess"] = wp
+            scene_draft.summary_json = summary
+            try:
+                db.commit()
+            except SQLAlchemyError as exc:
+                db.rollback()
+                raise AppError(
+                    ErrorCode.SCENE_DRAFT_SAVE_FAILED,
+                    f"Failed to update scene draft summary: {exc}",
+                    500,
+                ) from exc
+        return get_scene_draft(db, scene_draft_id, current_user)
+
+    f = float(factor)
+
+    # 1) walls
+    for w in scene_draft.draft_walls:
+        if w.centerline_geom is not None:
+            w.centerline_geom = scale_wkb(w.centerline_geom, f)
+        if w.polygon_geom is not None:
+            w.polygon_geom = scale_wkb(w.polygon_geom, f)
+        # metadata 의 표시용 길이 — 옛 도면 길이가 패널에 그대로 보이지 않도록 같이 갱신.
+        meta = dict(w.metadata_json or {})
+        dl = meta.get("dimension_length")
+        if isinstance(dl, dict):
+            dl = dict(dl)
+            if isinstance(dl.get("meters"), (int, float)):
+                dl["meters"] = float(dl["meters"]) * f
+            meta["dimension_length"] = dl
+        dm = meta.get("dimension_match")
+        if isinstance(dm, dict):
+            dm = dict(dm)
+            for k in ("parsed_meters", "user_meters"):
+                v = dm.get(k)
+                if isinstance(v, (int, float)):
+                    dm[k] = float(v) * f
+            meta["dimension_match"] = dm
+        w.metadata_json = meta
+
+    # 2) openings — width_m 은 Numeric(Decimal). height_m 은 안 건드림 (수직).
+    from decimal import Decimal
+    for o in scene_draft.draft_openings:
+        if o.line_geom is not None:
+            o.line_geom = scale_wkb(o.line_geom, f)
+        if o.polygon_geom is not None:
+            o.polygon_geom = scale_wkb(o.polygon_geom, f)
+        if o.width_m is not None:
+            o.width_m = (Decimal(o.width_m) * Decimal(str(f))).quantize(Decimal("0.001"))
+
+    # 3) rooms
+    for r in scene_draft.draft_rooms:
+        if r.polygon_geom is not None:
+            r.polygon_geom = scale_wkb(r.polygon_geom, f)
+        if r.centroid_geom is not None:
+            r.centroid_geom = scale_wkb(r.centroid_geom, f)
+
+    # 4) objects — metadata.width_m / height_m 은 floor-plane 박스 크기 → 같이 곱.
+    for ob in scene_draft.draft_objects:
+        if ob.point_geom is not None:
+            ob.point_geom = scale_wkb(ob.point_geom, f)
+        meta = dict(ob.metadata_json or {})
+        for k in ("width_m", "height_m"):
+            v = meta.get(k)
+            if isinstance(v, (int, float)):
+                meta[k] = float(v) * f
+        ob.metadata_json = meta
+
+    # 5) summary scale_ratio + scale_source
+    summary = dict(scene_draft.summary_json or {})
+    old_scale = summary.get("scale_ratio_m_per_px")
+    if isinstance(old_scale, (int, float)) and old_scale > 0:
+        summary["scale_ratio_m_per_px"] = float(old_scale) * f
+    if scale_source is not None:
+        wp = dict(summary.get("wall_postprocess") or {})
+        wp["scale_source"] = scale_source
+        summary["wall_postprocess"] = wp
+    scene_draft.summary_json = summary
+
+    # 1~5 모든 mutation 은 in-memory ORM 상태만 변경 — commit 에서 한 트랜잭션으로 flush.
+    # 실패 시 좌표·metadata·summary 가 부분 적용되지 않게 전체 rollback (save_scene_draft 와 동일 패턴).
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise AppError(
+            ErrorCode.SCENE_DRAFT_SAVE_FAILED,
+            f"Failed to persist scene draft rescale: {exc}",
+            500,
+        ) from exc
     return get_scene_draft(db, scene_draft_id, current_user)
 
 
