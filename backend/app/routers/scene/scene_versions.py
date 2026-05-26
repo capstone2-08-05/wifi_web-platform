@@ -10,15 +10,15 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.opening import OpeningCreate, OpeningResponse
-from app.schemas.room import RoomCreate, RoomResponse
-from app.schemas.scene_object import ObjectCreate, ObjectResponse
-from app.schemas.scene_version import (
+from app.schemas.scene.opening import OpeningCreate, OpeningResponse
+from app.schemas.scene.room import RoomCreate, RoomResponse
+from app.schemas.scene.scene_object import ObjectCreate, ObjectResponse
+from app.schemas.scene.scene_version import (
     PromoteRequest,
     SceneVersionDetailResponse,
     SceneVersionResponse,
 )
-from app.schemas.wall import WallCreate, WallResponse
+from app.schemas.scene.wall import WallCreate, WallResponse
 from app.services.scene import object_service, opening_service, room_service, scene_version_service, wall_service
 
 

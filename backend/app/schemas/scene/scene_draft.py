@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from app.schemas.scene import SceneSchema
+from app.schemas.scene.scene import SceneSchema
 
 from datetime import datetime
 from decimal import Decimal

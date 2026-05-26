@@ -48,7 +48,7 @@ sys.modules.setdefault("geoalchemy2.shape", _gs)
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
-from app.schemas.scene import Opening, Wall  # noqa: E402
+from app.schemas.scene.scene import Opening, Wall  # noqa: E402
 from app.services.floorplan.wall_extraction import wall_extractor  # noqa: E402
 from app.services.floorplan.wall_extraction_helpers import ocr  # noqa: E402
 from app.services.floorplan.wall_extraction_helpers import dimension_matching as dm  # noqa: E402

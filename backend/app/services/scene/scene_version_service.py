@@ -19,15 +19,15 @@ from app.models.scene_draft import SceneDraft
 from app.models.scene_version import SceneVersion
 from app.models.user import User
 from app.models.wall import Wall
-from app.schemas.opening import OpeningResponse
-from app.schemas.room import RoomResponse
-from app.schemas.scene_object import ObjectResponse
-from app.schemas.scene_version import (
+from app.schemas.scene.opening import OpeningResponse
+from app.schemas.scene.room import RoomResponse
+from app.schemas.scene.scene_object import ObjectResponse
+from app.schemas.scene.scene_version import (
     PromoteRequest,
     SceneVersionDetailResponse,
     SceneVersionResponse,
 )
-from app.schemas.wall import WallResponse
+from app.schemas.scene.wall import WallResponse
 
 
 # ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.job import JobResponse
+from app.schemas.inference.job import JobResponse
 from app.schemas.pagination import PaginatedResponse
 from app.services.inference import job_service
 

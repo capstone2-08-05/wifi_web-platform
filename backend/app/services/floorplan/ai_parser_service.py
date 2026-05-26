@@ -2,7 +2,7 @@ import numpy as np
 import cv2
 from typing import List
 # 변경된 경로: ai_output -> ai_response
-from app.schemas.ai_response import MlOutputDTO, DetectionDTO
+from app.schemas.inference.ai_response import MlOutputDTO, DetectionDTO
 
 class AIParserService:
     @staticmethod

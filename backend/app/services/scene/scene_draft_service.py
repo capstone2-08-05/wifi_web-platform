@@ -37,7 +37,7 @@ from app.models import (
     SceneDraft,
     User,
 )
-from app.schemas.scene_draft import (
+from app.schemas.scene.scene_draft import (
     AnalyzeFromAssetResponse,
     DraftObjectResponse,
     DraftOpeningResponse,

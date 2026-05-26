@@ -11,7 +11,7 @@ from app.core.errors import AppError, ErrorCode
 from app.models.job import Job
 from app.models.project import Project
 from app.models.user import User
-from app.schemas.job import JobResponse
+from app.schemas.inference.job import JobResponse
 from app.schemas.pagination import PaginatedResponse
 
 

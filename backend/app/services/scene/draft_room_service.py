@@ -12,7 +12,7 @@ from app.models.draft_room import DraftRoom
 from app.models.project import Project
 from app.models.scene_draft import SceneDraft
 from app.models.user import User
-from app.schemas.draft_room import (
+from app.schemas.scene.draft_room import (
     DraftRoomCreate,
     DraftRoomResponse,
     DraftRoomUpdate,

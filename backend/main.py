@@ -2,11 +2,11 @@ from fastapi import FastAPI, Request
 from app.routers.experiments import router as experiments_router
 from app.routers.health import router as health_router
 from app.routers.upload import router as upload_router
-from app.routers.measurements import router as measurements_router
+from app.routers.rf.measurements import router as measurements_router
 from app.routers.auth import router as auth_router
 from app.routers.projects import router as projects_router
 from app.routers.floors import router as floors_router
-from app.routers.scene_drafts import (
+from app.routers.scene.scene_drafts import (
     router as scene_drafts_router,
     floor_scene_drafts_router,
 )
@@ -16,34 +16,34 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.settings import CORS_ALLOW_ORIGINS
 from app.routers.assets import floor_assets_router, assets_router
-from app.routers.draft_rooms import scene_draft_rooms_router, draft_rooms_router
-from app.routers.draft_walls import scene_draft_walls_router, draft_walls_router
-from app.routers.draft_openings import scene_draft_openings_router, draft_openings_router
-from app.routers.draft_objects import scene_draft_objects_router, draft_objects_router
-from app.routers.scene_versions import (
+from app.routers.scene.draft_rooms import scene_draft_rooms_router, draft_rooms_router
+from app.routers.scene.draft_walls import scene_draft_walls_router, draft_walls_router
+from app.routers.scene.draft_openings import scene_draft_openings_router, draft_openings_router
+from app.routers.scene.draft_objects import scene_draft_objects_router, draft_objects_router
+from app.routers.scene.scene_versions import (
     promote_router,
     scene_versions_router,
     floor_scene_versions_router,
 )
-from app.routers.rooms import router as rooms_router
-from app.routers.walls import router as walls_router
-from app.routers.openings import router as openings_router
-from app.routers.objects import router as objects_router
+from app.routers.scene.rooms import router as rooms_router
+from app.routers.scene.walls import router as walls_router
+from app.routers.scene.openings import router as openings_router
+from app.routers.scene.objects import router as objects_router
 from app.routers.patch_logs import router as patch_logs_router
-from app.routers.materials import router as materials_router
-from app.routers.material_hypotheses import (
+from app.routers.catalog.materials import router as materials_router
+from app.routers.catalog.material_hypotheses import (
     wall_hypotheses_router,
     hypotheses_router,
 )
-from app.routers.rf_runs import router as rf_runs_router, floor_rf_runs_router
-from app.routers.rf_jobs import router as rf_jobs_router
-from app.routers.ap_layouts import (
+from app.routers.rf.rf_runs import router as rf_runs_router, floor_rf_runs_router
+from app.routers.rf.rf_jobs import router as rf_jobs_router
+from app.routers.rf.ap_layouts import (
     router as ap_layouts_router,
     rf_run_router as rf_run_ap_layouts_router,
 )
-from app.routers.calibration_runs import router as calibration_runs_router
-from app.routers.jobs import router as jobs_router
-from app.routers.floorplan_jobs import router as floorplan_jobs_router
+from app.routers.rf.calibration_runs import router as calibration_runs_router
+from app.routers.inference.jobs import router as jobs_router
+from app.routers.inference.floorplan_jobs import router as floorplan_jobs_router
 from app.services.inference.job_poller import job_poller_lifespan
 
 

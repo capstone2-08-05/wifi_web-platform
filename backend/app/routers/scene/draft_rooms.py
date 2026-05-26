@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.draft_room import (
+from app.schemas.scene.draft_room import (
     DraftRoomCreate,
     DraftRoomResponse,
     DraftRoomUpdate,

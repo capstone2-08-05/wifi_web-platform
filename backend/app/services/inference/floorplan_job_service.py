@@ -23,7 +23,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.core.errors import AppError, ErrorCode
 from app.db.session import SessionLocal
 from app.models import Asset, Floor, Job, Project, User
-from app.schemas.scene_draft import (
+from app.schemas.scene.scene_draft import (
     SaveSceneDraftRequestDTO,
     UploadStorageMetadataDTO,
 )

@@ -12,7 +12,7 @@ from app.models.object import SceneObject
 from app.models.project import Project
 from app.models.scene_version import SceneVersion
 from app.models.user import User
-from app.schemas.scene_object import ObjectCreate, ObjectResponse, ObjectUpdate
+from app.schemas.scene.scene_object import ObjectCreate, ObjectResponse, ObjectUpdate
 from app.services._patch_log_helpers import record_patch, snapshot_object
 from app.services.scene.scene_version_service import (
     _get_owned_scene_version,

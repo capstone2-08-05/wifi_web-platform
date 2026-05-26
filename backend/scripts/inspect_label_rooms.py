@@ -30,7 +30,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
-from app.schemas.scene import Wall  # noqa: E402
+from app.schemas.scene.scene import Wall  # noqa: E402
 from app.services.floorplan.wall_extraction import wall_extractor  # noqa: E402
 from app.services.floorplan.wall_extraction_helpers import ocr, dimension_matching as dm  # noqa: E402
 from app.services.floorplan.geometry_service import GeometryService, classify_room_label  # noqa: E402

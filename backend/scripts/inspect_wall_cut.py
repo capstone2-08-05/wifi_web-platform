@@ -42,7 +42,7 @@ _g.shape = _gs  # type: ignore[attr-defined]
 sys.modules.setdefault("geoalchemy2", _g)
 sys.modules.setdefault("geoalchemy2.shape", _gs)
 
-from app.schemas.scene import Opening, Wall  # noqa: E402
+from app.schemas.scene.scene import Opening, Wall  # noqa: E402
 from app.services.floorplan.wall_extraction import wall_extractor  # noqa: E402
 # conversion.py 가 geoalchemy2(DB 전용)를 끌어와 AI venv 에서 막히므로 submodule 직접 import.
 from app.geometry.matching import assign_wall_refs  # noqa: E402

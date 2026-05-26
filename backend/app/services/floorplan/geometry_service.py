@@ -7,7 +7,7 @@ from shapely.geometry import LineString
 from shapely.ops import polygonize_full, unary_union, snap
 
 # 변경된 경로: floorplan -> scene
-from app.schemas.scene import Wall, Room
+from app.schemas.scene.scene import Wall, Room
 
 logger = logging.getLogger(__name__)
 

@@ -2,7 +2,7 @@ import logging
 from typing import List, Any
 from shapely.geometry import Polygon, Point
 # 변경된 경로: floorplan -> scene
-from app.schemas.scene import Room, Topology
+from app.schemas.scene.scene import Room, Topology
 
 logger = logging.getLogger(__name__)
 

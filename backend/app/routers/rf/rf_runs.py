@@ -10,8 +10,8 @@ from app.api.deps import get_current_user, verify_internal_api_key
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.pagination import PaginatedResponse
-from app.schemas.rf_map import RfMapCreate, RfMapResponse
-from app.schemas.rf_run import (
+from app.schemas.rf.rf_map import RfMapCreate, RfMapResponse
+from app.schemas.rf.rf_run import (
     RfRunCreate,
     RfRunCreatedResponse,
     RfRunResponse,

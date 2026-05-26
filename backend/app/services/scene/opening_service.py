@@ -13,7 +13,7 @@ from app.models.project import Project
 from app.models.scene_version import SceneVersion
 from app.models.user import User
 from app.models.wall import Wall
-from app.schemas.opening import OpeningCreate, OpeningResponse, OpeningUpdate
+from app.schemas.scene.opening import OpeningCreate, OpeningResponse, OpeningUpdate
 from app.services._patch_log_helpers import record_patch, snapshot_opening
 from app.services.scene.scene_version_service import (
     _get_owned_scene_version,

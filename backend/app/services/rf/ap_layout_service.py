@@ -12,7 +12,7 @@ from app.models.ap_layout import ApLayout
 from app.models.project import Project
 from app.models.rf_run import RfRun
 from app.models.user import User
-from app.schemas.ap_layout import (
+from app.schemas.rf.ap_layout import (
     ApLayoutCreate,
     ApLayoutResponse,
     ApLayoutUpdate,

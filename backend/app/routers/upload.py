@@ -9,7 +9,7 @@ from app.core.errors import AppError, ErrorCode
 from app.core.settings import UPLOAD_DIR
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.scene_draft import (
+from app.schemas.scene.scene_draft import (
     UploadAndAnalyzeFloorplanResponse,
     UploadStorageMetadataDTO,
 )

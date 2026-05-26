@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.material_hypothesis import MaterialHypothesisResponse
+from app.schemas.catalog.material_hypothesis import MaterialHypothesisResponse
 from app.services.catalog import material_hypothesis_service
 
 
