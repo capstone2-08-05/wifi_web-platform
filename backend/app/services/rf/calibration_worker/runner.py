@@ -346,6 +346,7 @@ async def _run_pipeline(db: Session, cr: CalibrationRun, job: Job) -> None:
     bo_bounds = _build_bo_bounds(space_type)
     prior = get_prior(space_type)
 
+
     # 같은 scene_version 의 이전 완료된 calibration 이 있으면 그 best_params 를
     # baseline 으로 깔고 그 위에서 delta 만 BO 로 탐색 → 누적 refinement.
     # 없으면 prev_params = CalibrationParams() (scale=1, offset=0) = baseline 동일.
@@ -582,6 +583,7 @@ def _build_feedback_message(
             f"({improvement:.1f} dB 개선) 으로 좁혀졌습니다. {base}"
         )
     return base
+
 
 
 def _write_parameter_updates(
