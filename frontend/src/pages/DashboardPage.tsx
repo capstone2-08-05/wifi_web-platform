@@ -94,7 +94,8 @@ export default function DashboardPage() {
     .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
   const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
   const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
-  const localImage = useLocalFloorplanImage(floorId);
+  // sourceAssetId 우선 — 히스토리 버전 클릭 시 그 자산 이미지로 정확히 복원.
+  const localImage = useLocalFloorplanImage({ floorId, sourceAssetId });
   // 절대 http(s) 자산 URL 만 <image> 에서 직접 로드. local 모드 `/assets/{id}/raw`
   // 상대경로는 origin/인증 문제로 못 써서 localStorage 캐시로 fallback.
   const assetUrl = assetUrlQuery.data?.url ?? null;

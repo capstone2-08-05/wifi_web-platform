@@ -7,7 +7,20 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, conlist, field_validator
 
+from typing import Literal
+
 from app.core.enums import normalize_job_status
+from app.core.rf_defaults import (
+    DEFAULT_FREQUENCY_HZ,
+    DEFAULT_MAX_DEPTH,
+    DEFAULT_MEASUREMENT_PLANE_Z_M,
+    DEFAULT_RESOLUTION_M,
+    DEFAULT_SAMPLES_PER_TX,
+    DEFAULT_SEED,
+    DEFAULT_TX_POWER_DBM,
+)
+
+RfBackend = Literal["sagemaker", "local"]
 
 
 # ============================================================
@@ -23,15 +36,20 @@ class AccessPointDTO(BaseModel):
 
 
 class RfSimulationParams(BaseModel):
+    """RF 시뮬 파라미터. 모든 필드 optional — 미지정 시 `app/core/rf_defaults.py` 값 적용.
+
+    프론트엔드는 사용자가 명시적으로 정한 값만 보내면 됨 (예: AP 가 정해진 frequency band).
+    Solver 하이퍼파라미터 (max_depth, samples_per_tx 등) 는 보통 backend 디폴트 그대로.
+    """
     model_config = ConfigDict(extra="forbid")
 
-    frequency_hz: float = Field(..., gt=0)
-    tx_power_dbm: float
-    resolution_m: float = Field(0.5, gt=0)
-    measurement_plane_z_m: float = 1.0
-    max_depth: int = Field(3, ge=0)
-    samples_per_tx: int = Field(100_000, ge=1000)
-    seed: int = 42
+    frequency_hz: float = Field(default=DEFAULT_FREQUENCY_HZ, gt=0)
+    tx_power_dbm: float = DEFAULT_TX_POWER_DBM
+    resolution_m: float = Field(default=DEFAULT_RESOLUTION_M, gt=0)
+    measurement_plane_z_m: float = DEFAULT_MEASUREMENT_PLANE_Z_M
+    max_depth: int = Field(default=DEFAULT_MAX_DEPTH, ge=0)
+    samples_per_tx: int = Field(default=DEFAULT_SAMPLES_PER_TX, ge=1000)
+    seed: int = DEFAULT_SEED
 
 
 class RfRunCreate(BaseModel):
@@ -50,6 +68,8 @@ class RfRunCreate(BaseModel):
     # 해당 scene_version 의 최신 completed CalibrationRun 보정값을 시뮬에 반영할지 (#88).
     # true(기본): 보정 적용 / false: raw 시뮬 (보정 전후 비교용).
     apply_calibration: bool = True
+    # 시뮬 실행 백엔드 선택. sagemaker(기본)=클라우드 async, local=로컬 ai_api 직접 호출.
+    backend: RfBackend = "sagemaker"
     # 옛 호출자 호환 (deprecated)
     request_json: Optional[dict[str, Any]] = None
 

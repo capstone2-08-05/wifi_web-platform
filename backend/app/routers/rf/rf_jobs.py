@@ -112,8 +112,12 @@ def _to_response(job: Job) -> RfJobResponse:
 
 
 def _build_output_uri(s3_uri: str | None) -> RfJobOutputUri | None:
+    """s3://... → presigned URL, http(s)://... → 그대로 url 채움 (local backend)."""
     if not s3_uri:
         return None
+    if s3_uri.startswith("http://") or s3_uri.startswith("https://"):
+        # local backend: ai_api 가 직접 서빙하는 http URL — presigned 불필요
+        return RfJobOutputUri(s3_uri=s3_uri, url=s3_uri)
     try:
         url = sagemaker_rf_inference_service.presigned_url(s3_uri)
     except Exception:

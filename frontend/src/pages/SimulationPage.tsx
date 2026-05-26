@@ -15,6 +15,9 @@ import { useMemo, useEffect } from 'react';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
 import { useCreateRfRun, useFloorRfRuns, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
+import { useFloorAssets, useAssetDownloadUrl } from '@/hooks/use-assets';
+import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
+import { versionToDraftShape } from '@/features/editor/version-as-draft';
 import {
   useApCandidates,
   useApLayouts,
@@ -29,12 +32,16 @@ import {
   type SimulationHistoryItem,
 } from '@/features/simulation/SimulationHistory';
 import {
-  DEFAULT_TX_POWER_DBM,
   SimulationCanvas,
   type PlacedAp,
 } from '@/features/simulation/SimulationCanvas';
+import {
+  HeatmapColorLegend,
+  extractColorScale,
+} from '@/features/simulation/HeatmapColorLegend';
 import { toast } from '@/stores/toast-store';
 import type { ApCandidate, ApLayout } from '@/types/ap-layout';
+import type { RfBackend } from '@/types/rf';
 import { cn } from '@/lib/utils';
 
 type SimulationState = 'idle' | 'running' | 'complete';
@@ -55,21 +62,52 @@ export default function SimulationPage() {
   const [aps, setAps] = useState<PlacedAp[]>([]);
   const [pendingAdd, setPendingAdd] = useState(false);
 
+  // 시뮬 실행 백엔드 토글 — local(기본, 로컬 ai_api) | sagemaker(클라우드).
+  // 로컬에서 분 단위로 결과 보는 게 dev 흐름이라 기본값을 local 로.
+  const [backend, setBackend] = useState<RfBackend>('local');
+
   // 캔버스 배경으로 보여줄 확정 버전 상세 (rooms/walls/openings/objects 포함).
   const versionDetailQuery = useSceneVersion(currentVersion?.id ?? null);
+
+  // 배경 도면 이미지 — 공간편집/대시보드와 동일한 방식.
+  // (a) version 의 source_asset_id 가 있으면 presigned URL, (b) 없으면 floor 의
+  // 가장 최근 floorplan_image asset, (c) 백엔드 자산 없으면 localStorage 캐시.
+  const versionAsDraft = versionDetailQuery.data
+    ? versionToDraftShape(versionDetailQuery.data)
+    : null;
+  const sourceAssetId = versionAsDraft?.source_asset_id ?? null;
+  const floorAssetsQuery = useFloorAssets(floorId, 'floorplan_image');
+  const fallbackAsset = (floorAssetsQuery.data ?? [])
+    .slice()
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+  const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
+  const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
+  // sourceAssetId 우선 — 히스토리 버전 클릭 시 그 자산 이미지로 정확히 복원.
+  const localImage = useLocalFloorplanImage({ floorId, sourceAssetId });
+  const assetUrl = assetUrlQuery.data?.url ?? null;
+  const usableAssetUrl =
+    assetUrl && /^https?:\/\//i.test(assetUrl) ? assetUrl : null;
+  const backgroundImageUrl = usableAssetUrl ?? localImage ?? null;
 
   // 층의 과거 RF Run 목록 (이력 카드 + 자동 복원용).
   const pastRunsQuery = useFloorRfRuns(floorId, { page_size: 20 });
   const pastRuns = useMemo(() => pastRunsQuery.data?.items ?? [], [pastRunsQuery.data]);
 
-  // 활성 run = 사용자가 명시 선택한 것 ?? 최근 succeeded fallback.
-  // → 새로고침/재진입 시에도 가장 최근 succeeded 자동 활성.
+  // 활성 run = 사용자가 명시 선택한 것 ?? 현재 scene_version 으로 돌린 최근 succeeded.
+  // → 새로고침/재진입 시에도 자동 활성, 단 **현재 버전과 일치하는 run** 만 대상.
+  //   공간편집으로 새 버전 만든 직후 시뮬 페이지로 오면 옛 run 은 자동복원 안 됨 → idle.
   // 단 사용자가 명시적으로 "다시 실행" 누른 직후엔 idle 유지.
+  // 명시 선택(pickedRunId) 은 버전 일치 무관 — 사용자가 기록에서 직접 골랐으니 존중.
   const activeRunId = useMemo(() => {
     if (resetCleared) return null;
     if (pickedRunId) return pickedRunId;
-    return pastRuns.find((r) => r.status === 'succeeded')?.id ?? null;
-  }, [resetCleared, pickedRunId, pastRuns]);
+    if (!currentVersion) return null;
+    return (
+      pastRuns.find(
+        (r) => r.status === 'succeeded' && r.scene_version_id === currentVersion.id,
+      )?.id ?? null
+    );
+  }, [resetCleared, pickedRunId, pastRuns, currentVersion]);
   const setActiveRunId = (id: string | null) => {
     setResetCleared(false);
     setPickedRunId(id);
@@ -112,6 +150,15 @@ export default function SimulationPage() {
     return maps.find((m) => m.map_type === 'heatmap') ?? maps[0] ?? null;
   }, [rfMapsQuery.data, isRunForCurrentVersion]);
   const heatmapUrl = heatmapMap?.url ?? null;
+  // 히트맵 색 스케일 (vmin/vmax dBm) — color legend 가 같은 inferno 그라데이션 +
+  // 동일 범위로 표시. local backend / 최신 sagemaker container 가 응답에 채워넣음.
+  const heatmapColorScale = useMemo(
+    () =>
+      extractColorScale(
+        (heatmapMap?.metrics_json as Record<string, unknown> | undefined)?.['color_scale'],
+      ),
+    [heatmapMap],
+  );
   const heatmapBounds = useMemo(
     () => parseHeatmapBounds(heatmapMap?.bounds_json),
     [heatmapMap],
@@ -141,15 +188,11 @@ export default function SimulationPage() {
           y_m: ap.y_m,
           z_m: ap.z_m,
         })),
-        simulation: {
-          frequency_hz: 2.4e9,
-          tx_power_dbm: DEFAULT_TX_POWER_DBM,
-          resolution_m: 0.5,
-          measurement_plane_z_m: 1.0,
-          max_depth: 3,
-          samples_per_tx: 100_000,
-          seed: 42,
-        },
+        // 모든 시뮬 파라미터는 backend `app/core/rf_defaults.py` 의 디폴트 사용 —
+        // 5GHz / 20dBm / max_depth=3 / samples=100k 등. UI 에서 사용자가 직접 정하는
+        // 값이 생기면 여기 채워 보내면 backend 가 우선 적용. 빈 `{}` 는 "new flow" 트리거.
+        simulation: {},
+        backend,
       },
       { onSuccess: (data) => setActiveRunId(data.id) },
     );
@@ -205,6 +248,8 @@ export default function SimulationPage() {
         hasVersion={!!currentVersion}
         isStarting={createRfRun.isPending}
         apsCount={aps.length}
+        backend={backend}
+        onBackendChange={setBackend}
         onStart={handleStart}
         onReset={handleReset}
       />
@@ -231,10 +276,7 @@ export default function SimulationPage() {
                 <CanvasModeBar apsCount={aps.length} />
                 <SimulationCanvas
                   sceneVersion={versionDetailQuery.data}
-                  // 시뮬레이션 페이지는 배경 도면 이미지 안 깔음 — 도형만으로 표시
-                  // (공간편집/대시보드만 배경 이미지). 히트맵과 시각 충돌 방지 + AP 배치
-                  // 시 깔끔한 캔버스 유지.
-                  backgroundImageUrl={null}
+                  backgroundImageUrl={backgroundImageUrl}
                   aps={aps}
                   onAdd={handleAddAp}
                   onMove={handleMoveAp}
@@ -263,7 +305,7 @@ export default function SimulationPage() {
                 )}
                 <SimulationCanvas
                   sceneVersion={versionDetailQuery.data}
-                  backgroundImageUrl={null}
+                  backgroundImageUrl={backgroundImageUrl}
                   aps={aps}
                   onAdd={handleAddAp}
                   onMove={handleMoveAp}
@@ -274,6 +316,11 @@ export default function SimulationPage() {
                   heatmapBounds={heatmapBounds}
                   readOnly
                 />
+                {heatmapUrl && isRunForCurrentVersion && (
+                  <div className="absolute bottom-3 right-3 z-10">
+                    <HeatmapColorLegend scale={heatmapColorScale} />
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -391,6 +438,8 @@ function PageHeader({
   hasVersion,
   isStarting,
   apsCount,
+  backend,
+  onBackendChange,
   onStart,
   onReset,
 }: {
@@ -398,6 +447,8 @@ function PageHeader({
   hasVersion: boolean;
   isStarting: boolean;
   apsCount: number;
+  backend: RfBackend;
+  onBackendChange: (b: RfBackend) => void;
   onStart: () => void;
   onReset: () => void;
 }) {
@@ -410,7 +461,10 @@ function PageHeader({
         </p>
       </div>
 
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex shrink-0 items-center gap-3">
+        {state === 'idle' && (
+          <BackendToggle value={backend} onChange={onBackendChange} disabled={isStarting} />
+        )}
         {state === 'idle' ? (
           <button
             type="button"
@@ -438,6 +492,52 @@ function PageHeader({
         )}
       </div>
     </header>
+  );
+}
+
+/** SageMaker | Local 백엔드 토글 (idle 일 때만 노출). */
+function BackendToggle({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: RfBackend;
+  onChange: (b: RfBackend) => void;
+  disabled?: boolean;
+}) {
+  const options: Array<{ key: RfBackend; label: string; hint: string }> = [
+    { key: 'sagemaker', label: 'Cloud', hint: 'SageMaker async (운영 기본)' },
+    { key: 'local', label: 'Local', hint: '로컬 ai_api 직접 호출 (테스트용)' },
+  ];
+  return (
+    <div
+      role="radiogroup"
+      aria-label="시뮬 실행 백엔드"
+      className="inline-flex items-center gap-0.5 rounded-lg border bg-background p-0.5 shadow-sm"
+    >
+      {options.map((opt) => {
+        const active = value === opt.key;
+        return (
+          <button
+            key={opt.key}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            onClick={() => onChange(opt.key)}
+            disabled={disabled}
+            title={opt.hint}
+            className={cn(
+              'rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+              active
+                ? 'bg-primary text-primary-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

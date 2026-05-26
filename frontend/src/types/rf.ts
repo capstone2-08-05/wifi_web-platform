@@ -9,6 +9,9 @@ export type RfRunStatus =
   | 'failed'
   | string;
 
+/** §13.1 시뮬 실행 백엔드. sagemaker(기본)=클라우드, local=로컬 ai_api(테스트용). */
+export type RfBackend = 'sagemaker' | 'local';
+
 /** §13.1 RF 시뮬레이션 access point. 1~8 개. */
 export interface AccessPointDTO {
   id: string;
@@ -17,10 +20,11 @@ export interface AccessPointDTO {
   z_m: number;
 }
 
-/** §13.1 RF 시뮬레이션 파라미터. SageMaker 입력. */
+/** §13.1 RF 시뮬레이션 파라미터. 모든 필드 optional — 미지정 시 backend 의
+ *  `app/core/rf_defaults.py` 값 적용. 프론트는 UI 에서 사용자가 직접 정한 것만 보낸다. */
 export interface RfSimulationParams {
-  frequency_hz: number;
-  tx_power_dbm: number;
+  frequency_hz?: number;
+  tx_power_dbm?: number;
   resolution_m?: number;
   measurement_plane_z_m?: number;
   max_depth?: number;
@@ -40,6 +44,8 @@ export interface RfRunCreate {
    * 미지정 시 백엔드 default=true (보정 자동 적용). false 면 raw 시뮬 (비교용).
    */
   apply_calibration?: boolean;
+  /** 시뮬 실행 백엔드. 미지정 시 백엔드 default='sagemaker'. */
+  backend?: RfBackend;
   /** Legacy 호환 (deprecated). */
   request_json?: Record<string, unknown>;
 }

@@ -20,6 +20,12 @@ import {
   loadCachedViewBox as loadCachedViewBoxShared,
   viewBoxCacheKey as viewBoxCacheKeyShared,
 } from './viewbox-cache';
+import {
+  deriveImageExtent as deriveImageExtentShared,
+  saveCachedRealWidth,
+  saveCachedScaleRatio,
+  useImageNaturalDimensions,
+} from './floorplan-image-extent';
 import type { EditorTool } from '@/stores/editor-store';
 
 interface Bounds {
@@ -141,129 +147,23 @@ function resolveInitialViewBox(draft: SceneDraft): ViewBox {
 }
 
 /**
- * 이미지를 비동기 로드해서 naturalWidth/Height 반환. URL 바뀌면 null 로 리셋.
- * presigned URL 의 만료/갱신 시에도 동작.
- */
-function useImageNaturalDimensions(
-  url: string | null | undefined,
-): { w: number; h: number } | null {
-  const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
-  useEffect(() => {
-    setDims(null);
-    if (!url) return;
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    let cancelled = false;
-    img.onload = () => {
-      if (!cancelled && img.naturalWidth > 0 && img.naturalHeight > 0) {
-        setDims({ w: img.naturalWidth, h: img.naturalHeight });
-      }
-    };
-    img.onerror = () => {
-      if (!cancelled) setDims(null);
-    };
-    img.src = url;
-    return () => {
-      cancelled = true;
-    };
-  }, [url]);
-  return dims;
-}
-
-// real_width_m 를 localStorage 에 캐싱.
-// 분석 직후 draft 의 summary_json.storage.real_width_m 가 있을 때 저장 →
-// 이후 promote 되어 SceneVersion 으로 바뀌면 (summary_json={}) 이 캐시에서 복원.
-// → 확정 직후에도 imageExtent 가 살아있어 viewBox 가 안 흔들림.
-//
-// 저장은 source_asset_id / floor_id 둘 다 키로 → 백엔드가 둘 중 한쪽만 채워주는
-// 응답이어도 lookup 성공. 같은 floor 에 여러 도면이 올라가는 경우는 실무상 없음.
-const REAL_WIDTH_CACHE_PREFIX = 'asset-real-width-m:v1:';
-
-function loadCachedRealWidth(key: string): number | null {
-  try {
-    const raw = localStorage.getItem(REAL_WIDTH_CACHE_PREFIX + key);
-    if (!raw) return null;
-    const v = Number(raw);
-    return Number.isFinite(v) && v > 0 ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveCachedRealWidth(key: string, w: number): void {
-  try {
-    localStorage.setItem(REAL_WIDTH_CACHE_PREFIX + key, String(w));
-  } catch {
-    // 캐시 실패는 무시 — 기능적 영향 없음 (summary_json 있을 때만 안 흔들림).
-  }
-}
-
-/**
- * draft 의 summary_json (있으면) 또는 캐시에서 real_width_m 조회. 순수함수.
- * 캐시 lookup 은 source_asset_id / floor_id 양쪽 키를 모두 시도 — 백엔드가 draft 와
- * version 에서 source_asset_id 를 다르게 (한쪽 null) 응답하는 경우에도 hit.
- */
-function getRealWidthM(draft: SceneDraft): number | null {
-  const summary = (draft.summary_json ?? {}) as {
-    storage?: { real_width_m?: number };
-  };
-  const fromSummary = summary.storage?.real_width_m;
-  if (typeof fromSummary === 'number' && fromSummary > 0) return fromSummary;
-  if (draft.source_asset_id) {
-    const v = loadCachedRealWidth(draft.source_asset_id);
-    if (v != null) return v;
-  }
-  if (draft.floor_id) {
-    const v = loadCachedRealWidth(draft.floor_id);
-    if (v != null) return v;
-  }
-  return null;
-}
-
-/**
- * summary_json 의 scale_ratio_m_per_px 조회. geom 변환에 쓴 최종 scale (m/px).
- * 벽 좌표가 `pixel × scale_ratio` 로 미터화됐으므로, 같은 scale 로 이미지를 놓으면
- * 벽과 정확히 정렬됨. OCR 추정/기본 fallback 무관하게 백엔드가 항상 기록.
- */
-function getScaleRatioMPerPx(draft: SceneDraft): number | null {
-  const summary = (draft.summary_json ?? {}) as {
-    scale_ratio_m_per_px?: number;
-  };
-  const v = summary.scale_ratio_m_per_px;
-  if (typeof v === 'number' && v > 0) return v;
-  return null;
-}
-
-/**
- * 이미지의 실제 미터 크기 계산. 두 가지 소스:
- *   1. scale_ratio_m_per_px (신규, 권장): imageDims_px × scale → 벽과 동일 좌표계 정렬.
- *   2. real_width_m (legacy): 사용자가 입력하던 도면 가로폭. 옛 draft 호환용.
- * 둘 다 없으면 null → fallback 으로 도형 bounds 기준 viewBox 사용.
+ * draft 의 summary_json 을 floorplan-image-extent util 이 받는 shape 로 변환.
+ * 캐시 lookup 키 (source_asset_id / floor_id) 도 같이 묶어서 1회 함수 호출로 처리.
  */
 function deriveImageExtent(
   draft: SceneDraft,
   imageDims: { w: number; h: number } | null,
 ): { w: number; h: number } | null {
-  if (!imageDims || imageDims.w <= 0) return null;
-
-  // 1순위: scale_ratio (이미지 픽셀 × m/px = 미터 크기). 벽과 정확히 겹침.
-  const scaleRatio = getScaleRatioMPerPx(draft);
-  if (scaleRatio != null) {
-    return {
-      w: imageDims.w * scaleRatio,
-      h: imageDims.h * scaleRatio,
-    };
-  }
-
-  // 2순위 (legacy): real_width_m. 옛 draft / version-as-draft 캐시 호환.
-  const realWidthM = getRealWidthM(draft);
-  if (realWidthM != null) {
-    return {
-      w: realWidthM,
-      h: realWidthM * (imageDims.h / imageDims.w),
-    };
-  }
-  return null;
+  const summary = (draft.summary_json ?? {}) as {
+    storage?: { real_width_m?: number };
+    scale_ratio_m_per_px?: number;
+  };
+  return deriveImageExtentShared(imageDims, {
+    realWidthM: summary.storage?.real_width_m ?? null,
+    scaleRatioMPerPx: summary.scale_ratio_m_per_px ?? null,
+    sourceAssetId: draft.source_asset_id ?? null,
+    floorId: draft.floor_id ?? null,
+  });
 }
 
 const DRAG_THRESHOLD_M = 0.05;
@@ -750,18 +650,27 @@ export function DraftSceneCanvas({
   // 이미지 크기는 유지 → "도면 위에 그렸을 때 그림+도면 크기 저장 + 화면에 안 늘어남".
   // 이미지가 없거나 real_width_m 가 없으면 fallback 으로 캐시된 도형 bounds viewBox.
   const imageDims = useImageNaturalDimensions(backgroundImageUrl ?? null);
-  // 부수효과: draft 의 summary_json 에 real_width_m 이 있으면 캐시에 저장.
-  // 이후 promote → version-as-draft (summary_json={}) 가 되면 이 캐시로 복원 → viewBox 안정.
-  // source_asset_id 와 floor_id 두 키 모두로 저장 — 백엔드 응답이 둘 중 하나만
+  // 부수효과: draft 의 summary_json 에 있는 real_width_m / scale_ratio_m_per_px 를
+  // 캐시에 저장. 이후 promote → version-as-draft (summary_json={}) 가 되어도 캐시로
+  // 복원되어 viewBox + image 배치가 안 흔들림. simulation/measurement 페이지가
+  // 같은 캐시를 읽어 이미지·벽 정렬을 동일하게 유지.
+  // source_asset_id 와 floor_id 두 키 모두로 저장 — 백엔드 응답이 둘 중 한쪽만
   // 채워주는 케이스(promote 전후로 source_asset_id 가 한쪽만 null 등) 에서도 lookup 성공.
   useEffect(() => {
     const summary = (draft.summary_json ?? {}) as {
       storage?: { real_width_m?: number };
+      scale_ratio_m_per_px?: number;
     };
-    const v = summary.storage?.real_width_m;
-    if (typeof v !== 'number' || v <= 0) return;
-    if (draft.source_asset_id) saveCachedRealWidth(draft.source_asset_id, v);
-    if (draft.floor_id) saveCachedRealWidth(draft.floor_id, v);
+    const realW = summary.storage?.real_width_m;
+    if (typeof realW === 'number' && realW > 0) {
+      if (draft.source_asset_id) saveCachedRealWidth(draft.source_asset_id, realW);
+      if (draft.floor_id) saveCachedRealWidth(draft.floor_id, realW);
+    }
+    const scaleR = summary.scale_ratio_m_per_px;
+    if (typeof scaleR === 'number' && scaleR > 0) {
+      if (draft.source_asset_id) saveCachedScaleRatio(draft.source_asset_id, scaleR);
+      if (draft.floor_id) saveCachedScaleRatio(draft.floor_id, scaleR);
+    }
   }, [draft]);
   const imageExtent = useMemo(
     () => deriveImageExtent(draft, imageDims),
