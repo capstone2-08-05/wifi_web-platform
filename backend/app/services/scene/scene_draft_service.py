@@ -633,10 +633,11 @@ def rescale_scene_draft(
 
     factor 범위: 0.001 ≤ factor ≤ 1000. 1.0 근처면 no-op 으로 현재 상태만 반환.
     """
+    # DTO Field 가 이미 [0.001, 1000] 막지만 서비스 단에서도 한 번 더 — 내부 호출 안전망.
     if not (0.001 <= factor <= 1000.0):
         raise AppError(
             ErrorCode.INVALID_REQUEST_BODY,
-            f"factor must be in (0.001, 1000), got {factor}",
+            f"factor must be in [0.001, 1000], got {factor}",
             status_code=400,
         )
 
@@ -670,7 +671,15 @@ def rescale_scene_draft(
             wp["scale_source"] = scale_source
             summary["wall_postprocess"] = wp
             scene_draft.summary_json = summary
-            db.commit()
+            try:
+                db.commit()
+            except SQLAlchemyError as exc:
+                db.rollback()
+                raise AppError(
+                    ErrorCode.SCENE_DRAFT_SAVE_FAILED,
+                    f"Failed to update scene draft summary: {exc}",
+                    500,
+                ) from exc
         return get_scene_draft(db, scene_draft_id, current_user)
 
     f = float(factor)
@@ -738,7 +747,17 @@ def rescale_scene_draft(
         summary["wall_postprocess"] = wp
     scene_draft.summary_json = summary
 
-    db.commit()
+    # 1~5 모든 mutation 은 in-memory ORM 상태만 변경 — commit 에서 한 트랜잭션으로 flush.
+    # 실패 시 좌표·metadata·summary 가 부분 적용되지 않게 전체 rollback (save_scene_draft 와 동일 패턴).
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise AppError(
+            ErrorCode.SCENE_DRAFT_SAVE_FAILED,
+            f"Failed to persist scene draft rescale: {exc}",
+            500,
+        ) from exc
     return get_scene_draft(db, scene_draft_id, current_user)
 
 
