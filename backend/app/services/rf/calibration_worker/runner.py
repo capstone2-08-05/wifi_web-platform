@@ -249,16 +249,44 @@ async def _run_pipeline(db: Session, cr: CalibrationRun, job: Job) -> None:
         return
 
     walls = _load_walls(db, cr.scene_version_id)
+
+    # 같은 scene_version 의 이전 완료된 calibration 이 있으면 그 best_params 를
+    # baseline 으로 깔고 그 위에서 delta 만 BO 로 탐색 → 누적 refinement.
+    # 없으면 prev_params = CalibrationParams() (scale=1, offset=0) = baseline 동일.
+    prev_run = db.execute(
+        select(CalibrationRun)
+        .where(
+            CalibrationRun.scene_version_id == cr.scene_version_id,
+            CalibrationRun.status == "completed",
+            CalibrationRun.id != cr.id,
+        )
+        .order_by(CalibrationRun.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    prev_params = CalibrationParams()
+    if prev_run and prev_run.metrics_json:
+        prev_dict = (prev_run.metrics_json or {}).get("best_params") or {}
+        if prev_dict:
+            prev_params = _params_from_dict(prev_dict)
+
+    has_prev = prev_run is not None
     logger.info(
-        "Calibration %s: measurements=%d aps=%d walls=%d → BO start (init=%d, iter=%d)",
+        "Calibration %s: measurements=%d aps=%d walls=%d → BO start (init=%d, iter=%d) %s",
         cr.id, len(measurements), len(aps), len(walls), _BO_N_INITIAL, _BO_N_ITER,
+        f"warm-start from prev={prev_run.id}" if has_prev else "cold-start",
     )
 
-    # 2) BO objective (블로킹) → thread 로
+    # 2) BO objective — delta(x) 를 찾되 path_loss 에는 composed=prev×delta 를 넣음.
+    # 같은 데이터/시드로 매번 같은 결과 나오던 문제 해결 + 누적 효과 정확.
     def _objective(x: np.ndarray) -> float:
-        params = _vector_to_params(x)
-        m = compute_error_metrics(aps, walls, measurements, params)
+        delta = _vector_to_params(x)
+        composed = _compose_params(prev_params, delta)
+        m = compute_error_metrics(aps, walls, measurements, composed)
         return m.rmse_dbm
+
+    # 매 run 마다 다른 seed → 같은 data 라도 BO 가 다른 영역 탐색.
+    # cr.id 는 UUID 라 hash 안정적. 결정적 (재현 가능) 이면서 run 마다 다름.
+    bo_seed = abs(hash(cr.id)) % (2**31 - 1) or 42
 
     bo_result = await run_in_threadpool(
         bo_optimizer.minimize,
@@ -266,12 +294,17 @@ async def _run_pipeline(db: Session, cr: CalibrationRun, job: Job) -> None:
         _BO_BOUNDS,
         n_initial=_BO_N_INITIAL,
         n_iter=_BO_N_ITER,
+        seed=bo_seed,
     )
 
-    best_params = _vector_to_params(bo_result.best_x)
+    delta_params = _vector_to_params(bo_result.best_x)
+    best_params = _compose_params(prev_params, delta_params)
     best_metrics = compute_error_metrics(aps, walls, measurements, best_params)
     baseline_metrics = compute_error_metrics(
         aps, walls, measurements, CalibrationParams()  # 모든 scale=1, offset=0
+    )
+    prev_metrics = (
+        compute_error_metrics(aps, walls, measurements, prev_params) if has_prev else None
     )
 
     metrics: dict[str, Any] = {
@@ -284,7 +317,11 @@ async def _run_pipeline(db: Session, cr: CalibrationRun, job: Job) -> None:
         "baseline_mae_dbm": round(baseline_metrics.mae_dbm, 3),
         "bo_n_initial": bo_result.n_initial,
         "bo_n_iter": bo_result.n_iter,
+        "bo_seed": bo_seed,
         "best_params": _params_to_dict(best_params),
+        "previous_calibration_run_id": str(prev_run.id) if has_prev else None,
+        "previous_rmse_dbm": round(prev_metrics.rmse_dbm, 3) if prev_metrics else None,
+        "delta_from_previous": _params_to_dict(delta_params) if has_prev else None,
     }
 
     # 3) ai_api closed-loop (옵션)
@@ -345,6 +382,47 @@ def _params_to_dict(p: CalibrationParams) -> dict[str, Any]:
             k: round(v, 3) for k, v in p.material_attenuation_scales.items()
         },
     }
+
+
+def _params_from_dict(d: dict[str, Any]) -> CalibrationParams:
+    """`_params_to_dict` 의 역. 누락 필드는 baseline (1.0 / 0.0 / 기본 두께) 으로 채움."""
+    defaults = CalibrationParams()
+    return CalibrationParams(
+        tx_power_offset_db=float(d.get("tx_power_offset_db", defaults.tx_power_offset_db)),
+        floor_thickness_m=float(d.get("floor_thickness_m", defaults.floor_thickness_m)),
+        furniture_default_thickness_m=float(
+            d.get("furniture_default_thickness_m", defaults.furniture_default_thickness_m)
+        ),
+        material_attenuation_scales={
+            str(k): float(v)
+            for k, v in (d.get("material_attenuation_scales") or {}).items()
+        },
+    )
+
+
+def _compose_params(prev: CalibrationParams, delta: CalibrationParams) -> CalibrationParams:
+    """누적 보정 — composed.scale[m] = prev.scale × delta.scale, offset = prev + delta.
+
+    `apply_to_scene_and_sim` 가 wall.thickness *= scale 하는 구조라
+    scale 은 곱셈, tx_offset 은 덧셈이 시뮬에 정확히 누적 반영됨.
+    floor/furniture thickness 는 절대값이라 delta 값으로 대체 (BO 가 매번 최적값 탐색).
+    """
+    materials = (
+        set(prev.material_attenuation_scales.keys())
+        | set(delta.material_attenuation_scales.keys())
+        | set(CALIBRATABLE_MATERIALS)
+    )
+    composed_scales = {
+        m: prev.material_attenuation_scales.get(m, 1.0)
+           * delta.material_attenuation_scales.get(m, 1.0)
+        for m in materials
+    }
+    return CalibrationParams(
+        tx_power_offset_db=prev.tx_power_offset_db + delta.tx_power_offset_db,
+        floor_thickness_m=delta.floor_thickness_m,
+        furniture_default_thickness_m=delta.furniture_default_thickness_m,
+        material_attenuation_scales=composed_scales,
+    )
 
 
 def _write_parameter_updates(
