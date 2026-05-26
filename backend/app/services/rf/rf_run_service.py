@@ -176,8 +176,17 @@ def list_by_floor(
     base = select(RfRun).where(RfRun.floor_id == str(floor_id))
     count_stmt = select(func.count(RfRun.id)).where(RfRun.floor_id == str(floor_id))
     if status is not None:
-        base = base.where(RfRun.status == status)
-        count_stmt = count_stmt.where(RfRun.status == status)
+        # 프론트는 API 표기(succeeded/pending)로 필터하는데 DB 는 내부값(done/completed/queued)
+        # 으로 저장 → 역매핑해서 IN 필터. (응답 normalize 의 역방향)
+        _api_to_internal: dict[str, list[str]] = {
+            "succeeded": ["done", "completed", "succeeded"],
+            "pending": ["queued", "pending"],
+            "running": ["running"],
+            "failed": ["failed"],
+        }
+        internal_statuses = _api_to_internal.get(status, [status])
+        base = base.where(RfRun.status.in_(internal_statuses))
+        count_stmt = count_stmt.where(RfRun.status.in_(internal_statuses))
 
     total = db.execute(count_stmt).scalar() or 0
     rows = (
