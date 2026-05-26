@@ -12,7 +12,7 @@ from app.models.project import Project
 from app.models.scene_version import SceneVersion
 from app.models.user import User
 from app.models.wall import Wall
-from app.schemas.material_hypothesis import MaterialHypothesisResponse
+from app.schemas.catalog.material_hypothesis import MaterialHypothesisResponse
 
 
 def _get_owned_wall(db: Session, wall_id: UUID, user: User) -> Wall:

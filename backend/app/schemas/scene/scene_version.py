@@ -7,10 +7,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.opening import OpeningResponse
-from app.schemas.room import RoomResponse
-from app.schemas.scene_object import ObjectResponse
-from app.schemas.wall import WallResponse
+from app.schemas.scene.opening import OpeningResponse
+from app.schemas.scene.room import RoomResponse
+from app.schemas.scene.scene_object import ObjectResponse
+from app.schemas.scene.wall import WallResponse
 
 
 class PromoteRequest(BaseModel):

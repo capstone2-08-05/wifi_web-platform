@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models import Job, User
-from app.schemas.rf_run import (
+from app.schemas.rf.rf_run import (
     RfJobError,
     RfJobOutputUri,
     RfJobResponse,

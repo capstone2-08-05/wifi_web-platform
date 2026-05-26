@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, verify_internal_api_key
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.calibration_run import (
+from app.schemas.rf.calibration_run import (
     CalibrationRunCreate,
     CalibrationRunResponse,
     CalibrationRunUpdate,

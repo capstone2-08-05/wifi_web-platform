@@ -16,8 +16,8 @@ from app.models.rf_run import RfRun
 from app.models.scene_version import SceneVersion
 from app.models.user import User
 from app.schemas.pagination import PaginatedResponse
-from app.schemas.rf_map import RfMapCreate, RfMapResponse
-from app.schemas.rf_run import (
+from app.schemas.rf.rf_map import RfMapCreate, RfMapResponse
+from app.schemas.rf.rf_run import (
     RfRunCreate,
     RfRunCreatedResponse,
     RfRunResponse,

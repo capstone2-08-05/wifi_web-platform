@@ -24,7 +24,7 @@ from app.models.measurement_session import MeasurementSession
 from app.models.project import Project
 from app.models.scene_version import SceneVersion
 from app.models.user import User
-from app.schemas.measurement import (
+from app.schemas.rf.measurement import (
     CoordinateSystemDTO,
     DetectedApResponseDTO,
     FloorBoundsDTO,
@@ -582,7 +582,7 @@ def estimate_session_coverage(
     6. presigned URL 응답
     """
     # lazy import — 무거운 sklearn / matplotlib 을 모듈 import 단에서 끌어오지 않음
-    from app.schemas.measurement import (
+    from app.schemas.rf.measurement import (
         EstimatedCoverageResponseDTO,
         EstimatedRssiRangeDTO,
     )

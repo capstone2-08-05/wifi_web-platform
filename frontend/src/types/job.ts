@@ -1,6 +1,6 @@
 import type { ISODateString, UUID } from './common';
 
-// 백엔드 §15 Job DTO (app/schemas/job.py 의 JobResponse 와 매칭)
+// 백엔드 §15 Job DTO (app/schemas/inference/job.py 의 JobResponse 와 매칭)
 // 도면 분석은 비동기로 큐잉되어 이 모델로 상태 추적됨.
 
 export type JobStatus =

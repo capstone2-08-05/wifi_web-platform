@@ -4,7 +4,7 @@ from pathlib import Path
 backend_dir = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(backend_dir))
 
-from app.schemas.ai_output import MlOutputDTO
+from app.schemas.inference.ai_response import MlOutputDTO
 from app.services.floorplan.fusion_service import fusion_service
 from app.services.floorplan.geometry_service import GeometryService
 

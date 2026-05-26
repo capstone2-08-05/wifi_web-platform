@@ -1,6 +1,6 @@
 import type { ISODateString, UUID } from './common';
 
-// 백엔드 §12 Material DTO 매핑 (app/schemas/material.py)
+// 백엔드 §12 Material DTO 매핑 (app/schemas/catalog/material.py)
 
 export interface Material {
   id: UUID;

@@ -12,7 +12,7 @@ from app.models.draft_object import DraftObject
 from app.models.project import Project
 from app.models.scene_draft import SceneDraft
 from app.models.user import User
-from app.schemas.draft_object import (
+from app.schemas.scene.draft_object import (
     DraftObjectCreate,
     DraftObjectResponse,
     DraftObjectUpdate,

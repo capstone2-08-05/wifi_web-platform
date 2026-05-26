@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.errors import AppError, ErrorCode
 from app.models.material import Material
 from app.models.material_rf_profile import MaterialRfProfile
-from app.schemas.material import MaterialResponse, MaterialRfProfileResponse
+from app.schemas.catalog.material import MaterialResponse, MaterialRfProfileResponse
 
 
 def list_materials(

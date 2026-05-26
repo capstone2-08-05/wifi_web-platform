@@ -26,13 +26,13 @@ from app.geometry import (
     synthesize_opening_wall_segments,
     synthesize_partition_walls_from_ticks,
 )
-from app.schemas.ai_response import (
+from app.schemas.inference.ai_response import (
     DetectionDTO,
     MetaDTO,
     MlOutputDTO,
     WallSegmentationDTO,
 )
-from app.schemas.scene import Opening, Room, SceneSchema, Wall
+from app.schemas.scene.scene import Opening, Room, SceneSchema, Wall
 from app.services.floorplan.geometry_service import GeometryService
 from app.services.inference.sagemaker_inference_service import InferenceResult
 from app.services.floorplan.topology_service import TopologyService

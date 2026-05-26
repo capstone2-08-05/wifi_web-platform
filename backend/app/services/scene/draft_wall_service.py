@@ -12,7 +12,7 @@ from app.models.draft_wall import DraftWall
 from app.models.project import Project
 from app.models.scene_draft import SceneDraft
 from app.models.user import User
-from app.schemas.draft_wall import (
+from app.schemas.scene.draft_wall import (
     DraftWallCreate,
     DraftWallResponse,
     DraftWallUpdate,

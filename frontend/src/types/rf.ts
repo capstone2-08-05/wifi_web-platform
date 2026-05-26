@@ -1,6 +1,6 @@
 import type { ISODateString, UUID } from './common';
 
-// 백엔드 §13 RF Run / RF Map DTO 와 매칭 (app/schemas/rf_run.py, rf_map.py).
+// 백엔드 §13 RF Run / RF Map DTO 와 매칭 (app/schemas/rf/rf_run.py, app/schemas/rf/rf_map.py).
 
 export type RfRunStatus =
   | 'pending'

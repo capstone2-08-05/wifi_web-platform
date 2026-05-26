@@ -12,7 +12,7 @@ from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.pagination import PaginatedResponse
-from app.schemas.scene_draft import (
+from app.schemas.scene.scene_draft import (
     SceneDraftCreateRequest,
     SceneDraftDetailResponse,
     SceneDraftRescaleRequest,

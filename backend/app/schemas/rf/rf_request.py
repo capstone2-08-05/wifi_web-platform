@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pydantic import BaseModel, Field
 from typing import List
-from app.schemas.scene import SceneSchema 
+from app.schemas.scene.scene import SceneSchema 
 
 class ConfigDTO(BaseModel):
     frequency_ghz: float = 2.4  # 기본값 2.4GHz

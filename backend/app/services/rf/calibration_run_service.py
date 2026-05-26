@@ -17,7 +17,7 @@ from app.models.project import Project
 from app.models.rf_run import RfRun
 from app.models.scene_version import SceneVersion
 from app.models.user import User
-from app.schemas.calibration_run import (
+from app.schemas.rf.calibration_run import (
     CalibrationRunCreate,
     CalibrationRunResponse,
     CalibrationRunUpdate,
