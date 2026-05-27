@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.enums import normalize_job_status
+
+# SpaceType 의 string 값들을 Literal 로 받아 Pydantic 검증 — runner 의 resolve_space_type
+# 이 unknown fallback 처리하므로 빠져도 안전하지만 typo 는 여기서 차단.
+SpaceTypeLiteral = Literal[
+    "cafe", "study_room", "classroom", "office", "residential", "unknown"
+]
 
 
 class CalibrationRunCreate(BaseModel):
@@ -17,6 +23,8 @@ class CalibrationRunCreate(BaseModel):
     session_id: UUID
     rf_run_id: UUID
     version_id: UUID
+    # 공간 유형 (soft prior). 미지정 시 backend runner 가 "unknown" 으로 fallback.
+    space_type: Optional[SpaceTypeLiteral] = None
 
 
 class CalibrationRunResponse(BaseModel):

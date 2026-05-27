@@ -93,8 +93,16 @@ class Measurement:
 
 @dataclass
 class CalibrationParams:
-    """BO 변수 → 모델 파라미터."""
+    """BO 변수 → 모델 파라미터.
+
+    path_loss_exp: log-distance 모델의 n. 공간 유형별 prior 로 초기값/bounds 가
+    달라지지만 absolute value 로 저장 (delta 가 아님 — 해석 가능성 ↑).
+    PL0_DB 는 BO 변수로 안 둠 — tx_power_offset_db 와 식별성이 겹쳐 잡음.
+    """
     tx_power_offset_db: float = 0.0
+    # log-distance exponent. 디폴트는 generic indoor (모듈 상수 PATH_LOSS_EXP).
+    # SPACE_PRIORS 가 None 이거나 미지정 시 fallback.
+    path_loss_exp: float = PATH_LOSS_EXP
     floor_thickness_m: float = 0.10
     furniture_default_thickness_m: float = 0.05
     # material_label → scale (없으면 1.0)
@@ -162,7 +170,9 @@ def predict_rssi(
     d = math.hypot(dx, dy)
     d = max(d, REF_DISTANCE_M)
 
-    fspl_term = PL0_DB + 10.0 * PATH_LOSS_EXP * math.log10(d / REF_DISTANCE_M)
+    # path-loss exponent: params 가 우선 (공간 유형별 BO 결과). 0 이하면 모듈 상수로 폴백.
+    n = params.path_loss_exp if params.path_loss_exp > 0 else PATH_LOSS_EXP
+    fspl_term = PL0_DB + 10.0 * n * math.log10(d / REF_DISTANCE_M)
     wall_term = _wall_attenuation_db(ap, point, walls, params)
     rssi = ap.tx_power_dbm + params.tx_power_offset_db - fspl_term - wall_term
     return max(rssi, RSSI_FLOOR_DBM)

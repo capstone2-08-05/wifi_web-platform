@@ -43,6 +43,12 @@ from app.services.rf.calibration_worker.path_loss import (
     WallSegment,
     compute_error_metrics,
 )
+from app.services.rf.calibration_worker.space_priors import (
+    SpaceType,
+    get_feedback_message,
+    get_prior,
+    resolve_space_type,
+)
 from app.services.scene.scene_version_export import export_scene_version_to_scene_json
 from app.core.geom import wkb_to_geojson
 
@@ -53,19 +59,17 @@ JOB_TYPE_CALIBRATION = "calibration"
 
 
 # ────────────────────────────────────────────────────────────────────
-# BO 변수 공간 — 순서 = (5개 material scale, tx_offset, floor_th, furn_th)
+# BO 변수 공간 — 순서 = (path_loss_exp, 5개 material scale, tx_offset, floor_th, furn_th)
+# bounds 는 space_type prior 기반으로 build 시점에 동적 생성.
 # ────────────────────────────────────────────────────────────────────
-_BO_BOUNDS: list[tuple[float, float]] = (
-    [(0.3, 3.0)] * len(CALIBRATABLE_MATERIALS)  # 5 dims
-    + [(-10.0, 10.0)]   # tx_power_offset_db
-    + [(0.02, 0.20)]    # floor_thickness_m
-    + [(0.02, 0.30)]    # furniture_default_thickness_m
-)
 _PARAM_NAMES: list[str] = (
-    [f"materials.{m}.attenuation_scale" for m in CALIBRATABLE_MATERIALS]
-    + ["physical.tx_power_offset_db",
-       "scene_defaults.floor_thickness_m",
-       "scene_defaults.furniture_default_thickness_m"]
+    ["physical.path_loss_exp"]
+    + [f"materials.{m}.attenuation_scale" for m in CALIBRATABLE_MATERIALS]
+    + [
+        "physical.tx_power_offset_db",
+        "scene_defaults.floor_thickness_m",
+        "scene_defaults.furniture_default_thickness_m",
+    ]
 )
 
 # 기본 evaluation budget (env override 가능)
@@ -73,13 +77,34 @@ _BO_N_INITIAL = int(os.getenv("CALIBRATION_BO_N_INITIAL", "12"))
 _BO_N_ITER = int(os.getenv("CALIBRATION_BO_N_ITER", "38"))
 
 
+def _build_bo_bounds(space_type: SpaceType) -> list[tuple[float, float]]:
+    """공간 유형 prior 기반 BO bounds — _PARAM_NAMES 순서와 1:1.
+
+    순서: [path_loss_exp, *material_scales, tx_offset, floor_th, furn_th]
+    """
+    prior = get_prior(space_type)
+    return (
+        [prior["path_loss_exp_bounds"]]
+        + [prior["material_scale_bounds"][m] for m in CALIBRATABLE_MATERIALS]
+        + [
+            (-10.0, 10.0),   # tx_power_offset_db
+            (0.02, 0.20),    # floor_thickness_m
+            (0.02, 0.30),    # furniture_default_thickness_m
+        ]
+    )
+
+
 def _vector_to_params(x: np.ndarray) -> CalibrationParams:
+    """BO 후보 벡터 → CalibrationParams. _PARAM_NAMES 순서 따름."""
     n_mat = len(CALIBRATABLE_MATERIALS)
-    scales = {m: float(x[i]) for i, m in enumerate(CALIBRATABLE_MATERIALS)}
+    path_loss_exp = float(x[0])
+    scales = {m: float(x[1 + i]) for i, m in enumerate(CALIBRATABLE_MATERIALS)}
+    base = 1 + n_mat
     return CalibrationParams(
-        tx_power_offset_db=float(x[n_mat]),
-        floor_thickness_m=float(x[n_mat + 1]),
-        furniture_default_thickness_m=float(x[n_mat + 2]),
+        path_loss_exp=path_loss_exp,
+        tx_power_offset_db=float(x[base]),
+        floor_thickness_m=float(x[base + 1]),
+        furniture_default_thickness_m=float(x[base + 2]),
         material_attenuation_scales=scales,
     )
 
@@ -235,6 +260,20 @@ async def _run_pipeline(db: Session, cr: CalibrationRun, job: Job) -> None:
     if not measurements:
         _finalize_failure(db, cr, job, "No measurement points with RSSI found.")
         return
+    # BO 가 9차원 파라미터를 fit 하므로 최소 측정점 가드 — 너무 적으면 overfit 되어
+    # next 시뮬에 극단적 파라미터 적용 (벽이 무한히 두꺼워지는 등). 통계적 신뢰는 ~10점+.
+    # 8점 미만이면 거부; 8~9점이면 진행하되 metrics 에 경고 플래그.
+    _MIN_MEASUREMENTS_HARD = 8
+    if len(measurements) < _MIN_MEASUREMENTS_HARD:
+        _finalize_failure(
+            db, cr, job,
+            f"Not enough measurement points for reliable calibration "
+            f"(got {len(measurements)}, need at least {_MIN_MEASUREMENTS_HARD}). "
+            f"Walk around the floor and measure more points before calibrating — "
+            f"BO 가 9차원 파라미터를 fit 하므로 적은 점은 overfit 되어 다음 시뮬 결과를 "
+            f"극단적으로 왜곡합니다.",
+        )
+        return
 
     rf_run = db.execute(
         select(RfRun).where(RfRun.id == cr.rf_run_id)
@@ -249,6 +288,12 @@ async def _run_pipeline(db: Session, cr: CalibrationRun, job: Job) -> None:
         return
 
     walls = _load_walls(db, cr.scene_version_id)
+
+    # space_type — Job.input_json 에서 추출. 미지정/오타/None 은 UNKNOWN.
+    # SPACE_PRIORS lookup → BO bounds 동적 구성.
+    space_type = resolve_space_type((job.input_json or {}).get("space_type"))
+    bo_bounds = _build_bo_bounds(space_type)
+    prior = get_prior(space_type)
 
     # 같은 scene_version 의 이전 완료된 calibration 이 있으면 그 best_params 를
     # baseline 으로 깔고 그 위에서 delta 만 BO 로 탐색 → 누적 refinement.
@@ -271,8 +316,9 @@ async def _run_pipeline(db: Session, cr: CalibrationRun, job: Job) -> None:
 
     has_prev = prev_run is not None
     logger.info(
-        "Calibration %s: measurements=%d aps=%d walls=%d → BO start (init=%d, iter=%d) %s",
-        cr.id, len(measurements), len(aps), len(walls), _BO_N_INITIAL, _BO_N_ITER,
+        "Calibration %s: space_type=%s measurements=%d aps=%d walls=%d → BO start (init=%d, iter=%d) %s",
+        cr.id, space_type.value, len(measurements), len(aps), len(walls),
+        _BO_N_INITIAL, _BO_N_ITER,
         f"warm-start from prev={prev_run.id}" if has_prev else "cold-start",
     )
 
@@ -291,7 +337,7 @@ async def _run_pipeline(db: Session, cr: CalibrationRun, job: Job) -> None:
     bo_result = await run_in_threadpool(
         bo_optimizer.minimize,
         _objective,
-        _BO_BOUNDS,
+        bo_bounds,
         n_initial=_BO_N_INITIAL,
         n_iter=_BO_N_ITER,
         seed=bo_seed,
@@ -319,6 +365,18 @@ async def _run_pipeline(db: Session, cr: CalibrationRun, job: Job) -> None:
         "bo_n_iter": bo_result.n_iter,
         "bo_seed": bo_seed,
         "best_params": _params_to_dict(best_params),
+        # 공간 유형 prior 적용 정보 — UI 가 결과 해석 및 사용자 피드백에 사용.
+        "space_type": space_type.value,
+        "applied_prior": {
+            "path_loss_exp_init": prior["path_loss_exp_init"],
+            "path_loss_exp_bounds": list(prior["path_loss_exp_bounds"]),
+            "description": prior["description"],
+        },
+        "feedback_message": _build_feedback_message(
+            space_type=space_type,
+            baseline_rmse=baseline_metrics.rmse_dbm,
+            calibrated_rmse=best_metrics.rmse_dbm,
+        ),
         "previous_calibration_run_id": str(prev_run.id) if has_prev else None,
         "previous_rmse_dbm": round(prev_metrics.rmse_dbm, 3) if prev_metrics else None,
         "delta_from_previous": _params_to_dict(delta_params) if has_prev else None,
@@ -375,6 +433,7 @@ async def _run_pipeline(db: Session, cr: CalibrationRun, job: Job) -> None:
 # ────────────────────────────────────────────────────────────────────
 def _params_to_dict(p: CalibrationParams) -> dict[str, Any]:
     return {
+        "path_loss_exp": round(p.path_loss_exp, 3),
         "tx_power_offset_db": round(p.tx_power_offset_db, 3),
         "floor_thickness_m": round(p.floor_thickness_m, 4),
         "furniture_default_thickness_m": round(p.furniture_default_thickness_m, 4),
@@ -385,9 +444,13 @@ def _params_to_dict(p: CalibrationParams) -> dict[str, Any]:
 
 
 def _params_from_dict(d: dict[str, Any]) -> CalibrationParams:
-    """`_params_to_dict` 의 역. 누락 필드는 baseline (1.0 / 0.0 / 기본 두께) 으로 채움."""
+    """`_params_to_dict` 의 역. 누락 필드는 baseline (1.0 / 0.0 / 기본 두께) 으로 채움.
+
+    옛 calibration record 에 path_loss_exp 없으면 CalibrationParams 디폴트(=PATH_LOSS_EXP) 사용.
+    """
     defaults = CalibrationParams()
     return CalibrationParams(
+        path_loss_exp=float(d.get("path_loss_exp", defaults.path_loss_exp)),
         tx_power_offset_db=float(d.get("tx_power_offset_db", defaults.tx_power_offset_db)),
         floor_thickness_m=float(d.get("floor_thickness_m", defaults.floor_thickness_m)),
         furniture_default_thickness_m=float(
@@ -401,11 +464,13 @@ def _params_from_dict(d: dict[str, Any]) -> CalibrationParams:
 
 
 def _compose_params(prev: CalibrationParams, delta: CalibrationParams) -> CalibrationParams:
-    """누적 보정 — composed.scale[m] = prev.scale × delta.scale, offset = prev + delta.
+    """누적 보정.
 
-    `apply_to_scene_and_sim` 가 wall.thickness *= scale 하는 구조라
-    scale 은 곱셈, tx_offset 은 덧셈이 시뮬에 정확히 누적 반영됨.
-    floor/furniture thickness 는 절대값이라 delta 값으로 대체 (BO 가 매번 최적값 탐색).
+    - material_scales: prev × delta (`apply_to_scene_and_sim` 가 wall.thickness *= scale)
+    - tx_offset: prev + delta (덧셈)
+    - floor/furniture thickness: delta 값 그대로 (절대값 overwrite)
+    - **path_loss_exp: delta 값 그대로 (absolute value overwrite)** — 해석 가능성 우선
+      (issue 권장: delta 보다 absolute 가 안전. BO 가 매번 best n 을 직접 탐색).
     """
     materials = (
         set(prev.material_attenuation_scales.keys())
@@ -418,11 +483,33 @@ def _compose_params(prev: CalibrationParams, delta: CalibrationParams) -> Calibr
         for m in materials
     }
     return CalibrationParams(
+        path_loss_exp=delta.path_loss_exp,
         tx_power_offset_db=prev.tx_power_offset_db + delta.tx_power_offset_db,
         floor_thickness_m=delta.floor_thickness_m,
         furniture_default_thickness_m=delta.furniture_default_thickness_m,
         material_attenuation_scales=composed_scales,
     )
+
+
+def _build_feedback_message(
+    *,
+    space_type: SpaceType,
+    baseline_rmse: float,
+    calibrated_rmse: float,
+) -> str:
+    """공간 유형별 메인 문구 + 개선폭 수치를 합쳐 반환. UI 가 그대로 표시.
+
+    개선폭 (baseline → calibrated) 이 명확히 양수면 prefix 로 수치를 붙임.
+    그렇지 않으면 공간 유형 문구만 반환.
+    """
+    base = get_feedback_message(space_type)
+    improvement = baseline_rmse - calibrated_rmse
+    if improvement > 0.5:
+        return (
+            f"보정 결과 RMSE 가 {baseline_rmse:.1f} → {calibrated_rmse:.1f} dB "
+            f"({improvement:.1f} dB 개선) 으로 좁혀졌습니다. {base}"
+        )
+    return base
 
 
 def _write_parameter_updates(
@@ -445,6 +532,14 @@ def _write_parameter_updates(
             old_value_json={"value": baseline.scale_for(m)},
             new_value_json={"value": round(params.scale_for(m), 3)},
         ))
+    rows.append(ParameterUpdate(
+        calibration_run_id=cr.id,
+        target_type="scene_version",
+        target_id=cr.scene_version_id,
+        parameter_name="physical.path_loss_exp",
+        old_value_json={"value": baseline.path_loss_exp},
+        new_value_json={"value": round(params.path_loss_exp, 3)},
+    ))
     rows.append(ParameterUpdate(
         calibration_run_id=cr.id,
         target_type="scene_version",

@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -40,9 +41,30 @@ def create_measurement_link(
 )
 def get_measurement_link_context(
     token: str,
+    request: Request,
     db: Session = Depends(get_db),
 ) -> MeasurementLinkContextResponseDTO:
-    return measurement_service.get_measurement_link_context(db, token)
+    # request.base_url 은 모바일이 backend 를 부른 그 host (예: http://192.168.0.10:8000/).
+    # 이 host 를 그대로 써서 floorplan-image URL 을 absolute 로 구성 → 모바일이 동일 host
+    # 로 이미지 다운로드 가능. 폰이 https 로 들어왔으면 https 그대로 나감.
+    base = str(request.base_url).rstrip("/")
+    return measurement_service.get_measurement_link_context(db, token, base_url=base)
+
+
+@router.get(
+    "/measurement-links/{token}/floorplan-image",
+    summary="측정 link token 으로 인증되는 floorplan 이미지 스트리밍 (모바일 전용)",
+)
+def get_measurement_link_floorplan_image(
+    token: str,
+    db: Session = Depends(get_db),
+):
+    """JWT 우회 — link token 자체가 권한 증명. local dev mode 의 file:// asset 을
+    모바일 (Coil) 이 다운로드 가능하게 만들기 위한 라우트. S3 자산은 /context 응답의
+    presigned URL 을 직접 받으므로 이 라우트로 안 옴.
+    """
+    path, mime = measurement_service.resolve_floorplan_image_for_link(db, token)
+    return FileResponse(str(path), media_type=mime, filename=path.name)
 
 
 @router.post(
@@ -147,14 +169,25 @@ def list_detected_aps(
 @router.get(
     "/measurement-sessions/{session_id}/estimated-coverage",
     response_model=EstimatedCoverageResponseDTO,
-    summary="GP regression 으로 측정점 → dense RSSI 맵 추정 (#81)",
+    summary="측정점 → dense RSSI 맵 추정 (#81). method 로 GP/residual kriging 선택.",
 )
 def estimate_session_coverage(
     session_id: str,
     resolution_m: float = Query(default=0.5, gt=0.1, le=2.0),
+    method: str = Query(
+        default="auto",
+        pattern="^(auto|gp_only|residual_kriging)$",
+        description=(
+            "auto: sim 있으면 residual_kriging, 없으면 gp_only. "
+            "gp_only: 측정값만 GP 보간 ('실측 히트맵' 의미). "
+            "residual_kriging: sim 을 prior 로 측정 residual 만 GP ('통합 분석' 의미)."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> EstimatedCoverageResponseDTO:
     return measurement_service.estimate_session_coverage(
-        db, session_id, current_user, grid_resolution_m=resolution_m
+        db, session_id, current_user,
+        grid_resolution_m=resolution_m,
+        method=method,
     )

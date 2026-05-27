@@ -27,6 +27,11 @@ class Floor(Base):
     default_ceiling_height_m: Mapped[Decimal] = mapped_column(
         Numeric(6, 3), nullable=False, server_default=text("2.4")
     )
+    # 공간 유형 (calibration BO prior + 향후 sim defaults 의 source of truth).
+    # SpaceType StrEnum 의 string 값과 매칭 (cafe / study_room / classroom / office / residential / unknown).
+    space_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'unknown'")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

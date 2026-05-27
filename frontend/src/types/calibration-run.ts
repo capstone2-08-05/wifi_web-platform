@@ -9,6 +9,15 @@ export type CalibrationRunStatus =
   | 'failed'
   | string;
 
+/** 공간 유형 — calibration 의 soft prior 로 사용. 백엔드 SpaceTypeLiteral 과 정합. */
+export type SpaceType =
+  | 'cafe'
+  | 'study_room'
+  | 'classroom'
+  | 'office'
+  | 'residential'
+  | 'unknown';
+
 export interface CalibrationRun {
   id: UUID;
   status: CalibrationRunStatus;
@@ -27,6 +36,8 @@ export interface CalibrationRunCreateRequest {
   session_id: UUID;
   rf_run_id: UUID;
   version_id: UUID;
+  /** 공간 유형 soft prior. 미지정 시 백엔드가 'unknown' 으로 fallback. */
+  space_type?: SpaceType;
 }
 
 /** §11.3 파라미터 변경 이력 — 어떤 wall/object 의 무슨 파라미터가 어떤 값으로 바뀌었는지. */

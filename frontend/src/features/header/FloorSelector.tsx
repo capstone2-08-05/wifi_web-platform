@@ -10,6 +10,21 @@ import {
 import { useAppStore } from '@/stores/app-store';
 import { cn } from '@/lib/utils';
 import type { Floor } from '@/types/floor';
+import type { SpaceType } from '@/types/calibration-run';
+
+// 공간 유형 옵션 — CalibrationCard 와 동일 라벨 (UI 일관성).
+const SPACE_TYPE_OPTIONS: { value: SpaceType; label: string }[] = [
+  { value: 'unknown', label: '미지정' },
+  { value: 'cafe', label: '카페' },
+  { value: 'study_room', label: '스터디룸' },
+  { value: 'classroom', label: '강의실' },
+  { value: 'office', label: '오피스' },
+  { value: 'residential', label: '원룸/주거' },
+];
+
+function spaceTypeLabel(value: string | null | undefined): string {
+  return SPACE_TYPE_OPTIONS.find((o) => o.value === value)?.label ?? '미지정';
+}
 
 export function FloorSelector() {
   const projectId = useAppStore((s) => s.selectedProjectId);
@@ -154,7 +169,7 @@ function FloorMenu({
                 <div className="flex flex-col items-start">
                   <span className="truncate">{f.floor_name}</span>
                   <span className="text-[10px] text-muted-foreground">
-                    높이 {f.height_m}m
+                    높이 {f.height_m}m · {spaceTypeLabel(f.space_type)}
                   </span>
                 </div>
                 {f.id === selectedFloorId && <Check className="h-3.5 w-3.5 text-primary" />}
@@ -228,19 +243,23 @@ function EditFloorForm({
 }: {
   floor: Floor;
   isSaving: boolean;
-  onSave: (body: { floor_name?: string; height_m?: number }) => void;
+  onSave: (body: { floor_name?: string; height_m?: number; space_type?: SpaceType }) => void;
   onCancel: () => void;
 }) {
   const [name, setName] = useState(floor.floor_name);
   const [height, setHeight] = useState(floor.height_m);
+  const [spaceType, setSpaceType] = useState<SpaceType>(floor.space_type ?? 'unknown');
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = name.trim();
     if (!trimmed) return;
-    const body: { floor_name?: string; height_m?: number } = {};
+    const body: { floor_name?: string; height_m?: number; space_type?: SpaceType } = {};
     if (trimmed !== floor.floor_name) body.floor_name = trimmed;
     if (Number.isFinite(height) && height > 0 && height !== floor.height_m) {
       body.height_m = height;
+    }
+    if (spaceType !== (floor.space_type ?? 'unknown')) {
+      body.space_type = spaceType;
     }
     if (Object.keys(body).length === 0) {
       onCancel();
@@ -271,6 +290,18 @@ function EditFloorForm({
           onChange={(e) => setHeight(Number(e.target.value))}
           className="w-full rounded-md border bg-background px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
         />
+      </label>
+      <label className="block">
+        <span className="text-[10px] text-muted-foreground">공간 유형</span>
+        <select
+          value={spaceType}
+          onChange={(e) => setSpaceType(e.target.value as SpaceType)}
+          className="w-full rounded-md border bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        >
+          {SPACE_TYPE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
       </label>
       <div className="flex gap-2">
         <button
@@ -305,6 +336,7 @@ function CreateFloorForm({
 }) {
   const [name, setName] = useState(`${nextOrder}층`);
   const [height, setHeight] = useState(3.2);
+  const [spaceType, setSpaceType] = useState<SpaceType>('unknown');
   const create = useCreateFloor(projectId);
 
   const submit = (e: React.FormEvent) => {
@@ -313,7 +345,12 @@ function CreateFloorForm({
     if (!trimmed) return;
     // floor_order 는 사용자에게 노출하지 않고 자동 부여 (마지막 + 1).
     create.mutate(
-      { floor_name: trimmed, floor_order: nextOrder, height_m: height },
+      {
+        floor_name: trimmed,
+        floor_order: nextOrder,
+        height_m: height,
+        space_type: spaceType,
+      },
       { onSuccess: (f) => onCreated(f) },
     );
   };
@@ -339,6 +376,18 @@ function CreateFloorForm({
           onChange={(e) => setHeight(Number(e.target.value))}
           className="w-full rounded-md border bg-background px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
         />
+      </label>
+      <label className="block">
+        <span className="text-[10px] text-muted-foreground">공간 유형 (calibration 보정에 사용)</span>
+        <select
+          value={spaceType}
+          onChange={(e) => setSpaceType(e.target.value as SpaceType)}
+          className="w-full rounded-md border bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        >
+          {SPACE_TYPE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
       </label>
       <div className="flex gap-2">
         <button

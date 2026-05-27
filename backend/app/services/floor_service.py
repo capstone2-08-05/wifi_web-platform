@@ -77,6 +77,7 @@ def create_floor(
         name=payload.floor_name.strip(),
         floor_index=payload.floor_order,
         default_ceiling_height_m=payload.height_m,
+        space_type=payload.space_type or "unknown",
     )
     db.add(floor)
     db.commit()
@@ -119,6 +120,7 @@ def update_floor(
         "floor_name": "name",
         "floor_order": "floor_index",
         "height_m": "default_ceiling_height_m",
+        "space_type": "space_type",  # 동일 이름 그대로
     }
 
     for spec_field, value in update_data.items():

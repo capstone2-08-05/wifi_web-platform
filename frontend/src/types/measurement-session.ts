@@ -67,6 +67,10 @@ export interface EstimatedRssiRange {
   mean: number;
 }
 
+/** 'gp_only': 측정점만으로 GP — sparse 면 prior mean 으로 단조롭게 깔림.
+ *  'residual_kriging': 최근 시뮬 grid 를 prior, GP 는 residual 만 보간 — 더 현실적. */
+export type CoverageEstimationMethod = 'gp_only' | 'residual_kriging';
+
 export interface EstimatedCoverage {
   heatmap_url: string;
   uncertainty_url: string;
@@ -77,4 +81,6 @@ export interface EstimatedCoverage {
   uncertainty_max_db: number;
   input_point_count: number;
   kernel_repr: string;
+  /** 추정 방식 — UI 가 "시뮬 기반 보정" vs "단순 GP" 구분 표시. */
+  method?: CoverageEstimationMethod;
 }

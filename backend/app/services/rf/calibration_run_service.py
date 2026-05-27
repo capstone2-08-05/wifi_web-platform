@@ -190,6 +190,16 @@ def create_calibration_run(
     # 백그라운드 워커 (job_poller) 가 픽업하도록 running 으로 시작.
     # poller 는 status=running 만 본다.
     now = datetime.now(timezone.utc)
+    # space_type 결정 우선순위:
+    #  1. payload.space_type (request override — 일회성)
+    #  2. floor.space_type (사용자가 설정한 공간 유형 — source of truth)
+    #  3. None → runner 가 "unknown" 으로 fallback
+    from app.models.floor import Floor
+    floor = db.execute(select(Floor).where(Floor.id == sv.floor_id)).scalar_one_or_none()
+    effective_space_type = (
+        payload.space_type
+        or (floor.space_type if floor and floor.space_type else None)
+    )
     job = Job(
         project_id=sv.project_id,
         floor_id=sv.floor_id,
@@ -200,6 +210,7 @@ def create_calibration_run(
             "scene_version_id": sv.id,
             "rf_run_id": rr.id,
             "measurement_session_id": ms.id,
+            "space_type": effective_space_type,
         },
         started_at=now,
     )
