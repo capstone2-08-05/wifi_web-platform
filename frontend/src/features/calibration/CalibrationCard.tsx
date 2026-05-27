@@ -1,5 +1,19 @@
 import { Loader2, Sliders } from 'lucide-react';
-import type { CalibrationRun, ParameterUpdate } from '@/types/calibration-run';
+import type {
+  CalibrationRun,
+  ParameterUpdate,
+  SpaceType,
+} from '@/types/calibration-run';
+
+/** 공간 유형 select 표시명. SpaceType literal 과 1:1. */
+const SPACE_TYPE_OPTIONS: { value: SpaceType; label: string }[] = [
+  { value: 'unknown', label: '미지정' },
+  { value: 'cafe', label: '카페' },
+  { value: 'study_room', label: '스터디룸' },
+  { value: 'classroom', label: '강의실' },
+  { value: 'office', label: '오피스' },
+  { value: 'residential', label: '원룸/주거' },
+];
 
 interface Props {
   run: CalibrationRun | null;
@@ -8,6 +22,9 @@ interface Props {
   canCalibrate: boolean;
   /** 비활성 시 사용자에게 보여줄 사유 (측정 부족 / 시뮬 부족 등). */
   disabledReason?: string | null;
+  /** 사용자가 선택한 공간 유형 — calibration 의 soft prior 로 backend 에 전달. */
+  spaceType: SpaceType;
+  onSpaceTypeChange: (next: SpaceType) => void;
   onCalibrate: () => void;
   parameterUpdates: ParameterUpdate[];
 }
@@ -22,6 +39,8 @@ export function CalibrationCard({
   isStarting,
   canCalibrate,
   disabledReason,
+  spaceType,
+  onSpaceTypeChange,
   onCalibrate,
   parameterUpdates,
 }: Props) {
@@ -39,6 +58,26 @@ export function CalibrationCard({
         실측과 시뮬레이션 결과를 비교해서 벽 흡수율 등 시뮬 파라미터를 자동 보정합니다.
         보정 후 시뮬레이션을 다시 실행하면 더 정확한 예측을 얻을 수 있습니다.
       </p>
+
+      {/* 공간 유형 select — calibration BO 의 soft prior. 잘못 골라도 BO 가 어느 정도 보정. */}
+      <label className="mt-3 block">
+        <span className="text-[11px] font-medium text-muted-foreground">공간 유형</span>
+        <select
+          value={spaceType}
+          onChange={(e) => onSpaceTypeChange(e.target.value as SpaceType)}
+          disabled={showProgress}
+          className="mt-1 block w-full rounded-md border bg-background px-2.5 py-1.5 text-xs font-medium shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+        >
+          {SPACE_TYPE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+        <span className="mt-1 block text-[10px] leading-relaxed text-muted-foreground">
+          공간 유형은 보정의 초기 가정만 좁혀줍니다. 실제 결과는 측정 RSSI 기반으로 결정됩니다.
+        </span>
+      </label>
 
       {showProgress ? (
         <div className="mt-3 flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2.5 text-xs">
@@ -79,6 +118,9 @@ function CalibrationResult({
   parameterUpdates: ParameterUpdate[];
 }) {
   const metrics = parseCalibrationMetrics(run.error_metrics_json);
+  const feedbackMessage = typeof run.error_metrics_json?.['feedback_message'] === 'string'
+    ? (run.error_metrics_json['feedback_message'] as string)
+    : null;
   return (
     <div className="mt-3 space-y-2">
       <div className="rounded-lg border bg-muted/40 p-3">
@@ -88,6 +130,11 @@ function CalibrationResult({
           <MetricCell label="MAE" value={metrics.mae} unit="dBm" />
         </div>
       </div>
+      {feedbackMessage && (
+        <div className="rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-[11px] leading-relaxed text-foreground/80">
+          {feedbackMessage}
+        </div>
+      )}
       <div className="flex items-center justify-between gap-2 rounded-md border bg-background px-3 py-2 text-xs">
         <span className="text-muted-foreground">변경된 파라미터</span>
         <span className="font-semibold tabular-nums">{parameterUpdates.length} 개</span>

@@ -3,6 +3,7 @@ from __future__ import annotations
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from urllib.parse import urlencode, urlparse
 
 from sqlalchemy import func, select
@@ -159,15 +160,27 @@ def _resolve_scene_and_asset(
     return None, fallback.id if fallback else None
 
 
-def _floorplan_info_from_asset(db: Session, asset_id: str | None) -> FloorplanInfoDTO:
+def _floorplan_info_from_asset(
+    db: Session,
+    asset_id: str | None,
+    *,
+    link_token: str | None = None,
+    base_url: str | None = None,
+) -> FloorplanInfoDTO:
+    """asset → mobile 이 다운로드 가능한 URL 로 변환.
+
+    - `s3://`: presigned GET URL (모바일이 직접 다운로드)
+    - `file://`: backend 의 token-인증 public 라우트 URL 로 변환 (link_token 필수).
+      모바일은 PC 의 로컬 파일을 못 봐서, JWT 우회 + token 검증되는 streaming
+      endpoint 가 필요. link_token 없으면 None (예: 권한 없는 호출).
+    - 기타 스킴 / null: URL 없음 → 모바일 UI 가 "도면 자산 없음" 표시
+    """
     if asset_id is None:
         return FloorplanInfoDTO()
     asset = db.get(Asset, asset_id)
     if asset is None:
         return FloorplanInfoDTO()
     metadata = asset.metadata_json or {}
-    # S3 객체면 presigned URL 발급 (모바일이 직접 다운로드 가능하게).
-    # 비-S3 (옛 로컬 경로) 면 그대로 노출 — 어차피 외부 접근 불가지만 fallback.
     url = asset.storage_url
     if url and url.startswith("s3://"):
         from app.services import _s3
@@ -175,6 +188,17 @@ def _floorplan_info_from_asset(db: Session, asset_id: str | None) -> FloorplanIn
             url = _s3.presigned_get_url(url)
         except Exception:
             url = None
+    elif url and url.startswith("file://"):
+        # 로컬 dev mode — backend 가 자체 스트리밍 endpoint 로 노출.
+        # base_url 이 있으면 absolute URL, 없으면 relative (모바일은 absolute 필요).
+        if link_token:
+            path = f"/measurement-links/{link_token}/floorplan-image"
+            url = f"{base_url.rstrip('/')}{path}" if base_url else path
+        else:
+            url = None
+    else:
+        # 알 수 없는 스킴 — 모바일이 못 씀.
+        url = None
     return FloorplanInfoDTO(
         url=url,
         width_px=metadata.get("width_px"),
@@ -295,8 +319,59 @@ def create_measurement_link(
     )
 
 
-def get_measurement_link_context(
+def resolve_floorplan_image_for_link(
     db: Session, token: str
+) -> tuple[Path, str]:
+    """측정 link token 으로 인증되는 floorplan 이미지 path + mime 반환.
+
+    `/measurement-links/{token}/floorplan-image` 라우트가 사용. JWT 우회 — link token
+    자체가 권한 증명 (이미 컨텍스트/세션 생성에 쓰는 동일 토큰이라 동등 권한).
+
+    - link revoked / expired → 410 AppError (`_ensure_link_active`)
+    - asset 없거나 file:// 아님 → 404
+    """
+    link = _load_link(db, token)
+    _ensure_link_active(link)
+    if link.asset_id is None:
+        raise AppError(
+            ErrorCode.UPLOADED_FILE_NOT_FOUND,
+            "This measurement link has no floorplan asset.",
+            status_code=404,
+        )
+    asset = db.get(Asset, link.asset_id)
+    if asset is None:
+        raise AppError(
+            ErrorCode.UPLOADED_FILE_NOT_FOUND,
+            f"Asset {link.asset_id} not found.",
+            status_code=404,
+        )
+    url_value = asset.storage_url or ""
+    if not url_value.startswith("file://"):
+        # S3 자산이면 모바일이 _floorplan_info_from_asset 의 presigned URL 을 직접 받음 —
+        # 이 라우트로 오면 안 되는 경로. 안내성 404.
+        raise AppError(
+            ErrorCode.UPLOADED_FILE_NOT_FOUND,
+            "Asset is not a local file (use presigned URL from /context instead).",
+            status_code=404,
+        )
+    from urllib.parse import urlparse, unquote
+    parsed = urlparse(url_value)
+    raw_path = unquote(parsed.path)
+    # 윈도우: file:///C:/foo → /C:/foo 형태로 path 가 들어옴, 앞 / 떼야 OS path 됨.
+    if raw_path.startswith("/") and len(raw_path) > 3 and raw_path[2] == ":":
+        raw_path = raw_path[1:]
+    path = Path(raw_path)
+    if not path.is_file():
+        raise AppError(
+            ErrorCode.UPLOADED_FILE_NOT_FOUND,
+            f"Local floorplan file missing: {path}",
+            status_code=404,
+        )
+    return path, (asset.mime_type or "image/png")
+
+
+def get_measurement_link_context(
+    db: Session, token: str, *, base_url: str | None = None,
 ) -> MeasurementLinkContextResponseDTO:
     link = _load_link(db, token)
     _ensure_link_active(link)
@@ -306,7 +381,10 @@ def get_measurement_link_context(
         db.commit()
         db.refresh(link)
 
-    floorplan = _floorplan_info_from_asset(db, link.asset_id)
+    # link_token + base_url 을 넘겨 file:// asset 도 모바일이 접근 가능한 URL 생성.
+    floorplan = _floorplan_info_from_asset(
+        db, link.asset_id, link_token=token, base_url=base_url,
+    )
     bounds = _bounds_from_floorplan(floorplan)
 
     return MeasurementLinkContextResponseDTO(
@@ -618,28 +696,86 @@ def list_sessions_by_floor(
     )
 
 
+def _try_load_sim_grid_for_floor(
+    db: Session, floor_id: str,
+) -> tuple["np.ndarray", "np.ndarray", "np.ndarray"] | None:
+    """floor 의 최근 succeeded RfRun 의 radio_map values_dbm + xs/ys 추출.
+
+    Returns:
+        (grid, xs, ys) — residual kriging 의 prior 로 사용.
+        None — sim 없거나 values_dbm 누락 or 형식 오류.
+    """
+    import numpy as np
+    from app.models.rf_run import RfRun
+
+    # 가장 최근 done/completed/succeeded — 백엔드 status 표기 다양.
+    rf_run = db.execute(
+        select(RfRun)
+        .where(
+            RfRun.floor_id == floor_id,
+            RfRun.status.in_(["done", "completed", "succeeded"]),
+        )
+        .order_by(RfRun.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if rf_run is None:
+        return None
+
+    radio_map = (rf_run.metrics_json or {}).get("radio_map") or {}
+    values = radio_map.get("values_dbm")
+    bounds = radio_map.get("bounds_m") or {}
+    if not isinstance(values, list) or not values:
+        return None
+    try:
+        grid = np.asarray(values, dtype=np.float64)
+    except Exception:
+        return None
+    if grid.ndim != 2 or grid.size == 0:
+        return None
+
+    # bounds_m → xs/ys 배열. 미지정 시 grid_shape 만 있으면 0 origin 으로 fallback.
+    H, W = grid.shape
+    min_x = float(bounds.get("min_x", 0.0))
+    max_x = float(bounds.get("max_x", float(W)))
+    min_y = float(bounds.get("min_y", 0.0))
+    max_y = float(bounds.get("max_y", float(H)))
+    if max_x <= min_x or max_y <= min_y:
+        return None
+    xs = np.linspace(min_x, max_x, W)
+    ys = np.linspace(min_y, max_y, H)
+    return grid, xs, ys
+
+
 def estimate_session_coverage(
     db: Session,
     session_id: str,
     user: User,
     grid_resolution_m: float = 0.5,
+    method: str = "auto",
 ) -> "EstimatedCoverageResponseDTO":
     """§81 — 세션의 측정점들을 GP regression 으로 dense map 추정.
 
-    1. 권한 + 세션 로드
-    2. 측정점 (x, y, rssi) 로드 — rssi NULL 인 점은 제외
-    3. floor 의 도면 bounds 계산 (없으면 측정점 bounding box)
-    4. GP fit + predict
-    5. heatmap PNG 생성 + S3 업로드
-    6. presigned URL 응답
+    method:
+      - 'auto':            sim 있으면 residual_kriging, 없으면 gp_only
+      - 'gp_only':         측정값만 GP — "실측 히트맵" 의미. sim 안 섞임
+      - 'residual_kriging': sim 을 prior 로 residual GP — "통합 분석" 의미.
+                            sim 없으면 gp_only 로 fallback (안전망)
+
+    프론트엔드의 '실측 히트맵' 탭은 gp_only, '예측·실측 통합 분석' 탭은
+    residual_kriging 를 명시적으로 호출 → 라벨과 의미 일치.
     """
     # lazy import — 무거운 sklearn / matplotlib 을 모듈 import 단에서 끌어오지 않음
+    import numpy as np
+
     from app.schemas.rf.measurement import (
         EstimatedCoverageResponseDTO,
         EstimatedRssiRangeDTO,
     )
     from app.services._s3 import presigned_get_url
-    from app.services.rf.measurement_estimation.gp_estimator import estimate_coverage
+    from app.services.rf.measurement_estimation.gp_estimator import (
+        estimate_coverage,
+        estimate_coverage_residual,
+    )
     from app.services.rf.measurement_estimation.heatmap import render_and_upload
 
     session_row = _load_owned_session(db, session_id, user)
@@ -688,28 +824,60 @@ def estimate_session_coverage(
         )
     bounds_tuple = (bounds_dto.min_x, bounds_dto.min_y, bounds_dto.max_x, bounds_dto.max_y)
 
-    # GP 학습 + 예측
-    estimate = estimate_coverage(
-        points, bounds=bounds_tuple, grid_resolution_m=grid_resolution_m
-    )
+    # method 분기:
+    #   - gp_only:           sim 무시, 측정값만 GP (실측 의미 정직)
+    #   - residual_kriging:  sim prior + residual GP (sim 없으면 gp_only 로 fallback)
+    #   - auto:              sim 있으면 residual, 없으면 gp_only
+    estimate = None
+    want_residual = method in ("residual_kriging", "auto")
+    if want_residual:
+        sim_grid_data = _try_load_sim_grid_for_floor(db, str(session_row.floor_id))
+        if sim_grid_data is not None:
+            sim_grid, sim_xs, sim_ys = sim_grid_data
+            try:
+                estimate = estimate_coverage_residual(
+                    points, sim_grid=sim_grid, sim_xs=sim_xs, sim_ys=sim_ys,
+                )
+            except ValueError as exc:
+                # 측정점 다 sim bounds 밖이면 fallback (sim 없는 거나 마찬가지).
+                import logging
+                logging.getLogger(__name__).info(
+                    "Residual kriging skipped (%s) — falling back to pure GP", exc,
+                )
+                estimate = None
+
+    if estimate is None:
+        estimate = estimate_coverage(
+            points, bounds=bounds_tuple, grid_resolution_m=grid_resolution_m
+        )
 
     # heatmap 생성 + S3
     mean_uri, std_uri = render_and_upload(estimate, str(session_row.id), points)
 
+    # rssi_range: frontend Legend/점 색 그라데이션이 이 값으로 색 스케일을 잡음.
+    # raw min/max 는 sim invalid 셀 (-200 이하 sentinel) 로 오염될 수 있어 그대로 쓰면
+    # 그라데이션이 "-263 · -154 · -45" 같은 비현실 값 표시 + 색이 한쪽으로 쏠림.
+    # → noise floor 이상 + 비유한값 제외한 셀 들로만 계산.
+    grid = estimate.mean_grid
+    finite_mask = np.isfinite(grid) & (grid > -120.0)
+    if finite_mask.any():
+        valid = grid[finite_mask]
+        # p2~p98 percentile — 양 극단 outlier (정상 범위지만 1~2 셀만 튀는 값) 도 제외.
+        lo, hi = np.percentile(valid, [2.0, 98.0])
+        rmin, rmax, rmean = float(lo), float(hi), float(valid.mean())
+    else:
+        rmin, rmax, rmean = -90.0, -30.0, -60.0  # fallback
     return EstimatedCoverageResponseDTO(
         heatmap_url=presigned_get_url(mean_uri),
         uncertainty_url=presigned_get_url(std_uri),
         bounds=bounds_dto,
         grid_shape=list(estimate.mean_grid.shape),
         grid_resolution_m=grid_resolution_m,
-        rssi_range=EstimatedRssiRangeDTO(
-            min=float(estimate.mean_grid.min()),
-            max=float(estimate.mean_grid.max()),
-            mean=float(estimate.mean_grid.mean()),
-        ),
+        rssi_range=EstimatedRssiRangeDTO(min=rmin, max=rmax, mean=rmean),
         uncertainty_max_db=float(estimate.std_grid.max()),
         input_point_count=estimate.input_point_count,
         kernel_repr=estimate.kernel_repr,
+        method=estimate.method,
     )
 
 

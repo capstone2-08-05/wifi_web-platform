@@ -20,7 +20,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, ErrorCode
+from app.core.geom import geojson_to_wkb
 from app.models import Job, Project, RfRun, SceneVersion, User
+from app.models.ap_layout import ApLayout
 from app.models.rf_map import RfMap
 from app.services.rf.sagemaker_rf_inference_service import (
     SageMakerRfInferenceFailure,
@@ -213,6 +215,9 @@ async def _submit_via_sagemaker(
         input_json["rf_run_id"] = rf_run.id
         job.input_json = input_json
         db.add(job)
+        # request_json.access_points → ApLayout row 들 자동 생성 (#measurement 페이지 표시).
+        # 사용자가 시뮬 페이지에서 찍은 AP 좌표를 다른 페이지 (측정/진단) 에서도 보려면 필요.
+        create_ap_layouts_from_request(db, rf_run, access_points)
         db.commit()
         db.refresh(rf_run)
         db.refresh(job)
@@ -474,6 +479,46 @@ def _mark_job_failed(
 # ============================================================
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def create_ap_layouts_from_request(
+    db: Session, rf_run: RfRun, access_points: list[dict[str, Any]],
+) -> None:
+    """access_points 리스트 → ApLayout row 들 일괄 add (commit 은 호출자 책임).
+
+    데이터 모델 정리: rf_run.request_json.access_points 와 ap_layouts 테이블이
+    중복으로 같은 정보 보관 중. 이 함수가 submit 시점에 ap_layouts 도 같이 채워서
+    측정/진단 페이지가 일관되게 AP 마커 표시 가능.
+
+    fallback 동작: x/y 누락된 entry 는 skip. 빈 access_points 는 no-op.
+    """
+    if not access_points:
+        return
+    for i, ap in enumerate(access_points):
+        x = ap.get("x_m") if ap.get("x_m") is not None else ap.get("x")
+        y = ap.get("y_m") if ap.get("y_m") is not None else ap.get("y")
+        if x is None or y is None:
+            continue
+        z = ap.get("z_m") if ap.get("z_m") is not None else ap.get("z")
+        ap_id = str(ap.get("id") or f"ap{i + 1}")
+        try:
+            point_geom = geojson_to_wkb(
+                {"type": "Point", "coordinates": [float(x), float(y)]},
+                "Point",
+                "ap_layout.point_geom",
+            )
+        except AppError:
+            # 좌표 파싱 실패는 silent skip — 시뮬 자체는 진행되도록.
+            continue
+        db.add(
+            ApLayout(
+                rf_run_id=rf_run.id,
+                ap_name=ap_id,
+                point_geom=point_geom,
+                z_m=float(z) if z is not None else 2.5,
+                power_dbm=float(ap["power_dbm"]) if ap.get("power_dbm") is not None else None,
+            )
+        )
 
 
 def _get_owned_scene_version(

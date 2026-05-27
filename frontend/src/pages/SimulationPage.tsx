@@ -35,10 +35,9 @@ import {
   SimulationCanvas,
   type PlacedAp,
 } from '@/features/simulation/SimulationCanvas';
-import {
-  HeatmapColorLegend,
-  extractColorScale,
-} from '@/features/simulation/HeatmapColorLegend';
+import { extractColorScale } from '@/features/simulation/HeatmapColorLegend';
+import { DbmColorBar } from '@/features/simulation/DbmColorBar';
+import { FloorSpaceTypeSelector } from '@/features/floor/FloorSpaceTypeSelector';
 import { toast } from '@/stores/toast-store';
 import type { ApCandidate, ApLayout } from '@/types/ap-layout';
 import type { RfBackend } from '@/types/rf';
@@ -48,6 +47,7 @@ type SimulationState = 'idle' | 'running' | 'complete';
 
 export default function SimulationPage() {
   const floorId = useAppStore((s) => s.selectedFloorId);
+  const selectedProjectId = useAppStore((s) => s.selectedProjectId);
   const versionsQuery = useFloorVersions(floorId);
   // 현재 활성 버전 (없으면 가장 최근 버전)
   const currentVersion =
@@ -226,10 +226,16 @@ export default function SimulationPage() {
       pastRuns
         .filter((r) => r.status === 'succeeded')
         .map((r) => {
-          const m =
-            r.id === activeRunId
-              ? parseMetrics(r.metrics_json, activeMapMetrics)
-              : parseMetrics(r.metrics_json);
+          // rf_run.metrics_json 은 `{ radio_map: { rss_dbm, coverage_summary, ... }, ... }` 형태로
+          // 한 단계 nested. parseMetrics 는 top-level 키만 찾으므로 radio_map 도 같이 풀어 넘김.
+          // active 일 땐 RfMap.metrics_json (flat) 도 함께 — 그쪽이 더 풍부할 수 있음.
+          const radioMap = (r.metrics_json?.['radio_map'] ?? null) as
+            | Record<string, unknown>
+            | null;
+          const sources: Array<Record<string, unknown> | undefined> = [r.metrics_json];
+          if (radioMap) sources.push(radioMap);
+          if (r.id === activeRunId && activeMapMetrics) sources.push(activeMapMetrics);
+          const m = parseMetrics(...sources);
           return {
             id: r.id,
             label: `시뮬레이션 결과 #${r.id.slice(0, 6)}`,
@@ -251,6 +257,8 @@ export default function SimulationPage() {
         apsCount={aps.length}
         backend={backend}
         onBackendChange={setBackend}
+        floorId={floorId ?? null}
+        projectId={selectedProjectId}
         onStart={handleStart}
         onReset={handleReset}
       />
@@ -318,8 +326,15 @@ export default function SimulationPage() {
                   readOnly
                 />
                 {heatmapUrl && isRunForCurrentVersion && (
-                  <div className="absolute bottom-3 right-3 z-10">
-                    <HeatmapColorLegend scale={heatmapColorScale} />
+                  // 좌상단 — gradient + tick 값이 수직 정렬돼 "이 색 = 이 dBm" 직관적.
+                  // MeasurementPage 와 동일 위치/크기로 통일.
+                  <div className="pointer-events-none absolute left-3 top-3 z-10 w-70">
+                    <DbmColorBar
+                      vmin={heatmapColorScale?.vminDbm ?? -85}
+                      vmax={heatmapColorScale?.vmaxDbm ?? -30}
+                      label="예측 RSSI (시뮬)"
+                      approximate={!heatmapColorScale}
+                    />
                   </div>
                 )}
               </>
@@ -441,6 +456,8 @@ function PageHeader({
   apsCount,
   backend,
   onBackendChange,
+  floorId,
+  projectId,
   onStart,
   onReset,
 }: {
@@ -450,6 +467,8 @@ function PageHeader({
   apsCount: number;
   backend: RfBackend;
   onBackendChange: (b: RfBackend) => void;
+  floorId: string | null;
+  projectId: string | null;
   onStart: () => void;
   onReset: () => void;
 }) {
@@ -464,7 +483,16 @@ function PageHeader({
 
       <div className="flex shrink-0 items-center gap-3">
         {state === 'idle' && (
-          <BackendToggle value={backend} onChange={onBackendChange} disabled={isStarting} />
+          <>
+            {/* 공간 유형 — Floor.space_type 직접 수정. 변경 시 즉시 저장 (다음 calibration 에 자동 반영).
+                현재 sim 동작에는 영향 없지만 사용자는 "이 공간을 시뮬한다" 라는 멘탈모델로 여기서 정함. */}
+            <FloorSpaceTypeSelector
+              floorId={floorId}
+              projectId={projectId}
+              showLabel={false}
+            />
+            <BackendToggle value={backend} onChange={onBackendChange} disabled={isStarting} />
+          </>
         )}
         {state === 'idle' ? (
           <button

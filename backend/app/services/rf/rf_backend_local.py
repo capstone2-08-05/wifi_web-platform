@@ -143,6 +143,10 @@ async def submit_via_local_ai_api(
         input_json["rf_run_id"] = rf_run.id
         job.input_json = input_json
         db.add(job)
+        # rf_run.request_json.access_points 와 동일 좌표로 ApLayout row 자동 생성 —
+        # 측정/진단 페이지가 ApLayout 만 보던 기존 코드도 즉시 호환.
+        from app.services.rf.rf_job_service import create_ap_layouts_from_request
+        create_ap_layouts_from_request(db, rf_run, access_points)
         db.commit()
         db.refresh(rf_run)
         db.refresh(job)
@@ -258,6 +262,10 @@ def _persist_local_success(
             "valid_ratio": artifacts.get("valid_ratio") or metrics.get("valid_ratio"),
             # heatmap PNG 와 동일한 색 스케일 (vmin/vmax) — 프론트 ColorLegend 에서 사용.
             "color_scale": radiomap.get("color_scale"),
+            # Full grid 값 (residual kriging 용 — measurement_estimation 이 prior 로 사용).
+            # 100x50 grid 면 ~40KB, 200x200 이면 ~1.3MB. 크긴 한데 sim 당 1회 저장이라 OK.
+            # 없거나 너무 크면 estimate_session_coverage 가 pure GP 로 fallback.
+            "values_dbm": radiomap.get("values_dbm"),
         }
 
         rf_run = db.execute(

@@ -15,6 +15,9 @@ import { HelpFab } from '@/components/HelpFab';
 import { MobileConnectModal } from '@/features/mobile/MobileConnectModal';
 import { Popover } from '@/components/ui/Popover';
 import { useAppStore } from '@/stores/app-store';
+import { useFloors } from '@/hooks/use-floors';
+import { FloorSpaceTypeSelector } from '@/features/floor/FloorSpaceTypeSelector';
+import { DbmColorBar } from '@/features/simulation/DbmColorBar';
 import type {
   DetectedAp,
   MeasurementPoint as ApiPoint,
@@ -40,6 +43,7 @@ import {
   useCreateCalibrationRun,
 } from '@/hooks/use-calibration-run';
 import { CalibrationCard } from '@/features/calibration/CalibrationCard';
+import type { SpaceType } from '@/types/calibration-run';
 import { parseGeometry } from '@/features/editor/geometry-utils';
 import {
   MeasurementCanvas,
@@ -75,6 +79,20 @@ export default function MeasurementPage() {
     assetUrl && /^https?:\/\//i.test(assetUrl) ? assetUrl : null;
   const backgroundImageUrl = usableAssetUrl ?? localImage ?? null;
 
+  // calibration soft prior 용 공간 유형.
+  // - Source of truth: Floor.space_type (헤더의 도면 셀렉터에서 설정)
+  // - 이 페이지에서도 일회성 override 가능 — 사용자가 다른 prior 로 실험하고 싶을 때
+  // - floor 가 바뀌면 그 floor 의 값으로 자동 리셋.
+  const [spaceTypeOverride, setSpaceTypeOverride] = useState<SpaceType | null>(null);
+  useEffect(() => {
+    setSpaceTypeOverride(null);  // floor 전환 시 override 해제
+  }, [floorId]);
+  // Floor 의 space_type 을 reactive 하게 읽음 — 헤더에서 변경하면 즉시 반영.
+  const projectIdForFloors = useAppStore((s) => s.selectedProjectId);
+  const floorsList = useFloors(projectIdForFloors);
+  const currentFloor = floorsList.data?.find((f) => f.id === floorId) ?? null;
+  const spaceType: SpaceType = spaceTypeOverride ?? currentFloor?.space_type ?? 'unknown';
+
   // 측정 세션. 기본은 최근 세션 자동 선택, 사용자가 '이력 보기' 로 다른 세션 선택 가능.
   const sessionsQuery = useFloorMeasurementSessions(floorId);
   const sessions = sessionsQuery.data?.items ?? [];
@@ -85,15 +103,28 @@ export default function MeasurementPage() {
   const points = pointsQuery.data?.items ?? [];
 
   const canvasPoints = useMemo(() => apiPointsToCanvas(points), [points]);
+  // 캔버스 dbm color mode 에서 점 색 계산용 — id → 실측 RSSI 매핑.
+  const pointRssiByOrder = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const p of points) {
+      if (p.rssi_dbm != null) map.set(p.id, p.rssi_dbm);
+    }
+    return map;
+  }, [points]);
 
   // 가장 최근 succeeded RF Run → AP layouts + RF Map metrics.
   const rfRunsQuery = useFloorRfRuns(floorId, { status: 'succeeded', page_size: 5 });
-  const latestRfRunId = rfRunsQuery.data?.items?.[0]?.id ?? null;
+  const latestRfRun = rfRunsQuery.data?.items?.[0] ?? null;
+  const latestRfRunId = latestRfRun?.id ?? null;
   const apLayoutsQuery = useApLayouts(latestRfRunId);
-  const canvasAps = useMemo(
-    () => apLayoutsToCanvas(apLayoutsQuery.data ?? []),
-    [apLayoutsQuery.data],
-  );
+  // AP 마커 우선순위: ap_layouts 테이블 > rf_run.request_json.access_points fallback.
+  // 시뮬 페이지에서 찍은 AP 는 request_json 에만 들어가고 ap_layouts 엔 자동 동기화 안 돼서,
+  // 그것만 보면 측정 캔버스에 AP 가 안 뜸 → 이 fallback 으로 메우기.
+  const canvasAps = useMemo(() => {
+    const fromLayouts = apLayoutsToCanvas(apLayoutsQuery.data ?? []);
+    if (fromLayouts.length > 0) return fromLayouts;
+    return apsFromRfRunRequest(latestRfRun?.request_json);
+  }, [apLayoutsQuery.data, latestRfRun]);
   const rfMapsQuery = useRfMaps(latestRfRunId, !!latestRfRunId);
   const predictedAvgDbm = useMemo(
     () => extractPredictedAvgDbm(rfMapsQuery.data ?? []),
@@ -105,15 +136,36 @@ export default function MeasurementPage() {
   const detectedApsQuery = useDetectedAps(activeSession?.id ?? null);
   const detectedAps = detectedApsQuery.data ?? [];
 
-  // #81 GP regression dense RSSI heatmap — 측정점 → 도면 전체 추정.
-  const coverageQuery = useEstimatedCoverage(activeSession?.id ?? null);
-  const estimatedHeatmap = useMemo(() => {
-    const c = coverageQuery.data;
-    if (!c) return null;
-    return { url: c.heatmap_url, bounds: c.bounds };
-  }, [coverageQuery.data]);
+  // #81 RSSI 맵 추정 — 탭별로 다른 method 호출 (의미 분리):
+  //   '실측 히트맵' (heatmap mode) → gp_only: 측정값만 GP 보간. sim 안 섞임.
+  //   '예측·실측 통합' (both mode)  → residual_kriging: sim prior + residual GP.
+  // 같은 sessionId 라도 method 다르면 cache 분리 → 탭 전환시 재요청 없이 즉시 표시.
+  const coverageGpOnlyQuery = useEstimatedCoverage(activeSession?.id ?? null, { method: 'gp_only' });
+  const coverageResidualQuery = useEstimatedCoverage(activeSession?.id ?? null, { method: 'residual_kriging' });
 
   const [mode, setMode] = useState<MeasurementViewMode>('route');
+
+  const activeCoverage = useMemo(() => {
+    // mode 에 맞는 데이터 우선, 없으면 다른 method 데이터로 일시 fallback —
+    // 탭 전환 시 한쪽 query 가 아직 loading 이어도 heatmap 깜빡임 없이 유지.
+    if (mode === 'both') {
+      return coverageResidualQuery.data ?? coverageGpOnlyQuery.data;
+    }
+    return coverageGpOnlyQuery.data ?? coverageResidualQuery.data;
+  }, [mode, coverageGpOnlyQuery.data, coverageResidualQuery.data]);
+  const estimatedHeatmap = useMemo(() => {
+    // route 모드는 heatmap 안 그림 → null. heatmap/both 는 mode 에 맞는 데이터 사용.
+    if (!activeCoverage) return null;
+    return { url: activeCoverage.heatmap_url, bounds: activeCoverage.bounds };
+  }, [activeCoverage]);
+  // 점 색 dbm 모드일 때 사용할 범위 — heatmap 의 rssi_range 와 동일하게 맞춰서 시각 통일.
+  const pointColorRange = useMemo(
+    () =>
+      activeCoverage
+        ? { min: activeCoverage.rssi_range.min, max: activeCoverage.rssi_range.max }
+        : undefined,
+    [activeCoverage],
+  );
   const [mobileOpen, setMobileOpen] = useState(false);
   const [actionGuideOpen, setActionGuideOpen] = useState(false);
 
@@ -129,13 +181,20 @@ export default function MeasurementPage() {
     activeCalibrationId,
     calibrationPoll.isSucceeded,
   );
+  // BO 가 9차원 fit 하므로 최소 8점 (backend 가드와 일치). 그 미만이면 overfit → 다음
+  // 시뮬이 극단적으로 왜곡됨 (벽 무한히 두꺼워짐 등). 사용자가 실수로 누르지 않도록 막음.
+  const MIN_MEASUREMENTS_FOR_CALIBRATION = 8;
+  const hasEnoughMeasurements = points.length >= MIN_MEASUREMENTS_FOR_CALIBRATION;
   const canCalibrate =
     !!activeSession?.id &&
     !!latestRfRunId &&
     !!currentVersion?.id &&
-    hasMeasurement;
+    hasEnoughMeasurements;
   const calibrationDisabledReason = !hasMeasurement
     ? '먼저 측정을 진행해주세요.'
+    : !hasEnoughMeasurements
+    ? `보정 신뢰성 확보를 위해 측정점이 ${MIN_MEASUREMENTS_FOR_CALIBRATION}개 이상 필요합니다 ` +
+      `(현재 ${points.length}개). 도면 전반 골고루 더 측정해주세요.`
     : !latestRfRunId
     ? '비교할 시뮬레이션 결과가 없습니다. 시뮬레이션 페이지에서 실행해주세요.'
     : null;
@@ -146,6 +205,8 @@ export default function MeasurementPage() {
         session_id: activeSession.id,
         rf_run_id: latestRfRunId,
         version_id: currentVersion.id,
+        // 사용자가 선택한 공간 유형 — backend 가 soft prior 로 사용. 'unknown' 도 전송 OK.
+        space_type: spaceType,
       },
       { onSuccess: (run) => setActiveCalibrationId(run.id) },
     );
@@ -156,6 +217,8 @@ export default function MeasurementPage() {
       <PageHeader
         sessions={sessions}
         activeSession={activeSession}
+        floorId={floorId ?? null}
+        projectId={projectIdForFloors}
         onSelectSession={(id) => setSelectedSessionId(id)}
         onStartMeasurement={() => setMobileOpen(true)}
       />
@@ -175,17 +238,38 @@ export default function MeasurementPage() {
           <section className="flex min-h-0 flex-col gap-3">
             <TabBar mode={mode} onChange={setMode} />
             <div className="relative flex min-h-0 flex-1 flex-col gap-2 rounded-xl border bg-card p-4 shadow-sm">
-              <Legend />
+              {/* route 모드 (양호/주의/불량) 만 카드 상단 inline 표시. dbm 모드는 캔버스 하단에 colorbar. */}
+              <div className="flex flex-wrap items-center gap-2">
+                {mode === 'route' && <Legend colorMode="quality" range={pointColorRange} />}
+                {mode !== 'route' && activeCoverage?.method && (
+                  <MethodBadge
+                    method={activeCoverage.method}
+                    expected={mode === 'both' ? 'residual_kriging' : 'gp_only'}
+                  />
+                )}
+              </div>
               <div className="relative min-h-112 flex-1">
                 <MeasurementCanvas
                   sceneVersion={sceneVersion}
                   backgroundImageUrl={backgroundImageUrl}
                   points={canvasPoints}
+                  pointRssiByOrder={pointRssiByOrder}
+                  pointColorRange={pointColorRange}
                   aps={canvasAps}
                   mode={mode}
                   estimatedHeatmap={estimatedHeatmap}
                 />
                 {!hasMeasurement && <CanvasEmptyOverlay loading={pointsQuery.isFetching} />}
+                {/* dbm 모드 colorbar — 도면 좌상단. gradient + tick 값 수직 정렬로 "이 색=이 dBm" 직관. */}
+                {mode !== 'route' && pointColorRange && (
+                  <div className="pointer-events-none absolute left-3 top-3 z-10 w-70">
+                    <DbmColorBar
+                      vmin={pointColorRange.min}
+                      vmax={pointColorRange.max}
+                      label="실측 RSSI"
+                    />
+                  </div>
+                )}
               </div>
             </div>
           </section>
@@ -202,6 +286,8 @@ export default function MeasurementPage() {
               isStarting={createCalibration.isPending}
               canCalibrate={canCalibrate}
               disabledReason={calibrationDisabledReason}
+              spaceType={spaceType}
+              onSpaceTypeChange={setSpaceTypeOverride}
               onCalibrate={handleCalibrate}
               parameterUpdates={paramUpdatesQuery.data ?? []}
             />
@@ -255,6 +341,27 @@ function apLayoutsToCanvas(layouts: ApLayout[]): PlacedApSimple[] {
   return result;
 }
 
+/** rf_run.request_json.access_points → 캔버스 AP 마커.
+ *  시뮬 페이지가 찍은 AP 는 ap_layouts 에 자동 동기화 안 되고 이쪽에만 있음 → fallback.
+ *  request_json 은 unknown 이라 방어적으로 파싱.
+ */
+function apsFromRfRunRequest(requestJson: Record<string, unknown> | undefined): PlacedApSimple[] {
+  if (!requestJson) return [];
+  const raw = (requestJson as { access_points?: unknown }).access_points;
+  if (!Array.isArray(raw)) return [];
+  const out: PlacedApSimple[] = [];
+  raw.forEach((entry, i) => {
+    if (!entry || typeof entry !== 'object') return;
+    const r = entry as Record<string, unknown>;
+    const x = Number(r['x_m'] ?? r['x']);
+    const y = Number(r['y_m'] ?? r['y']);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const id = typeof r['id'] === 'string' ? r['id'] : `ap${i + 1}`;
+    out.push({ id, x_m: x, y_m: y, label: id.toUpperCase() });
+  });
+  return out;
+}
+
 /** RfMap.metrics_json.rss_dbm.mean 추출 (없으면 옛 avg_rssi_dbm fallback). */
 function extractPredictedAvgDbm(maps: RfMap[]): number | null {
   for (const m of maps) {
@@ -289,11 +396,15 @@ function computeMeasuredAvg(points: ApiPoint[]): number | null {
 function PageHeader({
   sessions,
   activeSession,
+  floorId,
+  projectId,
   onSelectSession,
   onStartMeasurement,
 }: {
   sessions: MeasurementSession[];
   activeSession: MeasurementSession | null;
+  floorId: string | null;
+  projectId: string | null;
   onSelectSession: (id: string) => void;
   onStartMeasurement: () => void;
 }) {
@@ -307,6 +418,7 @@ function PageHeader({
         </p>
       </div>
       <div className="flex items-center gap-2">
+        <FloorSpaceTypeSelector floorId={floorId} projectId={projectId} showLabel={false} />
         <Popover
           align="end"
           contentClassName="w-72 max-h-80 overflow-y-auto"
@@ -453,7 +565,34 @@ function TabBar({
   );
 }
 
-function Legend() {
+/** dbm 모드일 땐 inferno 그라데이션 + 양 끝/중간 dBm 표시. quality 모드면 기존 3-tier. */
+function Legend({
+  colorMode,
+  range,
+}: {
+  colorMode: 'quality' | 'dbm';
+  range?: { min: number; max: number };
+}) {
+  if (colorMode === 'dbm') {
+    const min = range?.min ?? -90;
+    const max = range?.max ?? -30;
+    const mid = (min + max) / 2;
+    return (
+      <div className="inline-flex w-fit items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-[11px] text-muted-foreground shadow-sm">
+        <span className="font-semibold text-foreground">실측 RSSI</span>
+        <div
+          className="h-2 w-32 rounded-sm border border-border/60"
+          style={{
+            backgroundImage:
+              'linear-gradient(to right, rgb(0,0,4), rgb(66,10,104), rgb(147,38,103), rgb(221,81,58), rgb(252,165,10), rgb(252,255,164))',
+          }}
+        />
+        <span className="font-mono tabular-nums text-[10px] text-foreground/70">
+          {min.toFixed(0)} · {mid.toFixed(0)} · {max.toFixed(0)} dBm
+        </span>
+      </div>
+    );
+  }
   return (
     <div className="inline-flex w-fit items-center gap-3 rounded-md border bg-background px-3 py-1.5 text-[11px] text-muted-foreground shadow-sm">
       <span className="font-semibold text-foreground">실측 포인트 범례</span>
@@ -461,6 +600,38 @@ function Legend() {
       <LegendDot color="oklch(0.78 0.15 85)" label="주의" />
       <LegendDot color="oklch(0.62 0.22 25)" label="불량" />
     </div>
+  );
+}
+
+/** "어떤 추정 방법으로 그려진 heatmap 인지" 사용자에게 명시.
+ *  expected ≠ actual 이면 amber 색 + "기대값으로 fallback" 안내 (예: sim 없어서 gp_only 로 떨어진 경우).
+ */
+function MethodBadge({
+  method,
+  expected,
+}: {
+  method: string;
+  expected: 'gp_only' | 'residual_kriging';
+}) {
+  const matched = method === expected;
+  const label = method === 'residual_kriging' ? '🔄 시뮬 보정 적용' : '📍 측정값만';
+  const tone = matched
+    ? 'border-primary/30 bg-primary/5 text-primary'
+    : 'border-amber-300 bg-amber-50 text-amber-900';
+  const hint = matched
+    ? ''
+    : ' (시뮬 grid 없음 → 측정값만 사용. 시뮬을 한 번 다시 돌리면 더 정확)';
+  return (
+    <span
+      className={
+        'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium ' +
+        tone
+      }
+      title={hint || undefined}
+    >
+      {label}
+      {!matched && <span className="font-normal opacity-80">{hint}</span>}
+    </span>
   );
 }
 

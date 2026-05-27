@@ -205,3 +205,4 @@ class EstimatedCoverageResponseDTO(BaseModel):
     uncertainty_max_db: float
     input_point_count: int     # GP 학습에 쓴 측정점 개수
     kernel_repr: str           # 학습된 kernel 정보 (디버깅)
+    method: str = "gp_only"    # 'gp_only' (sim 없음) | 'residual_kriging' (sim prior 사용)

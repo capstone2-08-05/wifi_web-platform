@@ -33,11 +33,16 @@ export interface PlacedApSimple {
 
 export type MeasurementViewMode = 'route' | 'heatmap' | 'both';
 
+/** 측정점 색 모드 — heatmap 배경과 시각 통일하려면 'dbm', 신호 품질 한눈에 보려면 'quality'. */
+export type PointColorMode = 'quality' | 'dbm';
+
 interface Props {
   sceneVersion: SceneVersion | null | undefined;
   /** 원본 도면 이미지 (배경에 연하게 깔림). 공간편집/시뮬과 동일한 방식. */
   backgroundImageUrl?: string | null;
   points: MeasurementPoint[];
+  /** 실제 측정 RSSI (dBm) — dbm color mode 에서 색 계산에 사용. points 와 같은 순서/id 매핑. */
+  pointRssiByOrder?: Map<string, number>;
   aps: PlacedApSimple[];
   mode: MeasurementViewMode;
   /** 강조 표시할 측정 포인트 (불량 지점). 외곽 링이 진하게 표시됨. */
@@ -50,6 +55,10 @@ interface Props {
     url: string;
     bounds: { min_x: number; min_y: number; max_x: number; max_y: number };
   } | null;
+  /** dbm color mode 일 때 색 범위 (heatmap rssi_range 와 일치시켜야 통일). 미지정 시 -90~-30. */
+  pointColorRange?: { min: number; max: number };
+  /** 측정점 색 모드. 미지정 시 route='quality', heatmap/both='dbm' 자동. */
+  pointColorMode?: PointColorMode;
 }
 
 interface Bounds {
@@ -108,6 +117,38 @@ const QUALITY_HEATMAP_RGBA: Record<MeasurementPointQuality, string> = {
   poor: 'rgba(248, 113, 113, 0.6)',
 };
 
+// matplotlib inferno cmap stops — Sionna heatmap 과 동일 visual language.
+// HeatmapColorLegend.tsx 와 동기화 유지.
+const INFERNO_STOPS = [
+  [0, 0, 4],
+  [22, 11, 57],
+  [66, 10, 104],
+  [106, 23, 110],
+  [147, 38, 103],
+  [188, 55, 84],
+  [221, 81, 58],
+  [243, 120, 25],
+  [252, 165, 10],
+  [246, 215, 70],
+  [252, 255, 164],
+] as const;
+
+/** dBm 값 → inferno cmap RGB. min/max 범위로 정규화 후 stops 사이 선형 보간. */
+function dbmToInfernoColor(dbm: number, min: number, max: number): string {
+  if (!Number.isFinite(dbm) || max <= min) return 'rgb(255, 255, 255)';
+  const t = Math.max(0, Math.min(1, (dbm - min) / (max - min)));
+  const scaled = t * (INFERNO_STOPS.length - 1);
+  const lo = Math.floor(scaled);
+  const hi = Math.min(INFERNO_STOPS.length - 1, lo + 1);
+  const frac = scaled - lo;
+  const c0 = INFERNO_STOPS[lo];
+  const c1 = INFERNO_STOPS[hi];
+  const r = Math.round(c0[0] + frac * (c1[0] - c0[0]));
+  const g = Math.round(c0[1] + frac * (c1[1] - c0[1]));
+  const b = Math.round(c0[2] + frac * (c1[2] - c0[2]));
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
 /**
  * 실측/진단 캔버스. 확정 버전 도형 위에 측정 경로(line + 색상 dot) 와/또는
  * 실측 히트맵(radial gradient) 을 모드에 따라 토글 렌더링.
@@ -117,10 +158,13 @@ export function MeasurementCanvas({
   sceneVersion,
   backgroundImageUrl,
   points,
+  pointRssiByOrder,
   aps,
   mode,
   highlightedPointId,
   estimatedHeatmap,
+  pointColorRange,
+  pointColorMode,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const sceneId = sceneVersion?.id ?? null;
@@ -153,8 +197,15 @@ export function MeasurementCanvas({
   // 히트맵 점 반경 — viewBox 크기에 비례. 보통 ~1.5m 정도 영향권으로 보이도록.
   const heatmapRadius = Math.max(0.8, Math.min(vb.w, vb.h) * 0.15);
 
-  const showRoute = mode === 'route' || mode === 'both';
+  const showLine = mode === 'route' || mode === 'both';
   const showHeatmap = mode === 'heatmap' || mode === 'both';
+  // dots 는 모든 모드에서 표시 — 측정 데이터의 본체. heatmap 탭에서도 점 보여야 어디서 측정했는지 알 수 있음.
+  const showDots = sortedPoints.length > 0;
+  // 색 모드: 사용자 지정 > heatmap/both 면 dbm, 그 외 quality (route 또는 dots 만).
+  const effectiveColorMode: PointColorMode =
+    pointColorMode ?? (showHeatmap ? 'dbm' : 'quality');
+  const dbmMin = pointColorRange?.min ?? -90;
+  const dbmMax = pointColorRange?.max ?? -30;
 
   return (
     <div
@@ -256,8 +307,8 @@ export function MeasurementCanvas({
           <ObjectShape key={o.id} object={o} />
         ))}
 
-        {/* 측정 경로 라인 — 점들 순서대로 점선 연결. */}
-        {showRoute && sortedPoints.length >= 2 && (
+        {/* 측정 경로 라인 — route/both 모드에서만 (heatmap 모드는 점만 표시). */}
+        {showLine && sortedPoints.length >= 2 && (
           <polyline
             points={sortedPoints.map((p) => `${p.x_m},${p.y_m}`).join(' ')}
             fill="none"
@@ -269,21 +320,31 @@ export function MeasurementCanvas({
           />
         )}
 
-        {/* 측정 포인트 점. */}
-        {showRoute &&
-          sortedPoints.map((p) => (
-            <g key={`pt-${p.id}`} pointerEvents="none">
-              <circle
-                cx={p.x_m}
-                cy={p.y_m}
-                r={Math.max(0.08, vb.w * 0.008)}
-                fill={QUALITY_FILL[p.quality]}
-                stroke={highlightedPointId === p.id ? 'oklch(0.45 0.22 25)' : 'white'}
-                strokeWidth={highlightedPointId === p.id ? 0.06 : 0.04}
-                vectorEffect="non-scaling-stroke"
-              />
-            </g>
-          ))}
+        {/* 측정 포인트 점 — 모든 모드에서 표시. heatmap 모드에선 dbm 그라데이션 색 */}
+        {showDots &&
+          sortedPoints.map((p) => {
+            const fill =
+              effectiveColorMode === 'dbm'
+                ? dbmToInfernoColor(
+                    pointRssiByOrder?.get(p.id) ?? Number.NaN,
+                    dbmMin,
+                    dbmMax,
+                  )
+                : QUALITY_FILL[p.quality];
+            return (
+              <g key={`pt-${p.id}`} pointerEvents="none">
+                <circle
+                  cx={p.x_m}
+                  cy={p.y_m}
+                  r={Math.max(0.08, vb.w * 0.008)}
+                  fill={fill}
+                  stroke={highlightedPointId === p.id ? 'oklch(0.45 0.22 25)' : 'white'}
+                  strokeWidth={highlightedPointId === p.id ? 0.06 : 0.04}
+                  vectorEffect="non-scaling-stroke"
+                />
+              </g>
+            );
+          })}
 
         {/* AP 마커 — 파란 원에 흰색 wifi 아이콘. */}
         {aps.map((ap) => (

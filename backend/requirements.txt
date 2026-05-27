@@ -44,6 +44,9 @@ email-validator==2.2.0
 easyocr==1.7.2
 # GP regression for measurement coverage estimation (#81)
 scikit-learn>=1.6
+# Heatmap PNG rendering — measurement_estimation/heatmap.py 가 사용 (예전엔 누락돼있어
+# 런타임에 ModuleNotFoundError 발생했음). use("Agg") 로 GUI backend 비활성화.
+matplotlib>=3.10
 # AWS SDK — S3 자산 저장 + SageMaker 추론 호출 (#65)
 boto3==1.43.11
 

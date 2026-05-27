@@ -21,6 +21,44 @@ from .gp_estimator import CoverageEstimate
 logger = logging.getLogger(__name__)
 
 
+# 색 스케일 fallback / minimum span — measurement 점이 1~2개라 GP mean grid spread 가
+# 거의 0 일 때 vmin≈vmax 가 되어 전체가 colormap 한 색으로 깔리는 버그 방지.
+_MEAN_FALLBACK_VMIN_DBM = -95.0
+_MEAN_FALLBACK_VMAX_DBM = -35.0
+_MEAN_MIN_SPAN_DB = 12.0
+
+
+# 실내 Wi-Fi RSSI 물리적 noise floor — 이하 값은 시뮬 invalid 셀의 sentinel (-200, -270 등) 이라
+# 의미 없음. p5/p95 계산 시 제외해야 color scale 가 망가지지 않음.
+_NOISE_FLOOR_DBM = -120.0
+
+
+def _resolve_mean_color_limits(grid: np.ndarray) -> tuple[float, float]:
+    """grid mean 의 p5~p95. spread 너무 좁거나 비유한값이면 fallback / mean ± span/2.
+
+    Wi-Fi noise floor (-120dBm) 이하는 시뮬 invalid sentinel 이거나 잡음이므로 제외.
+    sionna_artifacts.resolve_radiomap_color_limits 와 동일 패턴 — 일관성.
+    """
+    if grid is None or grid.size == 0:
+        return (_MEAN_FALLBACK_VMIN_DBM, _MEAN_FALLBACK_VMAX_DBM)
+    finite = grid[np.isfinite(grid)]
+    # noise floor 이하는 색 스케일 결정에서 제외 — invalid sim 셀이 -200 ~ -270 정도라
+    # 포함 시 p5 가 그쪽으로 끌려가서 색이 한쪽에 쏠림.
+    valid = finite[finite > _NOISE_FLOOR_DBM]
+    if valid.size == 0:
+        return (_MEAN_FALLBACK_VMIN_DBM, _MEAN_FALLBACK_VMAX_DBM)
+    lo, hi = np.percentile(valid, [5.0, 95.0])
+    if not (np.isfinite(lo) and np.isfinite(hi)):
+        return (_MEAN_FALLBACK_VMIN_DBM, _MEAN_FALLBACK_VMAX_DBM)
+    if float(hi - lo) < _MEAN_MIN_SPAN_DB:
+        # 측정점 sparse → GP 가 prior mean 으로 단조롭게 깔림 → spread 좁음.
+        # 평균 중심으로 min span 만큼 강제 확장 → colormap 끝색 한가지로 안 깔림.
+        mid = float(np.mean(valid))
+        half = _MEAN_MIN_SPAN_DB / 2.0
+        return (mid - half, mid + half)
+    return (float(lo), float(hi))
+
+
 def _render_to_png(
     grid: np.ndarray,
     xs: np.ndarray,
@@ -80,14 +118,17 @@ def render_and_upload(
     mean = estimate.mean_grid
     std = estimate.std_grid
 
-    # mean 색 범위: -100 ~ -30 dBm (Wi-Fi RSSI 일반)
+    # mean 색 범위 — _resolve_mean_color_limits 가 narrow spread / NaN / empty 안전 처리.
+    # cmap='inferno' — Sionna RT heatmap, frontend Legend/측정점 그라데이션과 동일 palette.
+    # (이전엔 jet 라서 frontend 측정점 inferno 와 색 mismatch 발생.)
+    mean_vmin, mean_vmax = _resolve_mean_color_limits(mean)
     mean_png = _render_to_png(
         mean,
         estimate.xs,
         estimate.ys,
-        cmap="jet",
-        vmin=float(np.percentile(mean, 5)),
-        vmax=float(np.percentile(mean, 95)),
+        cmap="inferno",
+        vmin=mean_vmin,
+        vmax=mean_vmax,
         title=f"Estimated RSSI Coverage (GP, N={estimate.input_point_count})",
         colorbar_label="RSSI (dBm)",
         overlay_points=overlay,
