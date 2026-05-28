@@ -1,0 +1,146 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy-backend.yml"
+      - "docker-compose.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/backend
+  CONTAINER_NAME: wifi-backend
+  APP_DIR: /opt/wifi-backend
+  HOST_PORT: 8000
+  CONTAINER_PORT: 8000
+
+jobs:
+  build-and-deploy:
+    name: Build and deploy backend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set lowercase image name
+        id: image
+        run: |
+          IMAGE="${REGISTRY}/${IMAGE_NAME}"
+          echo "image=${IMAGE,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.image.outputs.image }}:latest
+            ${{ steps.image.outputs.image }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy backend container on server
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ steps.image.outputs.image }}:${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SERVER_HOST}" ]; then
+            echo "SERVER_HOST secret is required."
+            exit 1
+          fi
+
+          if [ -z "${SERVER_USER}" ]; then
+            echo "SERVER_USER secret is required."
+            exit 1
+          fi
+
+          if [ -z "${SERVER_SSH_KEY}" ]; then
+            echo "SERVER_SSH_KEY secret is required."
+            exit 1
+          fi
+
+          SSH_PORT="${SERVER_PORT:-22}"
+
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+          ssh -o StrictHostKeyChecking=accept-new \
+              -i ~/.ssh/id_ed25519 \
+              -p "$SSH_PORT" \
+              "$SERVER_USER@$SERVER_HOST" \
+              "GHCR_USERNAME='$GHCR_USERNAME' GHCR_TOKEN='$GHCR_TOKEN' IMAGE='$IMAGE' CONTAINER_NAME='${CONTAINER_NAME}' APP_DIR='${APP_DIR}' HOST_PORT='${HOST_PORT}' CONTAINER_PORT='${CONTAINER_PORT}' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          echo "[deploy] Preparing app directory: ${APP_DIR}"
+          mkdir -p "${APP_DIR}/data"
+
+          if [ ! -f "${APP_DIR}/.env" ]; then
+            echo "[deploy] Missing ${APP_DIR}/.env"
+            echo "[deploy] Create the production env file on the server before deploying."
+            exit 1
+          fi
+
+          echo "[deploy] Logging in to GHCR..."
+          echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USERNAME}" --password-stdin
+
+          echo "[deploy] Pulling image: ${IMAGE}"
+          docker pull "${IMAGE}"
+
+          echo "[deploy] Stopping old container if exists..."
+          docker stop "${CONTAINER_NAME}" || true
+          docker rm "${CONTAINER_NAME}" || true
+
+          echo "[deploy] Starting new container..."
+          docker run -d \
+            --name "${CONTAINER_NAME}" \
+            --restart unless-stopped \
+            --env-file "${APP_DIR}/.env" \
+            -e RUN_MIGRATIONS=true \
+            -p "${HOST_PORT}:${CONTAINER_PORT}" \
+            -v "${APP_DIR}/data:/app/backend/data" \
+            "${IMAGE}"
+
+          echo "[deploy] Waiting for health check..."
+          for i in $(seq 1 20); do
+            if curl -fsS "http://127.0.0.1:${HOST_PORT}/health" > /dev/null; then
+              echo "[deploy] Backend is healthy."
+              docker image prune -f
+              exit 0
+            fi
+
+            echo "[deploy] Health check retry ${i}/20..."
+            sleep 3
+          done
+
+          echo "[deploy] Health check failed. Container logs:"
+          docker logs --tail=200 "${CONTAINER_NAME}" || true
+          exit 1
+          REMOTE

@@ -1,0 +1,44 @@
+.git
+.github
+.vscode
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Node / frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Local data / generated files
+backend/data/
+data/
+uploads/
+masks/
+assets/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
