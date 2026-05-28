@@ -37,4 +37,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${BACKEND_PORT:-8000}"]
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${BACKEND_PORT:-8000}"]
