@@ -11,14 +11,21 @@ WORKDIR /app/backend
 # opencv-python, shapely, psycopg2 등 런타임 의존성 대비
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt ./requirements.txt
 
 RUN python -m pip install --upgrade pip \
-    && pip install -r requirements.txt
+    && pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision \
+    && pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt \
+    && python - <<'PY'
+import torch
+print("torch version:", torch.__version__)
+print("cuda available:", torch.cuda.is_available())
+assert torch.cuda.is_available() is False
+assert "+cpu" in torch.__version__ or torch.version.cuda is None
+PY
 
 COPY backend/ ./
 
