@@ -18,7 +18,14 @@ COPY backend/requirements.txt ./requirements.txt
 
 RUN python -m pip install --upgrade pip \
     && pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision \
-    && pip install -r requirements.txt
+    && pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt \
+    && python - <<'PY'
+import torch
+print("torch version:", torch.__version__)
+print("cuda available:", torch.cuda.is_available())
+assert torch.cuda.is_available() is False
+assert "+cpu" in torch.__version__ or torch.version.cuda is None
+PY
 
 COPY backend/ ./
 
