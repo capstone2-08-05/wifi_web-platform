@@ -75,24 +75,21 @@ def apply_to_scene_and_sim(
             w["thickness"] = float(w.get("thickness") or 0.12) * float(scale)
             scaled_count += 1
 
-    # 2) tx_power_offset_db → simulation.tx_power_dbm
-    tx_applied = False
-    if tx_offset and "tx_power_dbm" in simulation:
-        simulation["tx_power_dbm"] = float(simulation["tx_power_dbm"]) + tx_offset
-        tx_applied = True
-
+    # tx_power_offset_db 는 Sionna 에 적용하지 않음.
+    # BO 가 찾은 offset 은 단순 path-loss 수식 모델의 오차를 보정한 값이므로,
+    # 이미 물리적으로 정확한 Sionna 레이트레이싱에 그대로 더하면 신호가 크게 낮아짐.
     summary = {
         "walls_scaled": scaled_count,
-        "tx_power_offset_db_applied": tx_offset if tx_applied else 0.0,
+        "tx_power_offset_db_applied": 0.0,
         "material_scales": scales,
-        # SageMaker 경로에선 미반영 (참고용 — 컨테이너가 correction_profile 지원하면 활성)
         "unapplied": {
+            "tx_power_offset_db": tx_offset,
             "floor_thickness_m": best_params.get("floor_thickness_m"),
             "furniture_default_thickness_m": best_params.get("furniture_default_thickness_m"),
         },
     }
     logger.info(
         "calibration applied to RF input: %d walls scaled, tx_offset=%.2f",
-        scaled_count, tx_offset if tx_applied else 0.0,
+        scaled_count, 0.0,
     )
     return summary
