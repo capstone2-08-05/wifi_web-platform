@@ -83,10 +83,15 @@ export default function MeasurementPage() {
   // - Source of truth: Floor.space_type (헤더의 도면 셀렉터에서 설정)
   // - 이 페이지에서도 일회성 override 가능 — 사용자가 다른 prior 로 실험하고 싶을 때
   // - floor 가 바뀌면 그 floor 의 값으로 자동 리셋.
-  const [spaceTypeOverride, setSpaceTypeOverride] = useState<SpaceType | null>(null);
-  useEffect(() => {
-    setSpaceTypeOverride(null);  // floor 전환 시 override 해제
-  }, [floorId]);
+  const [spaceTypeOverrideState, setSpaceTypeOverrideState] = useState<{
+    floorId: string | null;
+    value: SpaceType | null;
+  }>({ floorId: null, value: null });
+  const spaceTypeOverride =
+    spaceTypeOverrideState.floorId === floorId ? spaceTypeOverrideState.value : null;
+  const setSpaceTypeOverride = (value: SpaceType | null) => {
+    setSpaceTypeOverrideState({ floorId: floorId ?? null, value });
+  };
   // Floor 의 space_type 을 reactive 하게 읽음 — 헤더에서 변경하면 즉시 반영.
   const projectIdForFloors = useAppStore((s) => s.selectedProjectId);
   const floorsList = useFloors(projectIdForFloors);
@@ -167,6 +172,7 @@ export default function MeasurementPage() {
     [activeCoverage],
   );
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [mobilePurpose, setMobilePurpose] = useState<'calibration' | 'reference'>('calibration');
   const [actionGuideOpen, setActionGuideOpen] = useState(false);
 
   const hasVersion = versions.length > 0;
@@ -192,6 +198,20 @@ export default function MeasurementPage() {
     !!latestRfRunId &&
     !!currentVersion?.id &&
     hasEnoughMeasurements;
+  const evaluationSessionIds = (() => {
+    const ids = new Set<string>();
+    for (const session of sessions) {
+      if (
+        session.measurement_purpose === 'calibration' ||
+        session.measurement_purpose === 'reference' ||
+        session.measurement_purpose === 'validation'
+      ) {
+        ids.add(session.id);
+      }
+    }
+    if (activeSession?.id) ids.add(activeSession.id);
+    return [...ids];
+  })();
   const calibrationDisabledReason = !hasMeasurement
     ? '먼저 측정을 진행해주세요.'
     : !hasEnoughMeasurements
@@ -207,7 +227,7 @@ export default function MeasurementPage() {
         floor_id: activeSession.floor_id,
         rf_run_id: latestRfRunId,
         scene_version_id: currentVersion.id,
-        measurement_session_ids: [activeSession.id],
+        measurement_session_ids: evaluationSessionIds.length > 0 ? evaluationSessionIds : [activeSession.id],
         method: 'global_offset',
         split: { strategy: 'purpose_or_random', holdout_ratio: 0.3, seed: 42 },
         visualization: {
@@ -235,7 +255,10 @@ export default function MeasurementPage() {
         floorId={floorId ?? null}
         projectId={projectIdForFloors}
         onSelectSession={(id) => setSelectedSessionId(id)}
-        onStartMeasurement={() => setMobileOpen(true)}
+        onStartMeasurement={() => {
+          setMobilePurpose('calibration');
+          setMobileOpen(true);
+        }}
       />
 
       {!floorId ? (
@@ -304,6 +327,10 @@ export default function MeasurementPage() {
               spaceType={spaceType}
               onSpaceTypeChange={setSpaceTypeOverride}
               onCalibrate={handleCalibrate}
+              onAddReferenceMeasurement={() => {
+                setMobilePurpose('reference');
+                setMobileOpen(true);
+              }}
               parameterUpdates={paramUpdatesQuery.data ?? []}
               evaluation={calibrationEvaluation}
               backgroundImageUrl={backgroundImageUrl}
@@ -317,7 +344,11 @@ export default function MeasurementPage() {
         </div>
       )}
 
-      <MobileConnectModal open={mobileOpen} onClose={() => setMobileOpen(false)} />
+      <MobileConnectModal
+        open={mobileOpen}
+        onClose={() => setMobileOpen(false)}
+        recommendedPurpose={mobilePurpose}
+      />
       <ActionGuideModal open={actionGuideOpen} onClose={() => setActionGuideOpen(false)} />
       <HelpFab />
     </div>
