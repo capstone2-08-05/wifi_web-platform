@@ -7,6 +7,7 @@ import type { UUID } from '@/types/common';
 import type {
   CalibrationRun,
   CalibrationRunCreateRequest,
+  CalibrationEvaluationRequest,
 } from '@/types/calibration-run';
 import { isJobFailed, isJobSucceeded, isJobTerminal } from '@/types/job';
 
@@ -24,6 +25,22 @@ export function useCreateCalibrationRun() {
     onError: (err) => {
       const e = err as HttpError | null;
       toast.error('시뮬레이션 보정 요청 실패', e?.message ?? '잠시 후 다시 시도해주세요.');
+    },
+  });
+}
+
+export function useEvaluateCalibrationRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CalibrationEvaluationRequest) => calibrationRunApi.evaluate(body),
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ['calibration-run'] });
+      toast.success('Calibration evaluation complete', 'Validation metrics and 3-way maps are ready.');
+      return result;
+    },
+    onError: (err) => {
+      const e = err as HttpError | null;
+      toast.error('Calibration evaluation failed', e?.message ?? 'Please check RF map and measurement points.');
     },
   });
 }

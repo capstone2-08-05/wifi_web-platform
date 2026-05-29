@@ -29,6 +29,9 @@ class MeasurementSession(Base):
     measurement_type: Mapped[str] = mapped_column(
         String(30), nullable=False, server_default=text("'rssi'")
     )
+    measurement_purpose: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'unknown'")
+    )
     device_info_json: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )

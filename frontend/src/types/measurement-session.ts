@@ -3,6 +3,7 @@ import type { ISODateString, UUID } from './common';
 // §10 실측 세션 / 포인트 — 백엔드 schemas/measurement.py 응답과 정합.
 
 export type MeasurementSessionStatus = 'in_progress' | 'completed' | string;
+export type MeasurementPurpose = 'calibration' | 'validation' | 'reference' | 'unknown';
 
 export interface MeasurementSession {
   id: UUID;
@@ -11,6 +12,7 @@ export interface MeasurementSession {
   scene_version_id: UUID | null;
   asset_id: UUID | null;
   measurement_type: string;
+  measurement_purpose: MeasurementPurpose;
   status: MeasurementSessionStatus;
   created_at: ISODateString;
 }
@@ -28,6 +30,7 @@ export interface MeasurementPoint {
   batch_id: string | null;
   floor_position: FloorPosition;
   rssi_dbm: number | null;
+  measurement_purpose: MeasurementPurpose | null;
   ap_bssid: string | null;
   ap_ssid: string | null;
   channel: number | null;
