@@ -64,32 +64,37 @@ def apply_to_scene_and_sim(
     scales: dict[str, float] = best_params.get("material_attenuation_scales") or {}
     tx_offset = float(best_params.get("tx_power_offset_db") or 0.0)
 
-    # 1) 재질별 attenuation_scale → wall thickness 배수
-    walls = scene_json.get("walls") or []
-    scaled_count = 0
-    for w in walls:
-        sionna_mat = str(w.get("material") or "").lower()
-        calib_key = _SIONNA_TO_CALIB.get(sionna_mat, sionna_mat)
-        scale = scales.get(calib_key)
-        if scale is not None and scale > 0:
-            w["thickness"] = float(w.get("thickness") or 0.12) * float(scale)
-            scaled_count += 1
+    # tx_power_offset_db 만 Sionna 에 적용.
+    #
+    # material_attenuation_scales 는 적용하지 않음:
+    #   path-loss 모델은 직선 감쇠 수식이라 벽 두께 스케일로 오차를 흡수하지만,
+    #   Sionna 는 EM 물리 계산을 독립적으로 수행해 두께를 늘리면 반사/회절까지 바뀌어
+    #   공간별 예측이 크게 왜곡됨 (예: -61 → -85 dBm).
+    #
+    # tx_power_offset_db 는 적용:
+    #   전체 신호 세기의 체계적 오차(AP 실제 출력, 안테나 이득 등)를 단순 가산으로 보정.
+    #   공간 분포를 바꾸지 않아 Sionna 예측에 안전하게 적용 가능.
+    if tx_offset:
+        sim_tx = simulation.get("tx_power_dbm")
+        if sim_tx is not None:
+            simulation["tx_power_dbm"] = float(sim_tx) + tx_offset
+        # nested 구조(physical.tx_power_dbm)도 처리
+        physical = simulation.get("physical")
+        if isinstance(physical, dict) and "tx_power_dbm" in physical:
+            physical["tx_power_dbm"] = float(physical["tx_power_dbm"]) + tx_offset
 
-    # tx_power_offset_db 는 Sionna 에 적용하지 않음.
-    # BO 가 찾은 offset 은 단순 path-loss 수식 모델의 오차를 보정한 값이므로,
-    # 이미 물리적으로 정확한 Sionna 레이트레이싱에 그대로 더하면 신호가 크게 낮아짐.
     summary = {
-        "walls_scaled": scaled_count,
-        "tx_power_offset_db_applied": 0.0,
+        "walls_scaled": 0,
+        "tx_power_offset_db_applied": tx_offset,
         "material_scales": scales,
         "unapplied": {
-            "tx_power_offset_db": tx_offset,
+            "material_attenuation_scales": scales,
             "floor_thickness_m": best_params.get("floor_thickness_m"),
             "furniture_default_thickness_m": best_params.get("furniture_default_thickness_m"),
         },
     }
     logger.info(
-        "calibration applied to RF input: %d walls scaled, tx_offset=%.2f",
-        scaled_count, 0.0,
+        "calibration applied to Sionna: tx_offset=%.2f dB (wall scales skipped)",
+        tx_offset,
     )
     return summary
