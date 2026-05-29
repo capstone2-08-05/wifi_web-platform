@@ -32,6 +32,70 @@ export interface CalibrationRun {
   finished_at: ISODateString | null;
 }
 
+export type MeasurementPurpose = 'calibration' | 'validation' | 'reference' | 'unknown';
+
+export interface CalibrationEvaluationRequest {
+  floor_id: UUID;
+  scene_version_id: UUID;
+  rf_run_id: UUID;
+  measurement_session_ids: UUID[];
+  method?: 'global_offset';
+  split?: {
+    strategy: 'purpose_or_random' | 'random';
+    holdout_ratio: number;
+    seed: number;
+  };
+  visualization?: {
+    include_reference_map: boolean;
+    reference_map_method: 'idw';
+    rssi_min_dbm: number;
+    rssi_max_dbm: number;
+  };
+}
+
+export interface CalibrationEvaluationPoint {
+  point_id: UUID;
+  session_id: UUID;
+  x_m: number;
+  y_m: number;
+  rssi_dbm: number;
+  measurement_purpose: MeasurementPurpose;
+  split: MeasurementPurpose;
+  baseline_pred_dbm?: number;
+  calibrated_pred_dbm?: number;
+  baseline_error_db?: number;
+  calibrated_error_db?: number;
+  invalid_reason?: string;
+}
+
+export interface CalibrationEvaluationMap {
+  label: string;
+  values_dbm: number[][];
+  bounds_m: { min_x: number; min_y: number; max_x: number; max_y: number };
+  method?: string;
+  offset_db?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CalibrationEvaluationResponse {
+  calibration_run_id: UUID;
+  status: string;
+  maps: {
+    baseline: CalibrationEvaluationMap;
+    calibrated: CalibrationEvaluationMap;
+    measured_reference?: CalibrationEvaluationMap;
+  };
+  color_scale: { min_dbm: number; max_dbm: number };
+  points: {
+    calibration: CalibrationEvaluationPoint[];
+    validation: CalibrationEvaluationPoint[];
+    reference: CalibrationEvaluationPoint[];
+    invalid: CalibrationEvaluationPoint[];
+  };
+  metrics: Record<string, number>;
+  evaluation: Record<string, unknown>;
+}
+
 export interface CalibrationRunCreateRequest {
   session_id: UUID;
   rf_run_id: UUID;

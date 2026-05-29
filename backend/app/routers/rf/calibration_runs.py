@@ -10,6 +10,8 @@ from app.api.deps import get_current_user, verify_internal_api_key
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.rf.calibration_run import (
+    CalibrationEvaluationRequest,
+    CalibrationEvaluationResponse,
     CalibrationRunCreate,
     CalibrationRunResponse,
     CalibrationRunUpdate,
@@ -34,6 +36,22 @@ def create_calibration_run(
     current_user: User = Depends(get_current_user),
 ) -> CalibrationRunResponse:
     return calibration_run_service.create_calibration_run(
+        db, payload=payload, user=current_user
+    )
+
+
+@router.post(
+    "/evaluate",
+    response_model=CalibrationEvaluationResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Evaluate global-offset calibration with held-out validation points and 3-way RSSI maps.",
+)
+def evaluate_calibration_run(
+    payload: CalibrationEvaluationRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CalibrationEvaluationResponse:
+    return calibration_run_service.evaluate_calibration_run(
         db, payload=payload, user=current_user
     )
 

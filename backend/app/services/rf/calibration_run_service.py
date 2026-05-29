@@ -1,7 +1,10 @@
 """§11 Calibration: 실행 / 조회 / 파라미터 변경 이력 / 시스템 갱신"""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
+import math
+import random
 from typing import Any
 from uuid import UUID
 
@@ -12,18 +15,22 @@ from app.core.errors import AppError, ErrorCode
 from app.models.calibration_run import CalibrationRun
 from app.models.job import Job
 from app.models.measurement_session import MeasurementSession
+from app.models.measurement_point import MeasurementPoint
 from app.models.parameter_update import ParameterUpdate
 from app.models.project import Project
 from app.models.rf_run import RfRun
 from app.models.scene_version import SceneVersion
 from app.models.user import User
 from app.schemas.rf.calibration_run import (
+    CalibrationEvaluationRequest,
+    CalibrationEvaluationResponse,
     CalibrationRunCreate,
     CalibrationRunResponse,
     CalibrationRunUpdate,
     ParameterUpdateCreate,
     ParameterUpdateResponse,
 )
+from app.core.geom import wkb_to_geojson
 
 
 JOB_TYPE_CALIBRATION = "calibration"
@@ -89,6 +96,15 @@ def _get_owned_session(
             status_code=404,
         )
     return s
+
+
+def _get_owned_sessions(
+    db: Session, session_ids: list[UUID], user: User
+) -> list[MeasurementSession]:
+    sessions: list[MeasurementSession] = []
+    for session_id in session_ids:
+        sessions.append(_get_owned_session(db, session_id, user))
+    return sessions
 
 
 def _get_owned_calibration_run(
@@ -223,6 +239,479 @@ def create_calibration_run(
         db.rollback()
         raise
     return _to_response(cr)
+
+
+@dataclass(frozen=True)
+class _RadioMap:
+    values: list[list[float]]
+    min_x: float
+    min_y: float
+    max_x: float
+    max_y: float
+
+    @property
+    def height(self) -> int:
+        return len(self.values)
+
+    @property
+    def width(self) -> int:
+        return len(self.values[0]) if self.values else 0
+
+
+@dataclass(frozen=True)
+class _EvalPoint:
+    point_id: str
+    session_id: str
+    x_m: float
+    y_m: float
+    measured_rssi_dbm: float
+    purpose: str
+    split: str
+    baseline_pred_dbm: float | None = None
+    calibrated_pred_dbm: float | None = None
+    invalid_reason: str | None = None
+
+
+def _load_radio_map(rf_run: RfRun) -> _RadioMap:
+    radio_map = (rf_run.metrics_json or {}).get("radio_map") or {}
+    values_raw = radio_map.get("values_dbm")
+    bounds = radio_map.get("bounds_m") or {}
+    if not isinstance(values_raw, list) or not values_raw:
+        raise AppError(
+            ErrorCode.INVALID_REQUEST_BODY,
+            "RF run does not contain radio_map.values_dbm.",
+            status_code=400,
+        )
+
+    values: list[list[float]] = []
+    width: int | None = None
+    for row in values_raw:
+        if not isinstance(row, list) or not row:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST_BODY,
+                "radio_map.values_dbm must be a non-empty 2D array.",
+                status_code=400,
+            )
+        parsed = [float(v) for v in row]
+        width = len(parsed) if width is None else width
+        if len(parsed) != width:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST_BODY,
+                "radio_map.values_dbm rows must have the same width.",
+                status_code=400,
+            )
+        values.append(parsed)
+
+    min_x = float(bounds.get("min_x", 0.0))
+    min_y = float(bounds.get("min_y", 0.0))
+    max_x = float(bounds.get("max_x", float(width or 0)))
+    max_y = float(bounds.get("max_y", float(len(values))))
+    if max_x <= min_x or max_y <= min_y:
+        raise AppError(
+            ErrorCode.INVALID_REQUEST_BODY,
+            "radio_map.bounds_m is missing or invalid.",
+            status_code=400,
+        )
+    return _RadioMap(values=values, min_x=min_x, min_y=min_y, max_x=max_x, max_y=max_y)
+
+
+def _sample_radio_map(radio_map: _RadioMap, x_m: float, y_m: float) -> tuple[float | None, str | None]:
+    if x_m < radio_map.min_x or x_m > radio_map.max_x or y_m < radio_map.min_y or y_m > radio_map.max_y:
+        return None, "outside_bounds"
+    col = int(math.floor((x_m - radio_map.min_x) / (radio_map.max_x - radio_map.min_x) * radio_map.width))
+    row = int(math.floor((y_m - radio_map.min_y) / (radio_map.max_y - radio_map.min_y) * radio_map.height))
+    col = min(max(col, 0), radio_map.width - 1)
+    row = min(max(row, 0), radio_map.height - 1)
+    value = float(radio_map.values[row][col])
+    if not math.isfinite(value) or value <= -200.0:
+        return None, "invalid_radio_cell"
+    return value, None
+
+
+def _point_coords(row: MeasurementPoint) -> tuple[float, float]:
+    gj = wkb_to_geojson(row.point_geom)
+    coords = (gj or {}).get("coordinates") or [0.0, 0.0]
+    return float(coords[0]), float(coords[1])
+
+
+def _effective_purpose(point: MeasurementPoint, session_by_id: dict[str, MeasurementSession]) -> str:
+    value = point.measurement_purpose or session_by_id[point.session_id].measurement_purpose or "unknown"
+    return value if value in {"calibration", "validation", "reference", "unknown"} else "unknown"
+
+
+def _split_points(
+    points: list[MeasurementPoint],
+    session_by_id: dict[str, MeasurementSession],
+    *,
+    strategy: str,
+    holdout_ratio: float,
+    seed: int,
+) -> tuple[list[_EvalPoint], dict[str, Any]]:
+    rows: list[tuple[MeasurementPoint, str]] = [
+        (p, _effective_purpose(p, session_by_id))
+        for p in points
+        if p.rssi_dbm is not None
+    ]
+    if len(rows) < 5:
+        raise AppError(
+            ErrorCode.INVALID_REQUEST_BODY,
+            f"Need at least 5 measurement points with RSSI for evaluation (got {len(rows)}).",
+            status_code=400,
+        )
+
+    has_explicit_split = strategy == "purpose_or_random" and any(
+        purpose in {"calibration", "validation"} for _, purpose in rows
+    )
+    split_by_id: dict[str, str] = {}
+    if has_explicit_split:
+        for p, purpose in rows:
+            if purpose in {"calibration", "validation", "reference"}:
+                split_by_id[p.id] = purpose
+            else:
+                split_by_id[p.id] = "calibration"
+    else:
+        sorted_rows = sorted(rows, key=lambda item: (str(item[0].session_id), str(item[0].id)))
+        rng = random.Random(seed)
+        shuffled = sorted_rows[:]
+        rng.shuffle(shuffled)
+        n_validation = max(1, int(round(len(shuffled) * holdout_ratio)))
+        n_validation = min(n_validation, len(shuffled) - 1)
+        validation_ids = {p.id for p, _ in shuffled[:n_validation]}
+        for p, _ in sorted_rows:
+            split_by_id[p.id] = "validation" if p.id in validation_ids else "calibration"
+
+    result: list[_EvalPoint] = []
+    for p, purpose in rows:
+        x_m, y_m = _point_coords(p)
+        split = split_by_id[p.id]
+        result.append(
+            _EvalPoint(
+                point_id=p.id,
+                session_id=p.session_id,
+                x_m=x_m,
+                y_m=y_m,
+                measured_rssi_dbm=float(p.rssi_dbm),
+                purpose=purpose,
+                split=split,
+            )
+        )
+
+    calibration_count = sum(1 for p in result if p.split == "calibration")
+    validation_count = sum(1 for p in result if p.split == "validation")
+    if calibration_count == 0:
+        raise AppError(ErrorCode.INVALID_REQUEST_BODY, "No calibration points available.", 400)
+    if validation_count == 0:
+        raise AppError(ErrorCode.INVALID_REQUEST_BODY, "No validation points available.", 400)
+
+    return result, {
+        "strategy": strategy,
+        "holdout_ratio": holdout_ratio,
+        "seed": seed,
+        "source": "purpose" if has_explicit_split else "random",
+        "n_total_points": len(result),
+        "n_calibration_points": calibration_count,
+        "n_validation_points": validation_count,
+    }
+
+
+def _with_predictions(points: list[_EvalPoint], radio_map: _RadioMap) -> list[_EvalPoint]:
+    sampled: list[_EvalPoint] = []
+    for p in points:
+        pred, invalid_reason = _sample_radio_map(radio_map, p.x_m, p.y_m)
+        sampled.append(
+            _EvalPoint(
+                **{
+                    **p.__dict__,
+                    "baseline_pred_dbm": pred,
+                    "invalid_reason": invalid_reason,
+                }
+            )
+        )
+    return sampled
+
+
+def _calc_metrics(points: list[_EvalPoint]) -> dict[str, float]:
+    baseline_errors = [abs(p.baseline_pred_dbm - p.measured_rssi_dbm) for p in points if p.baseline_pred_dbm is not None]
+    calibrated_errors = [abs(p.calibrated_pred_dbm - p.measured_rssi_dbm) for p in points if p.calibrated_pred_dbm is not None]
+    baseline_signed = [p.baseline_pred_dbm - p.measured_rssi_dbm for p in points if p.baseline_pred_dbm is not None]
+    calibrated_signed = [p.calibrated_pred_dbm - p.measured_rssi_dbm for p in points if p.calibrated_pred_dbm is not None]
+    if not baseline_errors or not calibrated_errors:
+        raise AppError(
+            ErrorCode.INVALID_REQUEST_BODY,
+            "No valid validation points remain after radio map sampling.",
+            400,
+        )
+
+    def mean(vals: list[float]) -> float:
+        return sum(vals) / len(vals)
+
+    baseline_mae = mean(baseline_errors)
+    calibrated_mae = mean(calibrated_errors)
+    baseline_rmse = math.sqrt(mean([v * v for v in baseline_errors]))
+    calibrated_rmse = math.sqrt(mean([v * v for v in calibrated_errors]))
+    return {
+        "baseline_mae_db": baseline_mae,
+        "baseline_rmse_db": baseline_rmse,
+        "baseline_bias_db": mean(baseline_signed),
+        "calibrated_mae_db": calibrated_mae,
+        "calibrated_rmse_db": calibrated_rmse,
+        "calibrated_bias_db": mean(calibrated_signed),
+        "mae_improvement_db": baseline_mae - calibrated_mae,
+        "rmse_improvement_db": baseline_rmse - calibrated_rmse,
+        "mae_improvement_ratio": (baseline_mae - calibrated_mae) / baseline_mae if baseline_mae else 0.0,
+    }
+
+
+def _calibrated_map(values: list[list[float]], offset_db: float) -> list[list[float]]:
+    return [
+        [float(v) + offset_db if math.isfinite(float(v)) else float(v) for v in row]
+        for row in values
+    ]
+
+
+def _idw_reference_map(radio_map: _RadioMap, points: list[_EvalPoint]) -> list[list[float]]:
+    power = 2.0
+    epsilon = 1e-6
+    out: list[list[float]] = []
+    for row_idx in range(radio_map.height):
+        y = radio_map.min_y if radio_map.height == 1 else radio_map.min_y + (radio_map.max_y - radio_map.min_y) * row_idx / (radio_map.height - 1)
+        row: list[float] = []
+        for col_idx in range(radio_map.width):
+            x = radio_map.min_x if radio_map.width == 1 else radio_map.min_x + (radio_map.max_x - radio_map.min_x) * col_idx / (radio_map.width - 1)
+            numerator = 0.0
+            denominator = 0.0
+            exact: float | None = None
+            for p in points:
+                dist = math.hypot(x - p.x_m, y - p.y_m)
+                if dist < epsilon:
+                    exact = p.measured_rssi_dbm
+                    break
+                weight = 1.0 / (dist ** power)
+                numerator += weight * p.measured_rssi_dbm
+                denominator += weight
+            row.append(exact if exact is not None else numerator / denominator)
+        out.append(row)
+    return out
+
+
+def _point_payload(p: _EvalPoint) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "point_id": p.point_id,
+        "session_id": p.session_id,
+        "x_m": p.x_m,
+        "y_m": p.y_m,
+        "rssi_dbm": p.measured_rssi_dbm,
+        "measurement_purpose": p.purpose,
+        "split": p.split,
+    }
+    if p.baseline_pred_dbm is not None:
+        payload["baseline_pred_dbm"] = p.baseline_pred_dbm
+        payload["baseline_error_db"] = abs(p.baseline_pred_dbm - p.measured_rssi_dbm)
+    if p.calibrated_pred_dbm is not None:
+        payload["calibrated_pred_dbm"] = p.calibrated_pred_dbm
+        payload["calibrated_error_db"] = abs(p.calibrated_pred_dbm - p.measured_rssi_dbm)
+    if p.invalid_reason is not None:
+        payload["invalid_reason"] = p.invalid_reason
+    return payload
+
+
+def evaluate_calibration_run(
+    db: Session, payload: CalibrationEvaluationRequest, user: User
+) -> CalibrationEvaluationResponse:
+    sv = _get_owned_scene_version(db, payload.scene_version_id, user)
+    rr = _get_owned_rf_run(db, payload.rf_run_id, user)
+    sessions = _get_owned_sessions(db, payload.measurement_session_ids, user)
+
+    if sv.floor_id != str(payload.floor_id) or rr.floor_id != str(payload.floor_id):
+        raise AppError(
+            ErrorCode.INVALID_REQUEST_BODY,
+            "floor_id, scene_version_id, and rf_run_id must refer to the same floor.",
+            status_code=400,
+        )
+    for session in sessions:
+        if session.floor_id != str(payload.floor_id):
+            raise AppError(
+                ErrorCode.INVALID_REQUEST_BODY,
+                "All measurement sessions must belong to the requested floor.",
+                status_code=400,
+            )
+
+    radio_map = _load_radio_map(rr)
+    session_ids = [str(s.id) for s in sessions]
+    rows = (
+        db.execute(
+            select(MeasurementPoint).where(
+                MeasurementPoint.session_id.in_(session_ids),
+                MeasurementPoint.rssi_dbm.isnot(None),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    split_points, split_meta = _split_points(
+        rows,
+        {str(s.id): s for s in sessions},
+        strategy=payload.split.strategy,
+        holdout_ratio=payload.split.holdout_ratio,
+        seed=payload.split.seed,
+    )
+    sampled = _with_predictions(split_points, radio_map)
+    valid_calibration = [
+        p for p in sampled if p.split == "calibration" and p.baseline_pred_dbm is not None
+    ]
+    valid_validation = [
+        p for p in sampled if p.split == "validation" and p.baseline_pred_dbm is not None
+    ]
+    invalid_points = [p for p in sampled if p.invalid_reason is not None]
+    if not valid_calibration:
+        raise AppError(
+            ErrorCode.INVALID_REQUEST_BODY,
+            "No valid calibration points remain after radio map sampling.",
+            400,
+        )
+    if not valid_validation:
+        raise AppError(
+            ErrorCode.INVALID_REQUEST_BODY,
+            "No valid validation points remain after radio map sampling.",
+            400,
+        )
+
+    offset_db = sum(p.measured_rssi_dbm - float(p.baseline_pred_dbm) for p in valid_calibration) / len(valid_calibration)
+    calibrated_points: list[_EvalPoint] = []
+    for p in sampled:
+        calibrated_pred = p.baseline_pred_dbm + offset_db if p.baseline_pred_dbm is not None else None
+        calibrated_points.append(
+            _EvalPoint(
+                **{
+                    **p.__dict__,
+                    "calibrated_pred_dbm": calibrated_pred,
+                }
+            )
+        )
+
+    validation_points = [
+        p for p in calibrated_points if p.split == "validation" and p.baseline_pred_dbm is not None
+    ]
+    metrics = _calc_metrics(validation_points)
+    rounded_metrics = {k: round(v, 4) for k, v in metrics.items()}
+
+    reference_points = [p for p in calibrated_points if p.split == "reference"]
+    if not reference_points:
+        reference_points = [
+            p for p in calibrated_points if p.split in {"calibration", "validation"}
+        ]
+    reference_points = [p for p in reference_points if p.invalid_reason is None]
+    measured_reference: dict[str, Any] | None = None
+    warnings: list[str] = []
+    if payload.visualization.include_reference_map:
+        if len(reference_points) < 3:
+            warnings.append("Measured reference map skipped because fewer than 3 valid reference points are available.")
+        else:
+            measured_reference = {
+                "label": "Measured Reference Map",
+                "method": "idw",
+                "values_dbm": _idw_reference_map(radio_map, reference_points),
+                "metadata": {
+                    "point_count": len(reference_points),
+                    "is_interpolated_reference": True,
+                    "not_absolute_ground_truth": True,
+                },
+            }
+
+    maps: dict[str, Any] = {
+        "baseline": {
+            "label": "Baseline Simulation",
+            "values_dbm": radio_map.values,
+            "bounds_m": {
+                "min_x": radio_map.min_x,
+                "min_y": radio_map.min_y,
+                "max_x": radio_map.max_x,
+                "max_y": radio_map.max_y,
+            },
+        },
+        "calibrated": {
+            "label": "Calibrated Simulation",
+            "values_dbm": _calibrated_map(radio_map.values, offset_db),
+            "bounds_m": {
+                "min_x": radio_map.min_x,
+                "min_y": radio_map.min_y,
+                "max_x": radio_map.max_x,
+                "max_y": radio_map.max_y,
+            },
+            "offset_db": offset_db,
+        },
+    }
+    if measured_reference is not None:
+        measured_reference["bounds_m"] = maps["baseline"]["bounds_m"]
+        maps["measured_reference"] = measured_reference
+
+    split_meta = {
+        **split_meta,
+        "n_reference_points": len(reference_points),
+        "n_invalid_points": len(invalid_points),
+    }
+    evaluation = {
+        "split": split_meta,
+        "calibration": {"method": payload.method, "offset_db": round(offset_db, 4)},
+        "visualization": {
+            "map_type": "three_way_comparison",
+            "reference_map_method": payload.visualization.reference_map_method,
+            "rssi_min_dbm": payload.visualization.rssi_min_dbm,
+            "rssi_max_dbm": payload.visualization.rssi_max_dbm,
+            "reference_map_is_visual_only": True,
+            "warnings": warnings,
+        },
+        "metrics": rounded_metrics,
+    }
+
+    response_payload = {
+        "calibration_run_id": "",
+        "status": "completed",
+        "maps": maps,
+        "color_scale": {
+            "min_dbm": payload.visualization.rssi_min_dbm,
+            "max_dbm": payload.visualization.rssi_max_dbm,
+        },
+        "points": {
+            "calibration": [_point_payload(p) for p in calibrated_points if p.split == "calibration"],
+            "validation": [_point_payload(p) for p in validation_points],
+            "reference": [_point_payload(p) for p in reference_points],
+            "invalid": [_point_payload(p) for p in invalid_points],
+        },
+        "metrics": rounded_metrics,
+        "evaluation": evaluation,
+    }
+
+    cr = CalibrationRun(
+        project_id=sv.project_id,
+        floor_id=sv.floor_id,
+        scene_version_id=sv.id,
+        rf_run_id=rr.id,
+        measurement_session_id=session_ids[0],
+        status="completed",
+        finished_at=datetime.now(timezone.utc),
+        metrics_json={
+            **rounded_metrics,
+            "evaluation": evaluation,
+            "evaluation_response": response_payload,
+        },
+    )
+    db.add(cr)
+    db.flush()
+    response_payload["calibration_run_id"] = cr.id
+    cr.metrics_json = {
+        **rounded_metrics,
+        "evaluation": evaluation,
+        "evaluation_response": response_payload,
+    }
+    try:
+        db.commit()
+        db.refresh(cr)
+    except Exception:
+        db.rollback()
+        raise
+
+    return CalibrationEvaluationResponse(**response_payload)
 
 
 # ---------------------------------------------------------------------------

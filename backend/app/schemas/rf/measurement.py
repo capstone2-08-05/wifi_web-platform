@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_serializer
 
@@ -55,6 +55,7 @@ class MeasurementLinkContextResponseDTO(BaseModel):
     bounds: FloorBoundsDTO = Field(default_factory=FloorBoundsDTO)
     anchor_points: list[dict[str, Any]] = Field(default_factory=list)
     existing_ap_layouts: list[dict[str, Any]] = Field(default_factory=list)
+    recommended_measurement_purpose: str = "calibration"
 
     @field_serializer("expires_at")
     def _serialize_expires_at(self, value: datetime) -> str:
@@ -82,6 +83,7 @@ class CalibrationDTO(BaseModel):
 class MeasurementSessionCreateRequestDTO(BaseModel):
     measurement_link_token: str
     measurement_type: str = "rssi"
+    measurement_purpose: Literal["calibration", "validation", "reference", "unknown"] = "unknown"
     device_info: DeviceInfoDTO = Field(default_factory=DeviceInfoDTO)
     calibration: CalibrationDTO = Field(default_factory=CalibrationDTO)
 
@@ -93,6 +95,7 @@ class MeasurementSessionResponseDTO(BaseModel):
     scene_version_id: str | None = None
     asset_id: str | None = None
     measurement_type: str
+    measurement_purpose: str = "unknown"
     status: str
     created_at: datetime
 
@@ -105,6 +108,7 @@ class MeasurementPointInputDTO(BaseModel):
     client_point_id: str | None = None
     floor_position: FloorPositionDTO
     rssi_dbm: float | None = None
+    measurement_purpose: Literal["calibration", "validation", "reference", "unknown"] | None = None
     ap_bssid: str | None = None
     ap_ssid: str | None = None
     channel: int | None = None
@@ -157,6 +161,7 @@ class MeasurementPointResponseDTO(BaseModel):
     batch_id: str | None = None
     floor_position: FloorPositionDTO
     rssi_dbm: float | None = None
+    measurement_purpose: str | None = None
     ap_bssid: str | None = None
     ap_ssid: str | None = None
     channel: int | None = None

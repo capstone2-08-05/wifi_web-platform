@@ -38,12 +38,12 @@ import { useFloorAssets, useAssetDownloadUrl } from '@/hooks/use-assets';
 import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
 import {
+  useEvaluateCalibrationRun,
   useCalibrationParameterUpdates,
   useCalibrationRun,
-  useCreateCalibrationRun,
 } from '@/hooks/use-calibration-run';
 import { CalibrationCard } from '@/features/calibration/CalibrationCard';
-import type { SpaceType } from '@/types/calibration-run';
+import type { CalibrationEvaluationResponse, SpaceType } from '@/types/calibration-run';
 import { parseGeometry } from '@/features/editor/geometry-utils';
 import {
   MeasurementCanvas,
@@ -174,8 +174,10 @@ export default function MeasurementPage() {
 
   // §11 캘리브레이션 — 현재 측정 세션 + 최근 RF Run + 현재 버전을 입력으로 사용.
   // 측정 페이지에 둠: 진단 카드에서 차이를 발견한 직후 보정 가능.
-  const createCalibration = useCreateCalibrationRun();
+  const evaluateCalibration = useEvaluateCalibrationRun();
   const [activeCalibrationId, setActiveCalibrationId] = useState<string | null>(null);
+  const [calibrationEvaluation, setCalibrationEvaluation] =
+    useState<CalibrationEvaluationResponse | null>(null);
   const calibrationPoll = useCalibrationRun(activeCalibrationId);
   const paramUpdatesQuery = useCalibrationParameterUpdates(
     activeCalibrationId,
@@ -200,17 +202,30 @@ export default function MeasurementPage() {
     : null;
   const handleCalibrate = () => {
     if (!canCalibrate || !activeSession || !latestRfRunId || !currentVersion) return;
-    createCalibration.mutate(
+    evaluateCalibration.mutate(
       {
-        session_id: activeSession.id,
+        floor_id: activeSession.floor_id,
         rf_run_id: latestRfRunId,
-        version_id: currentVersion.id,
-        // 사용자가 선택한 공간 유형 — backend 가 soft prior 로 사용. 'unknown' 도 전송 OK.
-        space_type: spaceType,
+        scene_version_id: currentVersion.id,
+        measurement_session_ids: [activeSession.id],
+        method: 'global_offset',
+        split: { strategy: 'purpose_or_random', holdout_ratio: 0.3, seed: 42 },
+        visualization: {
+          include_reference_map: true,
+          reference_map_method: 'idw',
+          rssi_min_dbm: -90,
+          rssi_max_dbm: -30,
+        },
       },
-      { onSuccess: (run) => setActiveCalibrationId(run.id) },
+      {
+        onSuccess: (result) => {
+          setActiveCalibrationId(result.calibration_run_id);
+          setCalibrationEvaluation(result);
+        },
+      },
     );
   };
+
 
   return (
     <div className="relative flex h-full flex-col gap-5 p-6">
@@ -283,13 +298,15 @@ export default function MeasurementPage() {
             <CalibrationCard
               run={calibrationPoll.run}
               isPolling={calibrationPoll.isPolling}
-              isStarting={createCalibration.isPending}
+              isStarting={evaluateCalibration.isPending}
               canCalibrate={canCalibrate}
               disabledReason={calibrationDisabledReason}
               spaceType={spaceType}
               onSpaceTypeChange={setSpaceTypeOverride}
               onCalibrate={handleCalibrate}
               parameterUpdates={paramUpdatesQuery.data ?? []}
+              evaluation={calibrationEvaluation}
+              backgroundImageUrl={backgroundImageUrl}
             />
             <CauseAnalysisCard
               hasData={hasMeasurement}

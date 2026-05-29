@@ -32,6 +32,7 @@ class MeasurementPoint(Base):
     latency_ms: Mapped[Decimal | None] = mapped_column(Numeric(8, 2), nullable=True)
     throughput_mbps: Mapped[Decimal | None] = mapped_column(Numeric(10, 3), nullable=True)
     ap_bssid: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    measurement_purpose: Mapped[str | None] = mapped_column(String(20), nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
