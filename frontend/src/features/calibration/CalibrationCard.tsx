@@ -195,16 +195,23 @@ function CalibrationEvaluationPanel({
     evaluation.maps.measured_reference,
   ].filter((map): map is NonNullable<typeof map> => map != null);
   const m = evaluation.metrics;
+  const comparisonPoints = evaluation.points.evaluation ?? evaluation.points.validation;
+  const comparisonLabel =
+    evaluation.evaluation?.split &&
+    typeof evaluation.evaluation.split === 'object' &&
+    'metric_point_source' in evaluation.evaluation.split
+      ? String((evaluation.evaluation.split as Record<string, unknown>).metric_point_source)
+      : 'reference';
   const fmt = (v: unknown, digits = 1) =>
     typeof v === 'number' && Number.isFinite(v) ? v.toFixed(digits) : '--';
   return (
     <section className="mt-3 space-y-3 rounded-lg border bg-muted/30 p-3">
       <div>
         <p className="text-[11px] font-semibold text-foreground">
-          Validation points 기준
+          Reference comparison 기준
         </p>
         <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-          Validation points are held out from the offset calculation. The measured reference map is an interpolated measurement map, not absolute ground truth.
+          Metrics use {comparisonLabel} points as the measured comparison data. Reference maps are interpolated measurements, not absolute ground truth.
         </p>
       </div>
 
@@ -225,7 +232,7 @@ function CalibrationEvaluationPanel({
               map={map}
               colorScale={evaluation.color_scale}
               calibrationPoints={evaluation.points.calibration}
-              validationPoints={evaluation.points.validation}
+              validationPoints={comparisonPoints}
               backgroundImageUrl={backgroundImageUrl}
             />
           ))}
@@ -255,7 +262,7 @@ function CalibrationEvaluationPanel({
 
       <details className="rounded-md border bg-background text-[11px]">
         <summary className="cursor-pointer px-3 py-2 font-medium">
-          Validation point errors ({evaluation.points.validation.length})
+          Reference comparison errors ({comparisonPoints.length})
         </summary>
         <div className="max-h-48 overflow-auto">
           <table className="w-full min-w-[520px] text-left">
@@ -270,7 +277,7 @@ function CalibrationEvaluationPanel({
               </tr>
             </thead>
             <tbody>
-              {evaluation.points.validation.map((p, idx) => (
+              {comparisonPoints.map((p, idx) => (
                 <tr key={p.point_id} className="border-t">
                   <td className="px-2 py-1">P{String(idx + 1).padStart(2, '0')}</td>
                   <td className="px-2 py-1">{fmt(p.rssi_dbm)} dBm</td>
@@ -323,6 +330,13 @@ function CalibrationEvaluationDetailModal({
     evaluation.maps.measured_reference,
   ].filter((map): map is NonNullable<typeof map> => map != null);
   const m = evaluation.metrics;
+  const comparisonPoints = evaluation.points.evaluation ?? evaluation.points.validation;
+  const comparisonLabel =
+    evaluation.evaluation?.split &&
+    typeof evaluation.evaluation.split === 'object' &&
+    'metric_point_source' in evaluation.evaluation.split
+      ? String((evaluation.evaluation.split as Record<string, unknown>).metric_point_source)
+      : 'reference';
   const fmt = (v: unknown, digits = 1) =>
     typeof v === 'number' && Number.isFinite(v) ? v.toFixed(digits) : '--';
 
@@ -339,7 +353,7 @@ function CalibrationEvaluationDetailModal({
           <div>
             <h2 className="text-base font-semibold">3-way RSSI map comparison</h2>
             <p className="text-xs text-muted-foreground">
-              Same floorplan, grid, bounds, and RSSI color scale. Validation points are not used for calibration.
+              Same floorplan, grid, bounds, and RSSI color scale. Metrics use {comparisonLabel} points as measured comparison data.
             </p>
           </div>
           <button
@@ -360,7 +374,7 @@ function CalibrationEvaluationDetailModal({
                 map={map}
                 colorScale={evaluation.color_scale}
                 calibrationPoints={evaluation.points.calibration}
-                validationPoints={evaluation.points.validation}
+                validationPoints={comparisonPoints}
                 backgroundImageUrl={backgroundImageUrl}
                 size="large"
               />
@@ -395,14 +409,14 @@ function CalibrationEvaluationDetailModal({
                 </span>
                 <span className="inline-flex items-center gap-1">
                   <span className="h-0 w-0 border-x-[5px] border-b-[9px] border-x-transparent border-b-[#dc2626]" />
-                  validation
+                  comparison
                 </span>
               </div>
             </div>
 
             <div className="rounded-lg border bg-background text-xs">
               <div className="border-b px-4 py-3 font-semibold">
-                Validation point errors ({evaluation.points.validation.length})
+                Reference comparison errors ({comparisonPoints.length})
               </div>
               <div className="max-h-72 overflow-auto">
                 <table className="w-full min-w-[640px] text-left">
@@ -417,7 +431,7 @@ function CalibrationEvaluationDetailModal({
                     </tr>
                   </thead>
                   <tbody>
-                    {evaluation.points.validation.map((p, idx) => (
+                    {comparisonPoints.map((p, idx) => (
                       <tr key={p.point_id} className="border-t">
                         <td className="px-3 py-2">P{String(idx + 1).padStart(2, '0')}</td>
                         <td className="px-3 py-2">{fmt(p.rssi_dbm)} dBm</td>

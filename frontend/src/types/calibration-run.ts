@@ -89,6 +89,7 @@ export interface CalibrationEvaluationResponse {
   points: {
     calibration: CalibrationEvaluationPoint[];
     validation: CalibrationEvaluationPoint[];
+    evaluation?: CalibrationEvaluationPoint[];
     reference: CalibrationEvaluationPoint[];
     invalid: CalibrationEvaluationPoint[];
   };

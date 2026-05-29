@@ -360,7 +360,7 @@ def _split_points(
         )
 
     has_explicit_split = strategy == "purpose_or_random" and any(
-        purpose in {"calibration", "validation"} for _, purpose in rows
+        purpose in {"calibration", "validation", "reference"} for _, purpose in rows
     )
     split_by_id: dict[str, str] = {}
     if has_explicit_split:
@@ -398,10 +398,9 @@ def _split_points(
 
     calibration_count = sum(1 for p in result if p.split == "calibration")
     validation_count = sum(1 for p in result if p.split == "validation")
+    reference_count = sum(1 for p in result if p.split == "reference")
     if calibration_count == 0:
         raise AppError(ErrorCode.INVALID_REQUEST_BODY, "No calibration points available.", 400)
-    if validation_count == 0:
-        raise AppError(ErrorCode.INVALID_REQUEST_BODY, "No validation points available.", 400)
 
     return result, {
         "strategy": strategy,
@@ -411,6 +410,7 @@ def _split_points(
         "n_total_points": len(result),
         "n_calibration_points": calibration_count,
         "n_validation_points": validation_count,
+        "n_reference_points": reference_count,
     }
 
 
@@ -438,7 +438,7 @@ def _calc_metrics(points: list[_EvalPoint]) -> dict[str, float]:
     if not baseline_errors or not calibrated_errors:
         raise AppError(
             ErrorCode.INVALID_REQUEST_BODY,
-            "No valid validation points remain after radio map sampling.",
+            "No valid evaluation/reference points remain after radio map sampling.",
             400,
         )
 
@@ -460,6 +460,28 @@ def _calc_metrics(points: list[_EvalPoint]) -> dict[str, float]:
         "rmse_improvement_db": baseline_rmse - calibrated_rmse,
         "mae_improvement_ratio": (baseline_mae - calibrated_mae) / baseline_mae if baseline_mae else 0.0,
     }
+
+
+def _evaluation_points_for_metrics(points: list[_EvalPoint]) -> tuple[list[_EvalPoint], str, list[str]]:
+    """Pick comparison points without forcing a separate validation purpose.
+
+    Priority:
+    1. validation points, for backward compatibility with the old 3-way split.
+    2. reference points, the new presentation-oriented measured reference data.
+    3. calibration points, as a last-resort local demo fallback. This is not a
+       leak-free holdout metric, so a warning is returned with the response.
+    """
+    valid = [p for p in points if p.baseline_pred_dbm is not None]
+    validation = [p for p in valid if p.split == "validation"]
+    if validation:
+        return validation, "validation", []
+    reference = [p for p in valid if p.split == "reference"]
+    if reference:
+        return reference, "reference", []
+    calibration = [p for p in valid if p.split == "calibration"]
+    return calibration, "calibration", [
+        "No reference/evaluation points were available, so metrics were computed on calibration points. Use separate reference measurements for presentation."
+    ]
 
 
 def _calibrated_map(values: list[list[float]], offset_db: float) -> list[list[float]]:
@@ -569,13 +591,6 @@ def evaluate_calibration_run(
             "No valid calibration points remain after radio map sampling.",
             400,
         )
-    if not valid_validation:
-        raise AppError(
-            ErrorCode.INVALID_REQUEST_BODY,
-            "No valid validation points remain after radio map sampling.",
-            400,
-        )
-
     offset_db = sum(p.measured_rssi_dbm - float(p.baseline_pred_dbm) for p in valid_calibration) / len(valid_calibration)
     calibrated_points: list[_EvalPoint] = []
     for p in sampled:
@@ -592,7 +607,8 @@ def evaluate_calibration_run(
     validation_points = [
         p for p in calibrated_points if p.split == "validation" and p.baseline_pred_dbm is not None
     ]
-    metrics = _calc_metrics(validation_points)
+    metric_points, metric_point_source, metric_warnings = _evaluation_points_for_metrics(calibrated_points)
+    metrics = _calc_metrics(metric_points)
     rounded_metrics = {k: round(v, 4) for k, v in metrics.items()}
 
     reference_points = [p for p in calibrated_points if p.split == "reference"]
@@ -602,7 +618,7 @@ def evaluate_calibration_run(
         ]
     reference_points = [p for p in reference_points if p.invalid_reason is None]
     measured_reference: dict[str, Any] | None = None
-    warnings: list[str] = []
+    warnings: list[str] = [*metric_warnings]
     if payload.visualization.include_reference_map:
         if len(reference_points) < 3:
             warnings.append("Measured reference map skipped because fewer than 3 valid reference points are available.")
@@ -648,6 +664,8 @@ def evaluate_calibration_run(
     split_meta = {
         **split_meta,
         "n_reference_points": len(reference_points),
+        "n_metric_points": len(metric_points),
+        "metric_point_source": metric_point_source,
         "n_invalid_points": len(invalid_points),
     }
     evaluation = {
@@ -659,6 +677,7 @@ def evaluate_calibration_run(
             "rssi_min_dbm": payload.visualization.rssi_min_dbm,
             "rssi_max_dbm": payload.visualization.rssi_max_dbm,
             "reference_map_is_visual_only": True,
+            "metric_point_source": metric_point_source,
             "warnings": warnings,
         },
         "metrics": rounded_metrics,
@@ -675,6 +694,7 @@ def evaluate_calibration_run(
         "points": {
             "calibration": [_point_payload(p) for p in calibrated_points if p.split == "calibration"],
             "validation": [_point_payload(p) for p in validation_points],
+            "evaluation": [_point_payload(p) for p in metric_points],
             "reference": [_point_payload(p) for p in reference_points],
             "invalid": [_point_payload(p) for p in invalid_points],
         },
