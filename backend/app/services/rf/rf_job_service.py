@@ -882,7 +882,7 @@ def _render_and_save_rf_outputs(
     # 방 폴리곤 마스크 (도면 안쪽만 칠해지게)
     room_mask = _build_room_mask(scene_json, arr.shape, bounds) if scene_json else None
 
-    # heatmap PNG (matplotlib jet, 자동 vmin/vmax)
+    # heatmap PNG (matplotlib inferno, 자동 vmin/vmax)
     png_bytes = _render_heatmap_png(arr, bounds, room_mask=room_mask)
     npy_buf = io.BytesIO()
     np.save(npy_buf, arr)
@@ -990,7 +990,7 @@ def _render_heatmap_png(
     # origin="upper" — 프론트가 Y-down (위가 작은 y) 으로 표시하므로 PNG 도 같은 방향.
     # PIL room_mask 도 Y-down 이라 자연스럽게 일치.
     ax.imshow(
-        display_arr, cmap="jet", origin="upper",
+        display_arr, cmap="inferno", origin="upper",
         vmin=vmin, vmax=vmax, interpolation="bilinear", alpha=alpha,
     )
     # 배경 투명 (figure 자체 배경도)
@@ -1045,12 +1045,19 @@ def _finalize_rf_job(
     grid_shape = render_meta["grid_shape"]
     valid_ratio = ai_api_metrics.get("valid_ratio") or artifacts.get("valid_ratio")
 
+    # radio_map.values_dbm 포함 — calibration evaluate 가 이 필드를 읽음.
+    radiomap = artifacts.get("radiomap") or {}
     metrics_payload: dict[str, Any] = {
         "rss_dbm": rss_dbm,
         "coverage_summary": coverage_summary,
         "valid_ratio": valid_ratio,
         "grid_shape": grid_shape,
         "bounds_m": bounds,
+        "radio_map": {
+            "values_dbm": radiomap.get("values_dbm"),
+            "bounds_m": radiomap.get("bounds_m") or bounds,
+            "grid_shape": radiomap.get("grid_shape") or grid_shape,
+        },
         "ai_api_metrics": ai_api_metrics,  # 디버그용 원본
     }
 
