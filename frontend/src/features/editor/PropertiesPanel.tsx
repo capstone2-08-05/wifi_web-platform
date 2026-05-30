@@ -4,15 +4,11 @@ import { cn } from '@/lib/utils';
 import {
   materialLabel,
   objectTypeLabel,
-  OBJECT_TYPE_OPTIONS,
   openingTypeLabel,
-  roomTypeLabel,
   wallRoleLabel,
 } from '@/lib/labels';
 import type {
-  DraftObject,
   DraftOpening,
-  DraftRoom,
   DraftWall,
   SelectedEntityRef,
   SelectedEntityResolved,
@@ -69,9 +65,6 @@ export function PropertiesPanel({
   onUpdateMaterial,
   onUpdateWallDimension,
   onScaleAll,
-  onUpdateObjectType,
-  onUpdateObjectPosition,
-  onUpdateObjectSize,
   isSaving,
   isDeleting,
 }: PropertiesPanelProps) {
@@ -96,9 +89,6 @@ export function PropertiesPanel({
           onUpdateMaterial={onUpdateMaterial}
           onUpdateWallDimension={onUpdateWallDimension}
           onScaleAll={onScaleAll}
-          onUpdateObjectType={onUpdateObjectType}
-          onUpdateObjectPosition={onUpdateObjectPosition}
-          onUpdateObjectSize={onUpdateObjectSize}
           isSaving={!!isSaving}
           isDeleting={!!isDeleting}
         />
@@ -154,9 +144,6 @@ function SelectedBody({
   onUpdateMaterial,
   onUpdateWallDimension,
   onScaleAll,
-  onUpdateObjectType,
-  onUpdateObjectPosition,
-  onUpdateObjectSize,
   isSaving,
   isDeleting,
 }: {
@@ -166,9 +153,6 @@ function SelectedBody({
   onUpdateMaterial?: (next: string) => void;
   onUpdateWallDimension?: (meters: number | null) => void;
   onScaleAll?: (targetMeters: number) => void;
-  onUpdateObjectType?: (next: string) => void;
-  onUpdateObjectPosition?: (ref: SelectedEntityRef, x: number, y: number) => void;
-  onUpdateObjectSize?: (ref: SelectedEntityRef, widthM: number, heightM: number) => void;
   isSaving: boolean;
   isDeleting: boolean;
 }) {
@@ -178,11 +162,9 @@ function SelectedBody({
         <TypeHeader selected={selected} />
       </Section>
 
-      {selected.kind !== 'object' && (
+      {(selected.kind === 'wall' || selected.kind === 'opening') && (
         <Section label="속성">
           {selected.kind === 'wall' && <WallFields wall={selected.data} />}
-          {/* [room 비활성화] room 속성 패널 숨김. 다시 켜려면 아래 줄 주석 해제. */}
-          {/* {selected.kind === 'room' && <RoomFields room={selected.data} />} */}
           {selected.kind === 'opening' && <OpeningFields opening={selected.data} />}
         </Section>
       )}
@@ -206,37 +188,6 @@ function SelectedBody({
             disabled={isSaving}
           />
         </Section>
-      )}
-
-      {selected.kind === 'object' && (
-        <>
-          <Section label="객체 종류 변경">
-            <ObjectTypeSelect
-              value={selected.data.object_type}
-              onChange={onUpdateObjectType}
-              disabled={isSaving}
-            />
-            <p className="mt-2 rounded-md bg-primary/5 px-3 py-2 text-[11px] leading-relaxed text-primary/90">
-              AI 가 추정한 종류가 틀렸으면 직접 바꿔주세요.
-              {isSaving && ' 저장 중…'}
-            </p>
-          </Section>
-
-          <ObjectSizePositionSection
-            object={selected.data}
-            onUpdatePosition={
-              onUpdateObjectPosition
-                ? (x, y) => onUpdateObjectPosition({ kind: 'object', id: selected.data.id }, x, y)
-                : undefined
-            }
-            onUpdateSize={
-              onUpdateObjectSize
-                ? (w, h) => onUpdateObjectSize({ kind: 'object', id: selected.data.id }, w, h)
-                : undefined
-            }
-            disabled={isSaving}
-          />
-        </>
       )}
 
       {selected.kind === 'wall' && (
@@ -553,15 +504,6 @@ function OpeningDimensionSection({
   );
 }
 
-function RoomFields({ room }: { room: DraftRoom }) {
-  return (
-    <Grid>
-      <Row label="이름" value={room.room_name?.trim() || '-'} />
-      <Row label="용도" value={roomTypeLabel(room.room_type)} />
-    </Grid>
-  );
-}
-
 function OpeningFields({ opening }: { opening: DraftOpening }) {
   return (
     <Grid>
@@ -575,191 +517,6 @@ function OpeningFields({ opening }: { opening: DraftOpening }) {
 
 function shortId(id: string): string {
   return id.slice(0, 6) + '…';
-}
-
-/** 객체 종류 변경 select. value 는 백엔드 enum 값, 표시는 한국어 라벨. */
-function ObjectTypeSelect({
-  value,
-  onChange,
-  disabled,
-}: {
-  value: string;
-  onChange?: (next: string) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <div className="relative">
-      <select
-        value={value}
-        onChange={(e) => onChange?.(e.target.value)}
-        disabled={disabled || !onChange}
-        className="w-full appearance-none rounded-md border bg-background px-3 py-2.5 pr-9 text-sm text-foreground shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-70"
-      >
-        {/* 옵션에 없는 현재값(AI 가 낸 미상 종류)도 유지 */}
-        {value && !OBJECT_TYPE_OPTIONS.includes(value) && (
-          <option value={value}>{objectTypeLabel(value)}</option>
-        )}
-        {OBJECT_TYPE_OPTIONS.map((t) => (
-          <option key={t} value={t}>
-            {objectTypeLabel(t)}
-          </option>
-        ))}
-      </select>
-      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-    </div>
-  );
-}
-
-/**
- * 객체 위치(X/Y) + 크기(W/H) 입력 섹션.
- * 입력 또는 캔버스 드래그가 부모(EditorPage)의 보류 편집 상태를 업데이트하고,
- * "저장" 버튼을 눌러야 백엔드에 PATCH. "취소"로 폐기.
- * 표시되는 값은 항상 보류 편집이 반영된 object props.
- */
-function ObjectSizePositionSection({
-  object,
-  onUpdatePosition,
-  onUpdateSize,
-  disabled,
-}: {
-  object: DraftObject;
-  onUpdatePosition?: (x: number, y: number) => void;
-  onUpdateSize?: (widthM: number, heightM: number) => void;
-  disabled?: boolean;
-}) {
-  const point = extractPoint(object.point_geom);
-  const meta = (object.metadata_json ?? {}) as Record<string, unknown>;
-  // metadata 에 저장된 값이 없으면 캔버스 기본 박스 크기(1.6m)를 표시 — 캔버스와 일관성 유지.
-  const SPACE_DEFAULT_SIZE_M = 1.6;
-  const widthM = typeof meta.width_m === 'number' ? meta.width_m : SPACE_DEFAULT_SIZE_M;
-  const heightM = typeof meta.height_m === 'number' ? meta.height_m : SPACE_DEFAULT_SIZE_M;
-
-  return (
-    <Section label="크기 및 위치">
-      <div className="grid grid-cols-2 gap-2">
-        <NumberInputBound
-          label="가로 (W)"
-          value={widthM}
-          unit="m"
-          step={0.1}
-          min={0.2}
-          disabled={disabled || !onUpdateSize}
-          onCommit={(next) => onUpdateSize?.(next, heightM ?? next)}
-        />
-        <NumberInputBound
-          label="세로 (H)"
-          value={heightM}
-          unit="m"
-          step={0.1}
-          min={0.2}
-          disabled={disabled || !onUpdateSize}
-          onCommit={(next) => onUpdateSize?.(widthM ?? next, next)}
-        />
-        <NumberInputBound
-          label="X 좌표"
-          value={point?.[0] ?? null}
-          unit="m"
-          step={0.1}
-          disabled={disabled || !onUpdatePosition || !point}
-          onCommit={(next) => point && onUpdatePosition?.(next, point[1])}
-        />
-        <NumberInputBound
-          label="Y 좌표"
-          value={point?.[1] ?? null}
-          unit="m"
-          step={0.1}
-          disabled={disabled || !onUpdatePosition || !point}
-          onCommit={(next) => point && onUpdatePosition?.(point[0], next)}
-        />
-      </div>
-
-    </Section>
-  );
-}
-
-/** 외부 값에 묶이는 숫자 입력 — 외부 값 변경 시 자동 동기화, blur/Enter 시 commit. */
-function NumberInputBound({
-  label,
-  value,
-  unit,
-  step,
-  min,
-  disabled,
-  onCommit,
-}: {
-  label: string;
-  value: number | null;
-  unit?: string;
-  step?: number;
-  min?: number;
-  disabled?: boolean;
-  onCommit?: (next: number) => void;
-}) {
-  const [draft, setDraft] = useState<string>(value != null ? value.toFixed(2) : '');
-  // 외부 value 가 바뀌면 draft 동기화 — useEffect 대신 render-time 비교 (cascading render 회피).
-  const [prevValue, setPrevValue] = useState(value);
-  if (prevValue !== value) {
-    setPrevValue(value);
-    setDraft(value != null ? value.toFixed(2) : '');
-  }
-
-  const commit = () => {
-    const n = Number(draft);
-    if (!Number.isFinite(n)) {
-      setDraft(value != null ? value.toFixed(2) : '');
-      return;
-    }
-    const clamped = min != null && n < min ? min : n;
-    if (value != null && Math.abs(clamped - value) < 1e-6) return;
-    onCommit?.(clamped);
-  };
-
-  const handleChange = (next: string) => {
-    setDraft(next);
-    // 유효 숫자면 즉시 commit (캔버스에서 실시간 반영). 빈 문자열·NaN 은 무시.
-    if (next.trim() === '') return;
-    const n = Number(next);
-    if (!Number.isFinite(n)) return;
-    const clamped = min != null && n < min ? min : n;
-    if (value != null && Math.abs(clamped - value) < 1e-6) return;
-    onCommit?.(clamped);
-  };
-
-  return (
-    <label className="block rounded-md border bg-background px-2.5 py-1.5">
-      <span className="text-[10px] text-muted-foreground">{label}</span>
-      <div className="mt-0.5 flex items-baseline gap-1">
-        <input
-          type="number"
-          inputMode="decimal"
-          step={step ?? 0.01}
-          value={draft}
-          disabled={disabled}
-          onChange={(e) => handleChange(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              commit();
-            }
-          }}
-          className="w-full bg-transparent text-base font-semibold tabular-nums outline-none disabled:cursor-not-allowed disabled:opacity-50"
-        />
-        {unit && <span className="text-[11px] text-muted-foreground">{unit}</span>}
-      </div>
-    </label>
-  );
-}
-
-function extractPoint(geom: Record<string, unknown> | null | undefined): [number, number] | null {
-  if (!geom) return null;
-  const coords = (geom as { coordinates?: unknown }).coordinates;
-  if (Array.isArray(coords) && coords.length >= 2) {
-    const x = Number(coords[0]);
-    const y = Number(coords[1]);
-    if (Number.isFinite(x) && Number.isFinite(y)) return [x, y];
-  }
-  return null;
 }
 
 /**

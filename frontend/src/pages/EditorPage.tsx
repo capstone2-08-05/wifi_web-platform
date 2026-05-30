@@ -363,7 +363,8 @@ export default function EditorPage() {
           // [room 비활성화] 전체 선택에서 room 제외. 다시 켜려면 아래 줄 주석 해제.
           // ...editingScene.rooms.map((r) => ({ kind: 'room' as const, id: r.id })),
           ...editingScene.openings.map((o) => ({ kind: 'opening' as const, id: o.id })),
-          ...editingScene.objects.map((o) => ({ kind: 'object' as const, id: o.id })),
+          // [object 비활성화] 공간 편집 화면 전체 선택에서 가구/공간성 객체 제외.
+          // ...editingScene.objects.map((o) => ({ kind: 'object' as const, id: o.id })),
         ];
         if (all.length === 0) return;
         e.preventDefault();

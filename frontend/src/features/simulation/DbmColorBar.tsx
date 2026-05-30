@@ -14,6 +14,15 @@ const INFERNO_GRADIENT =
   '#932667 40%, #bc3754 50%, #dd513a 60%, #f37819 70%, ' +
   '#fca50a 80%, #f6d746 90%, #fcffa4 100%)';
 
+const DBM_QUALITY_LABELS = [
+  { dbm: -30, label: '매우 강함' },
+  { dbm: -50, label: '강함' },
+  { dbm: -60, label: '좋음' },
+  { dbm: -70, label: '보통' },
+  { dbm: -80, label: '약함' },
+  { dbm: -90, label: '매우 약함' },
+];
+
 interface Props {
   vmin: number;
   vmax: number;
@@ -81,6 +90,21 @@ export function DbmColorBar({
         ))}
       </div>
       <div className="text-right text-[9px] text-muted-foreground">dBm</div>
+      <div className="mt-1 border-t pt-1.5">
+        <p className="mb-1 text-[9px] font-medium text-muted-foreground">
+          숫자가 0에 가까울수록 신호가 강합니다.
+        </p>
+        <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[9px] leading-tight text-muted-foreground">
+          {DBM_QUALITY_LABELS.map((item) => (
+            <div key={item.dbm} className="flex items-center justify-between gap-2">
+              <span className="font-mono tabular-nums text-foreground/75">
+                {item.dbm} dBm
+              </span>
+              <span>{item.label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

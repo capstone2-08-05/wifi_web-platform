@@ -6,7 +6,8 @@ export type EditorTool =
   | 'rect'      // 벽/구조물 (LineString — 2 클릭)
   | 'circle'    // 가구 (Point — 1 클릭)
   | 'polygon'   // 방 (Polygon — 다중 클릭 + 시작점 클릭으로 닫기)
-  | 'opening';  // 문/창 (LineString — 2 클릭)
+  | 'door'      // 문 (LineString — 2 클릭)
+  | 'window';   // 창문 (LineString — 2 클릭)
 
 interface EditorActions {
   onLoadFloorplan?: () => void;

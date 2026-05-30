@@ -88,13 +88,18 @@ function extendBounds(b: Bounds, x: number, y: number) {
   if (y > b.maxY) b.maxY = y;
 }
 
-/** viewBox 는 도형(walls/openings) 기준. imageExtent 주어지면 union 으로 잡아서
+/** viewBox 는 도형(rooms/walls/openings) 기준. imageExtent 주어지면 union 으로 잡아서
  *  배경 이미지와 벽이 같은 좌표계로 정렬 표시. 객체는 건물 밖으로 나갈 수 있어 제외. */
 function computeViewBox(
   scene: SceneVersion | null | undefined,
   imageExtent: { w: number; h: number } | null,
 ) {
   const b = emptyBounds();
+  for (const room of scene?.rooms ?? []) {
+    const g = parseGeometry(room.polygon_geom);
+    if (g?.type === 'Polygon')
+      for (const ring of g.coordinates) for (const [x, y] of ring) extendBounds(b, x, y);
+  }
   for (const wall of scene?.walls ?? []) {
     const g = parseGeometry(wall.centerline_geom);
     if (g?.type === 'LineString') for (const [x, y] of g.coordinates) extendBounds(b, x, y);
@@ -110,7 +115,7 @@ function computeViewBox(
   if (!isFinite(b.minX)) return { x: 0, y: 0, w: 10, h: 10 };
   const w = b.maxX - b.minX || 1;
   const h = b.maxY - b.minY || 1;
-  const padding = Math.max(w, h) * 0.1;
+  const padding = Math.max(w, h) * 0.05;
   return { x: b.minX - padding, y: b.minY - padding, w: w + 2 * padding, h: h + 2 * padding };
 }
 
@@ -191,12 +196,12 @@ export function MeasurementCanvas({
     [imageDims, sceneVersion?.source_asset_id, sceneVersion?.floor_id],
   );
 
-  // viewBox: imageExtent 있으면 union(walls, image) 자체 계산 (가장 안정적).
-  // 없을 때만 editor 캐시 fallback → 도형 bounds 최후.
+  // viewBox: editor/simulation 과 같은 floor 캐시를 우선 사용해 페이지 간 도면 크기를 고정.
+  // 캐시가 없을 때만 image+shape union 으로 계산.
   const vb = useMemo(() => {
-    if (imageExtent) return computeViewBox(sceneVersion, imageExtent);
     const cached = loadCachedViewBox(sceneVersion?.floor_id ?? null);
     if (cached) return cached;
+    if (imageExtent) return computeViewBox(sceneVersion, imageExtent);
     return computeViewBox(sceneVersion, null);
   }, [sceneVersion, imageExtent]);
   const sortedPoints = useMemo(
@@ -282,7 +287,7 @@ export function MeasurementCanvas({
     <div
       ref={containerRef}
       className={cn(
-        'relative flex h-full w-full items-center justify-center overflow-hidden rounded-xl border bg-[#f8fafc] p-6',
+        'relative flex h-full w-full items-center justify-center overflow-hidden bg-[#f8fafc] p-6',
         '[background-image:radial-gradient(circle,_oklch(0.92_0_0)_1px,_transparent_1px)]',
         '[background-position:0_0] [background-size:18px_18px]',
       )}
