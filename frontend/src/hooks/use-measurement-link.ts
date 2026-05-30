@@ -10,7 +10,13 @@ import type { UUID } from '@/types/common';
  */
 export function useCreateMeasurementLink() {
   return useMutation({
-    mutationFn: (floorId: UUID) => measurementLinkApi.create(floorId),
+    mutationFn: ({
+      floorId,
+      recommendedPurpose = 'calibration',
+    }: {
+      floorId: UUID;
+      recommendedPurpose?: 'calibration' | 'reference' | 'validation' | 'unknown';
+    }) => measurementLinkApi.create(floorId, recommendedPurpose),
     onError: (err) => {
       const e = err as HttpError | null;
       toast.error(

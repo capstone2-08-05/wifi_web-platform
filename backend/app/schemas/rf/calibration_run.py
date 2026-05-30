@@ -53,7 +53,7 @@ class CalibrationEvaluationRequest(BaseModel):
     scene_version_id: UUID
     rf_run_id: UUID
     measurement_session_ids: list[UUID] = Field(default_factory=list, min_length=1)
-    method: Literal["global_offset"] = "global_offset"
+    method: Literal["affine_rssi_transfer", "global_offset"] = "affine_rssi_transfer"
     split: CalibrationEvaluationSplit = Field(default_factory=CalibrationEvaluationSplit)
     visualization: CalibrationEvaluationVisualization = Field(
         default_factory=CalibrationEvaluationVisualization

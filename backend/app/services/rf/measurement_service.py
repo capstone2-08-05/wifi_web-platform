@@ -275,9 +275,14 @@ def _bounds_from_floorplan(floorplan: FloorplanInfoDTO) -> FloorBoundsDTO:
 
 
 def create_measurement_link(
-    db: Session, floor_id: str
+    db: Session, floor_id: str, *, recommended_measurement_purpose: str = "calibration"
 ) -> MeasurementLinkCreateResponseDTO:
     _validate_uuid(floor_id, "floor_id")
+    purpose = (
+        recommended_measurement_purpose
+        if recommended_measurement_purpose in {"calibration", "reference", "validation", "unknown"}
+        else "calibration"
+    )
 
     floor = db.query(Floor).filter(Floor.id == floor_id).one_or_none()
     if floor is None:
@@ -299,7 +304,7 @@ def create_measurement_link(
         floor_id=floor.id,
         scene_version_id=scene_version_id,
         asset_id=asset_id,
-        purpose="rssi_measurement",
+        purpose=purpose,
         status="active",
         expires_at=expires_at,
     )
@@ -399,7 +404,9 @@ def get_measurement_link_context(
         bounds=bounds,
         anchor_points=[],
         existing_ap_layouts=[],
-        recommended_measurement_purpose="calibration",
+        recommended_measurement_purpose=link.purpose
+        if link.purpose in {"calibration", "reference", "validation", "unknown"}
+        else "calibration",
     )
 
 

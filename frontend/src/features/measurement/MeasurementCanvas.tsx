@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { parseGeometry } from '@/features/editor/geometry-utils';
 import { loadCachedViewBox } from '@/features/editor/viewbox-cache';
 import {
@@ -52,8 +52,10 @@ interface Props {
    * 있으면 'heatmap' / 'both' 모드에서 측정점 radial gradient 대신 이 이미지를 깔아준다.
    */
   estimatedHeatmap?: {
-    url: string;
+    url?: string;
+    valuesDbm?: number[][];
     bounds: { min_x: number; min_y: number; max_x: number; max_y: number };
+    rssiRange?: { min: number; max: number };
   } | null;
   /** dbm color mode 일 때 색 범위 (heatmap rssi_range 와 일치시켜야 통일). 미지정 시 -90~-30. */
   pointColorRange?: { min: number; max: number };
@@ -66,6 +68,13 @@ interface Bounds {
   minY: number;
   maxX: number;
   maxY: number;
+}
+
+interface CanvasTooltip {
+  x: number;
+  y: number;
+  title: string;
+  rows: { label: string; value: string }[];
 }
 
 function emptyBounds(): Bounds {
@@ -167,7 +176,8 @@ export function MeasurementCanvas({
   pointColorMode,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const sceneId = sceneVersion?.id ?? null;
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [tooltip, setTooltip] = useState<CanvasTooltip | null>(null);
 
   // 배경 이미지를 editor 와 동일한 좌표계로 배치하기 위해 imageExtent (미터) 계산.
   // image 는 (0,0)~(extent.w, extent.h) 에 그림 → 벽과 정확히 정렬.
@@ -188,7 +198,7 @@ export function MeasurementCanvas({
     const cached = loadCachedViewBox(sceneVersion?.floor_id ?? null);
     if (cached) return cached;
     return computeViewBox(sceneVersion, null);
-  }, [sceneId, sceneVersion?.floor_id, imageExtent]);
+  }, [sceneVersion, imageExtent]);
   const sortedPoints = useMemo(
     () => [...points].sort((a, b) => a.order - b.order),
     [points],
@@ -207,8 +217,70 @@ export function MeasurementCanvas({
   const dbmMin = pointColorRange?.min ?? -90;
   const dbmMax = pointColorRange?.max ?? -30;
 
+  const handlePointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const svgPoint = svg.createSVGPoint();
+    svgPoint.x = event.clientX;
+    svgPoint.y = event.clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return;
+    const point = svgPoint.matrixTransform(ctm.inverse());
+    const rect = containerRef.current?.getBoundingClientRect() ?? svg.getBoundingClientRect();
+    const tooltipPos = {
+      x: event.clientX - rect.left + 14,
+      y: event.clientY - rect.top + 14,
+    };
+
+    const hitRadius = Math.max(0.18, Math.min(vb.w, vb.h) * 0.018);
+    let nearest: MeasurementPoint | null = null;
+    let nearestIndex = -1;
+    let nearestDistance = Infinity;
+    for (const [idx, p] of sortedPoints.entries()) {
+      const distance = Math.hypot(point.x - p.x_m, point.y - p.y_m);
+      if (distance < nearestDistance) {
+        nearest = p;
+        nearestIndex = idx;
+        nearestDistance = distance;
+      }
+    }
+
+    if (nearest && nearestDistance <= hitRadius) {
+      const measured = pointRssiByOrder?.get(nearest.id);
+      const estimated = sampleHeatmapAtPoint(estimatedHeatmap, nearest.x_m, nearest.y_m);
+      setTooltip({
+        ...tooltipPos,
+        title: `P${String(nearestIndex + 1).padStart(2, '0')}`,
+        rows: [
+          { label: '실측 RSSI', value: formatDbm(measured) },
+          ...(estimated != null
+            ? [{ label: mode === 'both' ? '통합 보정맵' : '히트맵', value: formatDbm(estimated) }]
+            : []),
+        ],
+      });
+      return;
+    }
+
+    const heatmapValue = showHeatmap
+      ? sampleHeatmapAtPoint(estimatedHeatmap, point.x, point.y)
+      : null;
+    if (heatmapValue != null) {
+      setTooltip({
+        ...tooltipPos,
+        title: mode === 'both' ? '통합 보정맵 RSSI' : '실측 히트맵 RSSI',
+        rows: [
+          { label: '예상 RSSI', value: formatDbm(heatmapValue) },
+        ],
+      });
+      return;
+    }
+
+    setTooltip(null);
+  };
+
   return (
     <div
+      ref={containerRef}
       className={cn(
         'relative flex h-full w-full items-center justify-center overflow-hidden rounded-xl border bg-[#f8fafc] p-6',
         '[background-image:radial-gradient(circle,_oklch(0.92_0_0)_1px,_transparent_1px)]',
@@ -221,6 +293,8 @@ export function MeasurementCanvas({
         preserveAspectRatio="xMidYMid meet"
         overflow="hidden"
         className="h-full w-full select-none overflow-hidden"
+        onPointerMove={handlePointerMove}
+        onPointerLeave={() => setTooltip(null)}
       >
         <defs>
           {/* viewBox(=도면) 영역으로 클립. 측정점/AP/히트맵이 도면 밖 좌표여도
@@ -265,7 +339,30 @@ export function MeasurementCanvas({
         {/* 히트맵: 도형보다 아래에 깔아 도면이 위에 보이도록.
             GP regression dense heatmap 이 있으면 그것을 우선 표시 (전체 도면 커버).
             없으면 측정점 주변 radial gradient 로 fallback. */}
-        {showHeatmap && estimatedHeatmap ? (
+        {showHeatmap && estimatedHeatmap?.valuesDbm ? (
+          <g opacity={0.65} pointerEvents="none">
+            {estimatedHeatmap.valuesDbm.map((row, rowIdx) =>
+              row.map((value, colIdx) => {
+                const rows = estimatedHeatmap.valuesDbm?.length ?? 1;
+                const cols = row.length || 1;
+                const bounds = estimatedHeatmap.bounds;
+                const cellW = (bounds.max_x - bounds.min_x) / cols;
+                const cellH = (bounds.max_y - bounds.min_y) / rows;
+                const range = estimatedHeatmap.rssiRange ?? pointColorRange ?? { min: -90, max: -30 };
+                return (
+                  <rect
+                    key={`calibrated-${rowIdx}-${colIdx}`}
+                    x={bounds.min_x + colIdx * cellW}
+                    y={bounds.min_y + rowIdx * cellH}
+                    width={cellW}
+                    height={cellH}
+                    fill={dbmToInfernoColor(value, range.min, range.max)}
+                  />
+                );
+              }),
+            )}
+          </g>
+        ) : showHeatmap && estimatedHeatmap?.url ? (
           <image
             href={estimatedHeatmap.url}
             xlinkHref={estimatedHeatmap.url}
@@ -352,8 +449,64 @@ export function MeasurementCanvas({
         ))}
         </g>
       </svg>
+      {tooltip && (
+        <div
+          className="pointer-events-none absolute z-20 min-w-44 rounded-lg border bg-background/95 px-3 py-2 text-xs shadow-lg backdrop-blur"
+          style={{
+            left: tooltip.x,
+            top: tooltip.y,
+            transform:
+              tooltip.x > 240 && tooltip.y > 120
+                ? 'translate(-100%, -100%)'
+                : tooltip.x > 240
+                ? 'translateX(-100%)'
+                : undefined,
+          }}
+        >
+          <p className="mb-1 font-semibold text-foreground">{tooltip.title}</p>
+          <div className="space-y-0.5">
+            {tooltip.rows.map((row) => (
+              <div key={row.label} className="flex justify-between gap-4 tabular-nums">
+                <span className="text-muted-foreground">{row.label}</span>
+                <span className="font-medium text-foreground">{row.value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function sampleHeatmapAtPoint(
+  heatmap: Props['estimatedHeatmap'],
+  x: number,
+  y: number,
+): number | null {
+  if (!heatmap?.valuesDbm?.length) return null;
+  const { bounds, valuesDbm } = heatmap;
+  if (x < bounds.min_x || x > bounds.max_x || y < bounds.min_y || y > bounds.max_y) {
+    return null;
+  }
+  const rows = valuesDbm.length;
+  const cols = valuesDbm[0]?.length ?? 0;
+  if (rows <= 0 || cols <= 0) return null;
+  const col = Math.min(
+    cols - 1,
+    Math.max(0, Math.floor(((x - bounds.min_x) / (bounds.max_x - bounds.min_x || 1)) * cols)),
+  );
+  const row = Math.min(
+    rows - 1,
+    Math.max(0, Math.floor(((y - bounds.min_y) / (bounds.max_y - bounds.min_y || 1)) * rows)),
+  );
+  const value = valuesDbm[row]?.[col];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function formatDbm(value: unknown): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? `${value.toFixed(1)} dBm`
+    : '--';
 }
 
 // ============================================

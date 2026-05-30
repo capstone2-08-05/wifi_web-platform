@@ -8,9 +8,14 @@ import { toast } from '@/stores/toast-store';
 interface Props {
   open: boolean;
   onClose: () => void;
+  recommendedPurpose?: 'calibration' | 'reference' | 'validation' | 'unknown';
 }
 
-export function MobileConnectModal({ open, onClose }: Props) {
+export function MobileConnectModal({
+  open,
+  onClose,
+  recommendedPurpose = 'calibration',
+}: Props) {
   const floorId = useAppStore((s) => s.selectedFloorId);
   const projectId = useAppStore((s) => s.selectedProjectId);
   const createLink = useCreateMeasurementLink();
@@ -21,9 +26,9 @@ export function MobileConnectModal({ open, onClose }: Props) {
     if (!open) return;
     if (!floorId) return;
     if (createLink.isPending || link) return;
-    createLink.mutate(floorId);
+    createLink.mutate({ floorId, recommendedPurpose });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, floorId]);
+  }, [open, floorId, recommendedPurpose]);
 
   // 닫힐 때 상태 초기화 (다음 열릴 때 새 QR 발급)
   useEffect(() => {
@@ -79,10 +84,11 @@ export function MobileConnectModal({ open, onClose }: Props) {
             token={link.token}
             expiresAt={link.expires_at}
             deepLink={link.deep_link}
-            onRefresh={() => createLink.mutate(floorId)}
+            recommendedPurpose={recommendedPurpose}
+            onRefresh={() => createLink.mutate({ floorId, recommendedPurpose })}
           />
         ) : createLink.isError ? (
-          <ErrorState onRetry={() => createLink.mutate(floorId)} />
+          <ErrorState onRetry={() => createLink.mutate({ floorId, recommendedPurpose })} />
         ) : null}
       </div>
     </div>
@@ -130,12 +136,14 @@ function ReadyState({
   token,
   expiresAt,
   deepLink,
+  recommendedPurpose,
   onRefresh,
 }: {
   qrPayload: string;
   token: string;
   expiresAt: string;
   deepLink: string;
+  recommendedPurpose: 'calibration' | 'reference' | 'validation' | 'unknown';
   onRefresh: () => void;
 }) {
   const remaining = useCountdown(expiresAt);
@@ -154,6 +162,10 @@ function ReadyState({
       <p className="text-center text-xs text-muted-foreground">
         모바일 앱으로 아래 QR 코드를 스캔하면 측정이 시작됩니다.
       </p>
+
+      <div className="rounded-lg border bg-muted/20 px-3 py-2 text-center text-xs font-medium">
+        Recommended mode: {recommendedPurpose === 'reference' ? 'Reference comparison' : 'Calibration'}
+      </div>
 
       <div className="flex justify-center rounded-xl border bg-white p-4">
         <QRCodeSVG value={qrPayload} size={200} level="M" includeMargin />

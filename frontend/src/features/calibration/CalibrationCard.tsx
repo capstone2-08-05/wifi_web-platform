@@ -28,6 +28,8 @@ interface Props {
   spaceType: SpaceType;
   onSpaceTypeChange: (next: SpaceType) => void;
   onCalibrate: () => void;
+  showCalibrateButton?: boolean;
+  onAddReferenceMeasurement?: () => void;
   parameterUpdates: ParameterUpdate[];
   evaluation?: CalibrationEvaluationResponse | null;
   backgroundImageUrl?: string | null;
@@ -46,6 +48,8 @@ export function CalibrationCard({
   spaceType,
   onSpaceTypeChange,
   onCalibrate,
+  showCalibrateButton = true,
+  onAddReferenceMeasurement,
   parameterUpdates,
   evaluation,
   backgroundImageUrl,
@@ -93,7 +97,7 @@ export function CalibrationCard({
           </span>
         </div>
       ) : succeeded && run ? (
-        <CalibrationResult run={run} parameterUpdates={parameterUpdates} />
+        <CalibrationResult run={run} parameterUpdates={parameterUpdates} evaluation={evaluation} />
       ) : failed ? (
         <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-[11px] text-destructive">
           보정에 실패했습니다. 측정 데이터가 충분한지 확인해주세요.
@@ -103,8 +107,10 @@ export function CalibrationCard({
       <CalibrationEvaluationPanel
         evaluation={evaluation ?? extractEvaluationResponse(run)}
         backgroundImageUrl={backgroundImageUrl}
+        onAddReferenceMeasurement={onAddReferenceMeasurement}
       />
 
+      {showCalibrateButton && (
       <button
         type="button"
         onClick={onCalibrate}
@@ -114,6 +120,7 @@ export function CalibrationCard({
         <Sliders className="h-3.5 w-3.5" />
         {succeeded ? '다시 보정 실행' : '보정 실행'}
       </button>
+      )}
       {!canCalibrate && disabledReason && (
         <p className="mt-2 text-[11px] text-muted-foreground">{disabledReason}</p>
       )}
@@ -124,11 +131,13 @@ export function CalibrationCard({
 function CalibrationResult({
   run,
   parameterUpdates,
+  evaluation,
 }: {
   run: CalibrationRun;
   parameterUpdates: ParameterUpdate[];
+  evaluation?: CalibrationEvaluationResponse | null;
 }) {
-  const metrics = parseCalibrationMetrics(run.error_metrics_json);
+  const metrics = parseCalibrationMetrics(evaluation?.metrics ?? run.error_metrics_json);
   const feedbackMessage = typeof run.error_metrics_json?.['feedback_message'] === 'string'
     ? (run.error_metrics_json['feedback_message'] as string)
     : null;
@@ -137,8 +146,8 @@ function CalibrationResult({
       <div className="rounded-lg border bg-muted/40 p-3">
         <p className="text-[11px] font-semibold text-muted-foreground">보정 결과</p>
         <div className="mt-1.5 grid grid-cols-2 gap-2">
-          <MetricCell label="RMSE" value={metrics.rmse} unit="dBm" />
-          <MetricCell label="MAE" value={metrics.mae} unit="dBm" />
+          <MetricCell label="RMSE" value={metrics.rmse} unit="dB" />
+          <MetricCell label="MAE" value={metrics.mae} unit="dB" />
         </div>
       </div>
       {feedbackMessage && (
@@ -183,9 +192,11 @@ function CalibrationResult({
 function CalibrationEvaluationPanel({
   evaluation,
   backgroundImageUrl,
+  onAddReferenceMeasurement,
 }: {
   evaluation: CalibrationEvaluationResponse | null;
   backgroundImageUrl?: string | null;
+  onAddReferenceMeasurement?: () => void;
 }) {
   const [detailOpen, setDetailOpen] = useState(false);
   if (!evaluation) return null;
@@ -195,17 +206,30 @@ function CalibrationEvaluationPanel({
     evaluation.maps.measured_reference,
   ].filter((map): map is NonNullable<typeof map> => map != null);
   const m = evaluation.metrics;
+  const comparisonPoints = evaluation.points.evaluation ?? evaluation.points.validation;
+  const comparisonLabel =
+    evaluation.evaluation?.split &&
+    typeof evaluation.evaluation.split === 'object' &&
+    'metric_point_source' in evaluation.evaluation.split
+      ? String((evaluation.evaluation.split as Record<string, unknown>).metric_point_source)
+      : 'reference';
+  const frequencyText = formatFrequencyCheck(evaluation);
   const fmt = (v: unknown, digits = 1) =>
     typeof v === 'number' && Number.isFinite(v) ? v.toFixed(digits) : '--';
   return (
     <section className="mt-3 space-y-3 rounded-lg border bg-muted/30 p-3">
       <div>
         <p className="text-[11px] font-semibold text-foreground">
-          Validation points 기준
+          Reference comparison 기준
         </p>
         <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-          Validation points are held out from the offset calculation. The measured reference map is an interpolated measurement map, not absolute ground truth.
+          Metrics use {comparisonLabel} points as the measured comparison data. Reference maps are interpolated measurements, not absolute ground truth.
         </p>
+        {frequencyText && (
+          <p className="mt-1 rounded-md border bg-background px-2 py-1 text-[10px] leading-relaxed text-muted-foreground">
+            {frequencyText}
+          </p>
+        )}
       </div>
 
       <button
@@ -216,6 +240,15 @@ function CalibrationEvaluationPanel({
         <Maximize2 className="h-3 w-3" />
         Detail view
       </button>
+      {onAddReferenceMeasurement && (
+        <button
+          type="button"
+          onClick={onAddReferenceMeasurement}
+          className="inline-flex w-full items-center justify-center rounded-md bg-primary px-2 py-1.5 text-[11px] font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          정답(참조) 데이터 추가 측정
+        </button>
+      )}
 
       <div className="overflow-x-auto">
         <div className="grid min-w-[620px] grid-cols-3 gap-2">
@@ -225,7 +258,7 @@ function CalibrationEvaluationPanel({
               map={map}
               colorScale={evaluation.color_scale}
               calibrationPoints={evaluation.points.calibration}
-              validationPoints={evaluation.points.validation}
+              validationPoints={comparisonPoints}
               backgroundImageUrl={backgroundImageUrl}
             />
           ))}
@@ -251,11 +284,14 @@ function CalibrationEvaluationPanel({
           after={fmt(m.calibrated_rmse_db)}
           improvement={`${fmt(m.rmse_improvement_db)} dB`}
         />
+        <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+          MAE는 평균 오차입니다. RMSE는 큰 오차를 더 크게 반영해서, 특정 위치에서 예측이 많이 틀어졌는지 보기 좋습니다.
+        </p>
       </div>
 
       <details className="rounded-md border bg-background text-[11px]">
         <summary className="cursor-pointer px-3 py-2 font-medium">
-          Validation point errors ({evaluation.points.validation.length})
+          Reference comparison errors ({comparisonPoints.length})
         </summary>
         <div className="max-h-48 overflow-auto">
           <table className="w-full min-w-[520px] text-left">
@@ -270,7 +306,7 @@ function CalibrationEvaluationPanel({
               </tr>
             </thead>
             <tbody>
-              {evaluation.points.validation.map((p, idx) => (
+              {comparisonPoints.map((p, idx) => (
                 <tr key={p.point_id} className="border-t">
                   <td className="px-2 py-1">P{String(idx + 1).padStart(2, '0')}</td>
                   <td className="px-2 py-1">{fmt(p.rssi_dbm)} dBm</td>
@@ -290,6 +326,7 @@ function CalibrationEvaluationPanel({
         onClose={() => setDetailOpen(false)}
         evaluation={evaluation}
         backgroundImageUrl={backgroundImageUrl}
+        onAddReferenceMeasurement={onAddReferenceMeasurement}
       />
     </section>
   );
@@ -300,11 +337,13 @@ function CalibrationEvaluationDetailModal({
   onClose,
   evaluation,
   backgroundImageUrl,
+  onAddReferenceMeasurement,
 }: {
   open: boolean;
   onClose: () => void;
   evaluation: CalibrationEvaluationResponse;
   backgroundImageUrl?: string | null;
+  onAddReferenceMeasurement?: () => void;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -323,6 +362,14 @@ function CalibrationEvaluationDetailModal({
     evaluation.maps.measured_reference,
   ].filter((map): map is NonNullable<typeof map> => map != null);
   const m = evaluation.metrics;
+  const comparisonPoints = evaluation.points.evaluation ?? evaluation.points.validation;
+  const comparisonLabel =
+    evaluation.evaluation?.split &&
+    typeof evaluation.evaluation.split === 'object' &&
+    'metric_point_source' in evaluation.evaluation.split
+      ? String((evaluation.evaluation.split as Record<string, unknown>).metric_point_source)
+      : 'reference';
+  const frequencyText = formatFrequencyCheck(evaluation);
   const fmt = (v: unknown, digits = 1) =>
     typeof v === 'number' && Number.isFinite(v) ? v.toFixed(digits) : '--';
 
@@ -339,17 +386,34 @@ function CalibrationEvaluationDetailModal({
           <div>
             <h2 className="text-base font-semibold">3-way RSSI map comparison</h2>
             <p className="text-xs text-muted-foreground">
-              Same floorplan, grid, bounds, and RSSI color scale. Validation points are not used for calibration.
+              Same floorplan, grid, bounds, and RSSI color scale. Metrics use {comparisonLabel} points as measured comparison data.
             </p>
+            {frequencyText && (
+              <p className="mt-1 text-xs text-muted-foreground">{frequencyText}</p>
+            )}
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-accent"
-            aria-label="Close"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            {onAddReferenceMeasurement && (
+              <button
+                type="button"
+                onClick={() => {
+                  onAddReferenceMeasurement();
+                  onClose();
+                }}
+                className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                정답(참조) 데이터 추가 측정
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-accent"
+              aria-label="Close"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </header>
 
         <div className="min-h-0 flex-1 overflow-auto p-5">
@@ -360,16 +424,20 @@ function CalibrationEvaluationDetailModal({
                 map={map}
                 colorScale={evaluation.color_scale}
                 calibrationPoints={evaluation.points.calibration}
-                validationPoints={evaluation.points.validation}
+                validationPoints={comparisonPoints}
                 backgroundImageUrl={backgroundImageUrl}
                 size="large"
+                errorMode={map.label.toLowerCase().includes('baseline') ? 'baseline' : map.label.toLowerCase().includes('calibrated') ? 'calibrated' : undefined}
               />
             ))}
           </div>
 
           <div className="mt-4 grid gap-4 lg:grid-cols-[24rem_1fr]">
             <div className="rounded-lg border bg-muted/20 p-4 text-sm">
-              <p className="font-semibold">Validation metrics</p>
+              <p className="font-semibold">Comparison metrics</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                MAE는 각 측정 지점의 평균 오차입니다. RMSE는 큰 오차를 더 크게 반영해서, 보정 후에도 크게 틀린 구간이 남아 있는지 보여줍니다.
+              </p>
               <div className="mt-3 grid grid-cols-4 gap-2 text-xs font-semibold text-muted-foreground">
                 <span>Metric</span>
                 <span>Before</span>
@@ -395,14 +463,23 @@ function CalibrationEvaluationDetailModal({
                 </span>
                 <span className="inline-flex items-center gap-1">
                   <span className="h-0 w-0 border-x-[5px] border-b-[9px] border-x-transparent border-b-[#dc2626]" />
-                  validation
+                  comparison
                 </span>
               </div>
             </div>
 
-            <div className="rounded-lg border bg-background text-xs">
+            <div className="rounded-lg border bg-background p-4 text-xs">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <p className="font-semibold">Point error chart</p>
+                <p className="text-muted-foreground">Before vs after, dB</p>
+              </div>
+              <ErrorBarChart points={comparisonPoints} />
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-lg border bg-background text-xs">
               <div className="border-b px-4 py-3 font-semibold">
-                Validation point errors ({evaluation.points.validation.length})
+                Reference comparison errors ({comparisonPoints.length})
               </div>
               <div className="max-h-72 overflow-auto">
                 <table className="w-full min-w-[640px] text-left">
@@ -417,7 +494,7 @@ function CalibrationEvaluationDetailModal({
                     </tr>
                   </thead>
                   <tbody>
-                    {evaluation.points.validation.map((p, idx) => (
+                    {comparisonPoints.map((p, idx) => (
                       <tr key={p.point_id} className="border-t">
                         <td className="px-3 py-2">P{String(idx + 1).padStart(2, '0')}</td>
                         <td className="px-3 py-2">{fmt(p.rssi_dbm)} dBm</td>
@@ -430,7 +507,6 @@ function CalibrationEvaluationDetailModal({
                   </tbody>
                 </table>
               </div>
-            </div>
           </div>
         </div>
       </div>
@@ -466,6 +542,7 @@ function MiniRssiMap({
   validationPoints,
   backgroundImageUrl,
   size = 'compact',
+  errorMode,
 }: {
   map: CalibrationEvaluationResponse['maps']['baseline'];
   colorScale: { min_dbm: number; max_dbm: number };
@@ -473,6 +550,7 @@ function MiniRssiMap({
   validationPoints: CalibrationEvaluationResponse['points']['validation'];
   backgroundImageUrl?: string | null;
   size?: 'compact' | 'large';
+  errorMode?: 'baseline' | 'calibrated';
 }) {
   const bounds = map.bounds_m;
   const w = Math.max(bounds.max_x - bounds.min_x, 1);
@@ -520,22 +598,80 @@ function MiniRssiMap({
             );
           }),
         )}
-        {calibrationPoints.map((p) => (
-          <circle key={`c-${p.point_id}`} cx={p.x_m} cy={p.y_m} r={w * 0.012} fill="#0f766e" stroke="white" strokeWidth={w * 0.004} />
+        {calibrationPoints.map((p, idx) => (
+          <circle
+            key={`c-${p.point_id}`}
+            cx={p.x_m}
+            cy={p.y_m}
+            r={w * 0.012}
+            fill="#0f766e"
+            stroke="white"
+            strokeWidth={w * 0.004}
+          >
+            <title>{pointTooltip(p, idx, 'calibration')}</title>
+          </circle>
         ))}
-        {validationPoints.map((p) => (
+        {size === 'large' &&
+          errorMode &&
+          validationPoints.map((p, idx) => {
+            const err = errorMode === 'baseline' ? p.baseline_error_db : p.calibrated_error_db;
+            if (typeof err !== 'number' || !Number.isFinite(err)) return null;
+            const radius = w * (0.01 + Math.min(err, 18) / 18 * 0.028);
+            return (
+              <circle
+                key={`err-${errorMode}-${p.point_id}`}
+                cx={p.x_m}
+                cy={p.y_m}
+                r={radius}
+                fill={errorColor(err)}
+                opacity="0.28"
+                stroke={errorColor(err)}
+                strokeWidth={w * 0.003}
+              >
+                <title>{pointTooltip(p, idx, 'comparison')}</title>
+              </circle>
+            );
+          })}
+        {validationPoints.map((p, idx) => (
           <path
             key={`v-${p.point_id}`}
             d={`M ${p.x_m} ${p.y_m - w * 0.014} L ${p.x_m - w * 0.014} ${p.y_m + w * 0.014} L ${p.x_m + w * 0.014} ${p.y_m + w * 0.014} Z`}
             fill="#dc2626"
             stroke="white"
             strokeWidth={w * 0.004}
-          />
+          >
+            <title>{pointTooltip(p, idx, 'comparison')}</title>
+          </path>
         ))}
       </svg>
       {size === 'large' && <RssiScaleBar min={colorScale.min_dbm} max={colorScale.max_dbm} />}
     </div>
   );
+}
+
+function pointTooltip(
+  point: CalibrationEvaluationResponse['points']['validation'][number],
+  index: number,
+  kind: 'calibration' | 'comparison',
+): string {
+  const pointName = `P${String(index + 1).padStart(2, '0')}`;
+  const purpose = kind === 'calibration' ? 'calibration' : 'comparison';
+  const lines = [
+    `${pointName} (${purpose})`,
+    `Measured RSSI: ${formatTooltipNumber(point.rssi_dbm, 'dBm')}`,
+    `Baseline pred: ${formatTooltipNumber(point.baseline_pred_dbm, 'dBm')}`,
+    `Calibrated pred: ${formatTooltipNumber(point.calibrated_pred_dbm, 'dBm')}`,
+    `Before error: ${formatTooltipNumber(point.baseline_error_db, 'dB')}`,
+    `After error: ${formatTooltipNumber(point.calibrated_error_db, 'dB')}`,
+    `Position: ${formatTooltipNumber(point.x_m, 'm')}, ${formatTooltipNumber(point.y_m, 'm')}`,
+  ];
+  return lines.join('\n');
+}
+
+function formatTooltipNumber(value: unknown, unit: string): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? `${value.toFixed(1)} ${unit}`
+    : '--';
 }
 
 function RssiScaleBar({ min, max }: { min: number; max: number }) {
@@ -554,6 +690,86 @@ function RssiScaleBar({ min, max }: { min: number; max: number }) {
       </div>
     </div>
   );
+}
+
+function ErrorBarChart({
+  points,
+}: {
+  points: CalibrationEvaluationResponse['points']['validation'];
+}) {
+  const visible = points.slice(0, 24);
+  const maxErr = Math.max(
+    1,
+    ...visible.flatMap((p) => [
+      typeof p.baseline_error_db === 'number' ? p.baseline_error_db : 0,
+      typeof p.calibrated_error_db === 'number' ? p.calibrated_error_db : 0,
+    ]),
+  );
+  if (visible.length === 0) {
+    return <p className="text-muted-foreground">No comparison points available.</p>;
+  }
+  return (
+    <div className="max-h-72 space-y-2 overflow-auto pr-1">
+      {visible.map((p, idx) => {
+        const before = typeof p.baseline_error_db === 'number' ? p.baseline_error_db : 0;
+        const after = typeof p.calibrated_error_db === 'number' ? p.calibrated_error_db : 0;
+        return (
+          <div key={p.point_id} className="grid grid-cols-[2.5rem_1fr_3rem] items-center gap-2">
+            <span className="font-medium text-muted-foreground">P{String(idx + 1).padStart(2, '0')}</span>
+            <div className="space-y-1">
+              <div className="h-2 rounded-full bg-muted">
+                <div
+                  className="h-2 rounded-full bg-rose-500"
+                  style={{ width: `${Math.max(2, (before / maxErr) * 100)}%` }}
+                />
+              </div>
+              <div className="h-2 rounded-full bg-muted">
+                <div
+                  className="h-2 rounded-full bg-emerald-500"
+                  style={{ width: `${Math.max(2, (after / maxErr) * 100)}%` }}
+                />
+              </div>
+            </div>
+            <span className="text-right tabular-nums">
+              {after.toFixed(1)}
+            </span>
+          </div>
+        );
+      })}
+      {points.length > visible.length && (
+        <p className="pt-1 text-[11px] text-muted-foreground">
+          Showing first {visible.length} of {points.length} points. Full values are in the table below.
+        </p>
+      )}
+      <div className="flex gap-3 pt-1 text-[11px] text-muted-foreground">
+        <span className="inline-flex items-center gap-1"><span className="h-2 w-4 rounded bg-rose-500" /> before</span>
+        <span className="inline-flex items-center gap-1"><span className="h-2 w-4 rounded bg-emerald-500" /> after</span>
+      </div>
+    </div>
+  );
+}
+
+function errorColor(errorDb: number): string {
+  if (errorDb <= 3) return '#10b981';
+  if (errorDb <= 7) return '#f59e0b';
+  return '#ef4444';
+}
+
+function formatFrequencyCheck(evaluation: CalibrationEvaluationResponse): string | null {
+  const measurement = evaluation.evaluation?.['measurement_frequency'];
+  const physical = evaluation.evaluation?.['rf_physical'];
+  if (!measurement || typeof measurement !== 'object') return null;
+  const m = measurement as Record<string, unknown>;
+  if (m.available !== true) return '실측 frequency_mhz가 없어 2.4GHz/5GHz 여부를 확인할 수 없습니다.';
+  const p = physical && typeof physical === 'object' ? (physical as Record<string, unknown>) : {};
+  const measuredBand = String(m.dominant_band ?? 'unknown');
+  const avgMhz = typeof m.avg_frequency_mhz === 'number' ? m.avg_frequency_mhz : null;
+  const rfGhz = typeof p.frequency_ghz === 'number' ? p.frequency_ghz : null;
+  const txPower = typeof p.tx_power_dbm === 'number' ? p.tx_power_dbm : null;
+  const measured = avgMhz != null ? `${measuredBand} (${(avgMhz / 1000).toFixed(2)}GHz avg)` : measuredBand;
+  const simulated = rfGhz != null ? `${rfGhz.toFixed(2)}GHz` : 'unknown GHz';
+  const tx = txPower != null ? `, Tx ${txPower.toFixed(1)}dBm` : '';
+  return `실측 주파수: ${measured} / RF 시뮬레이션: ${simulated}${tx}`;
 }
 
 function rssiColor(value: number, min: number, max: number): string {
@@ -613,8 +829,16 @@ function parseCalibrationMetrics(m: Record<string, unknown> | null | undefined):
     return null;
   };
   return {
-    rmse: toNum('rmse_dbm') ?? toNum('rmse') ?? toNum('rmse_after'),
-    mae: toNum('mae_dbm') ?? toNum('mae') ?? toNum('mae_after'),
+    rmse:
+      toNum('calibrated_rmse_db') ??
+      toNum('rmse_dbm') ??
+      toNum('rmse') ??
+      toNum('rmse_after'),
+    mae:
+      toNum('calibrated_mae_db') ??
+      toNum('mae_dbm') ??
+      toNum('mae') ??
+      toNum('mae_after'),
   };
 }
 

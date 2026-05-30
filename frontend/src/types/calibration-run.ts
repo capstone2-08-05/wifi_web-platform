@@ -39,7 +39,7 @@ export interface CalibrationEvaluationRequest {
   scene_version_id: UUID;
   rf_run_id: UUID;
   measurement_session_ids: UUID[];
-  method?: 'global_offset';
+  method?: 'affine_rssi_transfer' | 'global_offset';
   split?: {
     strategy: 'purpose_or_random' | 'random';
     holdout_ratio: number;
@@ -89,6 +89,7 @@ export interface CalibrationEvaluationResponse {
   points: {
     calibration: CalibrationEvaluationPoint[];
     validation: CalibrationEvaluationPoint[];
+    evaluation?: CalibrationEvaluationPoint[];
     reference: CalibrationEvaluationPoint[];
     invalid: CalibrationEvaluationPoint[];
   };

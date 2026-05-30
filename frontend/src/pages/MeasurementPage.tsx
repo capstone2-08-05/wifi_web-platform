@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -37,11 +37,7 @@ import { useApLayouts } from '@/hooks/use-ap-layouts';
 import { useFloorAssets, useAssetDownloadUrl } from '@/hooks/use-assets';
 import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
-import {
-  useEvaluateCalibrationRun,
-  useCalibrationParameterUpdates,
-  useCalibrationRun,
-} from '@/hooks/use-calibration-run';
+import { useEvaluateCalibrationRun } from '@/hooks/use-calibration-run';
 import { CalibrationCard } from '@/features/calibration/CalibrationCard';
 import type { CalibrationEvaluationResponse, SpaceType } from '@/types/calibration-run';
 import { parseGeometry } from '@/features/editor/geometry-utils';
@@ -52,6 +48,9 @@ import {
   type MeasurementViewMode,
   type PlacedApSimple,
 } from '@/features/measurement/MeasurementCanvas';
+
+const EMPTY_MEASUREMENT_SESSIONS: MeasurementSession[] = [];
+const EMPTY_MEASUREMENT_POINTS: ApiPoint[] = [];
 
 export default function MeasurementPage() {
   const floorId = useAppStore((s) => s.selectedFloorId);
@@ -83,10 +82,15 @@ export default function MeasurementPage() {
   // - Source of truth: Floor.space_type (헤더의 도면 셀렉터에서 설정)
   // - 이 페이지에서도 일회성 override 가능 — 사용자가 다른 prior 로 실험하고 싶을 때
   // - floor 가 바뀌면 그 floor 의 값으로 자동 리셋.
-  const [spaceTypeOverride, setSpaceTypeOverride] = useState<SpaceType | null>(null);
-  useEffect(() => {
-    setSpaceTypeOverride(null);  // floor 전환 시 override 해제
-  }, [floorId]);
+  const [spaceTypeOverrideState, setSpaceTypeOverrideState] = useState<{
+    floorId: string | null;
+    value: SpaceType | null;
+  }>({ floorId: null, value: null });
+  const spaceTypeOverride =
+    spaceTypeOverrideState.floorId === floorId ? spaceTypeOverrideState.value : null;
+  const setSpaceTypeOverride = (value: SpaceType | null) => {
+    setSpaceTypeOverrideState({ floorId: floorId ?? null, value });
+  };
   // Floor 의 space_type 을 reactive 하게 읽음 — 헤더에서 변경하면 즉시 반영.
   const projectIdForFloors = useAppStore((s) => s.selectedProjectId);
   const floorsList = useFloors(projectIdForFloors);
@@ -95,12 +99,12 @@ export default function MeasurementPage() {
 
   // 측정 세션. 기본은 최근 세션 자동 선택, 사용자가 '이력 보기' 로 다른 세션 선택 가능.
   const sessionsQuery = useFloorMeasurementSessions(floorId);
-  const sessions = sessionsQuery.data?.items ?? [];
+  const sessions = sessionsQuery.data?.items ?? EMPTY_MEASUREMENT_SESSIONS;
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const activeSession =
     sessions.find((s) => s.id === selectedSessionId) ?? sessions[0] ?? null;
   const pointsQuery = useMeasurementPoints(activeSession?.id ?? null);
-  const points = pointsQuery.data?.items ?? [];
+  const points = pointsQuery.data?.items ?? EMPTY_MEASUREMENT_POINTS;
 
   const canvasPoints = useMemo(() => apiPointsToCanvas(points), [points]);
   // 캔버스 dbm color mode 에서 점 색 계산용 — id → 실측 RSSI 매핑.
@@ -167,6 +171,7 @@ export default function MeasurementPage() {
     [activeCoverage],
   );
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [mobilePurpose, setMobilePurpose] = useState<'calibration' | 'reference'>('calibration');
   const [actionGuideOpen, setActionGuideOpen] = useState(false);
 
   const hasVersion = versions.length > 0;
@@ -175,16 +180,11 @@ export default function MeasurementPage() {
   // §11 캘리브레이션 — 현재 측정 세션 + 최근 RF Run + 현재 버전을 입력으로 사용.
   // 측정 페이지에 둠: 진단 카드에서 차이를 발견한 직후 보정 가능.
   const evaluateCalibration = useEvaluateCalibrationRun();
-  const [activeCalibrationId, setActiveCalibrationId] = useState<string | null>(null);
   const [calibrationEvaluation, setCalibrationEvaluation] =
     useState<CalibrationEvaluationResponse | null>(null);
-  const calibrationPoll = useCalibrationRun(activeCalibrationId);
-  const paramUpdatesQuery = useCalibrationParameterUpdates(
-    activeCalibrationId,
-    calibrationPoll.isSucceeded,
-  );
-  // BO 가 9차원 fit 하므로 최소 8점 (backend 가드와 일치). 그 미만이면 overfit → 다음
-  // 시뮬이 극단적으로 왜곡됨 (벽 무한히 두꺼워짐 등). 사용자가 실수로 누르지 않도록 막음.
+  // Affine RSSI transfer + residual IDW는 적은 측정점으로도 계산은 가능하지만,
+  // 화면에서 바로 신뢰 가능한 보정맵처럼 보이지 않도록 프론트에서는 더 보수적으로 8점부터 허용한다.
+  // 백엔드 평가는 기존 데이터 호환을 위해 최소 5점 guard를 별도로 유지한다.
   const MIN_MEASUREMENTS_FOR_CALIBRATION = 8;
   const hasEnoughMeasurements = points.length >= MIN_MEASUREMENTS_FOR_CALIBRATION;
   const canCalibrate =
@@ -192,6 +192,20 @@ export default function MeasurementPage() {
     !!latestRfRunId &&
     !!currentVersion?.id &&
     hasEnoughMeasurements;
+  const evaluationSessionIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const session of sessions) {
+      if (
+        session.measurement_purpose === 'calibration' ||
+        session.measurement_purpose === 'reference' ||
+        session.measurement_purpose === 'validation'
+      ) {
+        ids.add(session.id);
+      }
+    }
+    if (activeSession?.id) ids.add(activeSession.id);
+    return [...ids];
+  }, [activeSession, sessions]);
   const calibrationDisabledReason = !hasMeasurement
     ? '먼저 측정을 진행해주세요.'
     : !hasEnoughMeasurements
@@ -207,8 +221,8 @@ export default function MeasurementPage() {
         floor_id: activeSession.floor_id,
         rf_run_id: latestRfRunId,
         scene_version_id: currentVersion.id,
-        measurement_session_ids: [activeSession.id],
-        method: 'global_offset',
+        measurement_session_ids: evaluationSessionIds.length > 0 ? evaluationSessionIds : [activeSession.id],
+        method: 'affine_rssi_transfer',
         split: { strategy: 'purpose_or_random', holdout_ratio: 0.3, seed: 42 },
         visualization: {
           include_reference_map: true,
@@ -219,12 +233,77 @@ export default function MeasurementPage() {
       },
       {
         onSuccess: (result) => {
-          setActiveCalibrationId(result.calibration_run_id);
           setCalibrationEvaluation(result);
         },
       },
     );
   };
+
+  const lastAutoCalibrationKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (mode !== 'both') return;
+    if (!canCalibrate || !activeSession || !latestRfRunId || !currentVersion) return;
+    const sessionIds = evaluationSessionIds.length > 0 ? evaluationSessionIds : [activeSession.id];
+    const key = [
+      activeSession.floor_id,
+      currentVersion.id,
+      latestRfRunId,
+      sessionIds.join(','),
+      points.length,
+    ].join('|');
+    if (lastAutoCalibrationKey.current === key) return;
+    lastAutoCalibrationKey.current = key;
+    evaluateCalibration.mutate(
+      {
+        floor_id: activeSession.floor_id,
+        rf_run_id: latestRfRunId,
+        scene_version_id: currentVersion.id,
+        measurement_session_ids: sessionIds,
+        method: 'affine_rssi_transfer',
+        split: { strategy: 'purpose_or_random', holdout_ratio: 0.3, seed: 42 },
+        visualization: {
+          include_reference_map: true,
+          reference_map_method: 'idw',
+          rssi_min_dbm: -90,
+          rssi_max_dbm: -30,
+        },
+      },
+      {
+        onSuccess: (result) => {
+          setCalibrationEvaluation(result);
+        },
+      },
+    );
+  }, [
+    mode,
+    canCalibrate,
+    activeSession,
+    latestRfRunId,
+    currentVersion,
+    evaluationSessionIds,
+    points.length,
+    evaluateCalibration,
+  ]);
+
+  const calibratedMainHeatmap = useMemo(() => {
+    const map = calibrationEvaluation?.maps.calibrated;
+    if (!map) return null;
+    return {
+      valuesDbm: map.values_dbm,
+      bounds: map.bounds_m,
+      rssiRange: {
+        min: calibrationEvaluation.color_scale.min_dbm,
+        max: calibrationEvaluation.color_scale.max_dbm,
+      },
+    };
+  }, [calibrationEvaluation]);
+
+  const displayedHeatmap =
+    mode === 'both' && calibratedMainHeatmap ? calibratedMainHeatmap : estimatedHeatmap;
+  const displayedRange =
+    mode === 'both' && calibratedMainHeatmap
+      ? calibratedMainHeatmap.rssiRange
+      : pointColorRange;
 
 
   return (
@@ -235,7 +314,10 @@ export default function MeasurementPage() {
         floorId={floorId ?? null}
         projectId={projectIdForFloors}
         onSelectSession={(id) => setSelectedSessionId(id)}
-        onStartMeasurement={() => setMobileOpen(true)}
+        onStartMeasurement={() => {
+          setMobilePurpose('calibration');
+          setMobileOpen(true);
+        }}
       />
 
       {!floorId ? (
@@ -256,7 +338,11 @@ export default function MeasurementPage() {
               {/* route 모드 (양호/주의/불량) 만 카드 상단 inline 표시. dbm 모드는 캔버스 하단에 colorbar. */}
               <div className="flex flex-wrap items-center gap-2">
                 {mode === 'route' && <Legend colorMode="quality" range={pointColorRange} />}
-                {mode !== 'route' && activeCoverage?.method && (
+                {mode === 'both' && calibratedMainHeatmap ? (
+                  <span className="inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/5 px-2 py-1 text-xs font-medium text-primary">
+                    RSSI transfer 보정맵
+                  </span>
+                ) : mode !== 'route' && activeCoverage?.method && (
                   <MethodBadge
                     method={activeCoverage.method}
                     expected={mode === 'both' ? 'residual_kriging' : 'gp_only'}
@@ -269,18 +355,18 @@ export default function MeasurementPage() {
                   backgroundImageUrl={backgroundImageUrl}
                   points={canvasPoints}
                   pointRssiByOrder={pointRssiByOrder}
-                  pointColorRange={pointColorRange}
+                  pointColorRange={displayedRange}
                   aps={canvasAps}
                   mode={mode}
-                  estimatedHeatmap={estimatedHeatmap}
+                  estimatedHeatmap={displayedHeatmap}
                 />
                 {!hasMeasurement && <CanvasEmptyOverlay loading={pointsQuery.isFetching} />}
                 {/* dbm 모드 colorbar — 도면 좌상단. gradient + tick 값 수직 정렬로 "이 색=이 dBm" 직관. */}
-                {mode !== 'route' && pointColorRange && (
+                {mode !== 'route' && displayedRange && (
                   <div className="pointer-events-none absolute left-3 top-3 z-10 w-70">
                     <DbmColorBar
-                      vmin={pointColorRange.min}
-                      vmax={pointColorRange.max}
+                      vmin={displayedRange.min}
+                      vmax={displayedRange.max}
                       label="실측 RSSI"
                     />
                   </div>
@@ -296,15 +382,20 @@ export default function MeasurementPage() {
               measuredAvgDbm={measuredAvgDbm}
             />
             <CalibrationCard
-              run={calibrationPoll.run}
-              isPolling={calibrationPoll.isPolling}
+              run={null}
+              isPolling={false}
               isStarting={evaluateCalibration.isPending}
               canCalibrate={canCalibrate}
               disabledReason={calibrationDisabledReason}
               spaceType={spaceType}
               onSpaceTypeChange={setSpaceTypeOverride}
               onCalibrate={handleCalibrate}
-              parameterUpdates={paramUpdatesQuery.data ?? []}
+              showCalibrateButton={false}
+              onAddReferenceMeasurement={() => {
+                setMobilePurpose('reference');
+                setMobileOpen(true);
+              }}
+              parameterUpdates={[]}
               evaluation={calibrationEvaluation}
               backgroundImageUrl={backgroundImageUrl}
             />
@@ -317,7 +408,11 @@ export default function MeasurementPage() {
         </div>
       )}
 
-      <MobileConnectModal open={mobileOpen} onClose={() => setMobileOpen(false)} />
+      <MobileConnectModal
+        open={mobileOpen}
+        onClose={() => setMobileOpen(false)}
+        recommendedPurpose={mobilePurpose}
+      />
       <ActionGuideModal open={actionGuideOpen} onClose={() => setActionGuideOpen(false)} />
       <HelpFab />
     </div>
