@@ -142,12 +142,12 @@ export function SimulationCanvas({
     [imageDims, sceneVersion?.source_asset_id, sceneVersion?.floor_id],
   );
 
-  // viewBox: image extent 있으면 union(walls, image) 우선 — 가장 안정적인 자체 계산.
-  // 없을 때만 editor 캐시 fallback (이전 페이지에서 잡아둔 영역 유지) → 도형 bounds 최후.
+  // viewBox: editor/measurement 와 같은 floor 캐시를 우선 사용해 페이지 간 도면 크기를 고정.
+  // 캐시가 없을 때만 image+shape union 으로 계산.
   const vb = useMemo(() => {
-    if (imageExtent) return computeViewBox(sceneVersion, imageExtent);
     const cached = loadCachedViewBox(sceneVersion?.floor_id ?? null);
     if (cached) return cached;
+    if (imageExtent) return computeViewBox(sceneVersion, imageExtent);
     return computeViewBox(sceneVersion, null);
   }, [sceneId, sceneVersion?.floor_id, imageExtent]);
   const [dragId, setDragId] = useState<string | null>(null);

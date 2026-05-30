@@ -2,8 +2,6 @@ import {
   MousePointer2,
   Upload,
   Square,
-  Circle,
-  Hexagon,
   DoorOpen,
   type LucideIcon,
 } from 'lucide-react';
@@ -32,8 +30,10 @@ const SHAPE_TOOLS: ToolDef[] = [
   { id: 'rect', icon: Square, label: '벽/구조물', onClick: 'change' },
   // [room 비활성화] '방 만들기' 도구 노출 제거. 다시 켜려면 아래 줄 주석 해제.
   // { id: 'polygon', icon: Hexagon, label: '방 만들기', onClick: 'change' },
-  { id: 'opening', icon: DoorOpen, label: '문/창 추가', onClick: 'change' },
-  { id: 'circle', icon: Circle, label: '가구 배치', onClick: 'change' },
+  { id: 'door', icon: DoorOpen, label: '문 추가', onClick: 'change' },
+  { id: 'window', icon: Square, label: '창문 추가', onClick: 'change' },
+  // [object 비활성화] 공간 편집 화면에서 가구/공간성 객체 추가 도구 숨김.
+  // { id: 'circle', icon: Circle, label: '가구 배치', onClick: 'change' },
 ];
 
 export function CanvasToolbar({ tool, onChangeTool, onUploadClick }: CanvasToolbarProps) {

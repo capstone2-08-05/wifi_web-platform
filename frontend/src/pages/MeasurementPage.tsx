@@ -234,12 +234,12 @@ export default function MeasurementPage() {
           subtitle="공간 편집에서 도면을 분석·확정한 후 모바일 앱으로 실측을 진행할 수 있습니다."
         />
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 xl:grid-cols-[1fr_22rem]">
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
           <section className="flex min-h-0 flex-col gap-3">
             <TabBar mode={mode} onChange={setMode} />
-            <div className="relative flex min-h-0 flex-1 flex-col gap-2 rounded-xl border bg-card p-4 shadow-sm">
-              {/* route 모드 (양호/주의/불량) 만 카드 상단 inline 표시. dbm 모드는 캔버스 하단에 colorbar. */}
-              <div className="flex flex-wrap items-center gap-2">
+            <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border bg-background shadow-sm">
+              {/* route 모드 범례/측정 방식 뱃지는 캔버스 위에 올려 도면 크기를 시뮬레이션과 맞춘다. */}
+              <div className="pointer-events-none absolute left-3 top-3 z-10 flex flex-wrap items-center gap-2">
                 {mode === 'route' && <Legend colorMode="quality" range={pointColorRange} />}
                 {mode !== 'route' && activeCoverage?.method && (
                   <MethodBadge
@@ -248,7 +248,7 @@ export default function MeasurementPage() {
                   />
                 )}
               </div>
-              <div className="relative min-h-112 flex-1">
+              <div className="relative h-full min-h-112">
                 <MeasurementCanvas
                   sceneVersion={sceneVersion}
                   backgroundImageUrl={backgroundImageUrl}

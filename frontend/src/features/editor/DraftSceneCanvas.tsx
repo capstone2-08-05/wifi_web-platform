@@ -277,7 +277,8 @@ interface SnapResult {
 }
 
 /**
- * 벽 우선 스냅: 벽 끝점(1순위) → 벽 선분 위 투영(2순위) → 축 스냅(3순위).
+ * 벽 스냅: 그리는 중/vertex 이동 중에는 수평·수직 축을 최우선으로 둔다.
+ * 벽을 잇는 과정에서 근처 선분에 먼저 붙어 삐딱해지는 것을 막기 위함.
  * opening(창문/문) 에는 절대 안 붙는다.
  */
 function snapToWall(
@@ -287,18 +288,33 @@ function snapToWall(
   axisFrom?: Coord | null,
   excludeWallId?: string | null,
 ): SnapResult {
-  // 1) 벽 끝점
-  const anchor = nearestAnchor(raw, wallAnchors, SNAP_RADIUS_M);
-  if (anchor) return { point: [anchor[0], anchor[1]], snapped: true, kind: 'wall-anchor' };
-  // 2) 벽 선분 위 (끝점이 아니어도 벽 라인에 붙음)
-  const proj = nearestWallProjection(raw, draft, SNAP_RADIUS_M, excludeWallId);
-  if (proj) return { point: proj, snapped: true, kind: 'wall-projection' };
-  // 3) 축 스냅 (그리는 중 / vertex 드래그 시 반대편 꼭짓점 기준)
+  // 1) 축 스냅 (그리는 중 / vertex 드래그 시 반대편 꼭짓점 기준)
   if (axisFrom) {
     const axed = snapToAxis(axisFrom, raw, AXIS_SNAP_TOLERANCE_M);
-    if (axed[0] !== raw[0] || axed[1] !== raw[1]) return { point: axed, snapped: true, kind: 'axis' };
+    if (axed[0] !== raw[0] || axed[1] !== raw[1]) {
+      const wallStop = nearestWallProjection(axed, draft, SNAP_RADIUS_M, excludeWallId);
+      if (wallStop && isOnSameAxis(axisFrom, axed, wallStop)) {
+        return { point: wallStop, snapped: true, kind: 'axis' };
+      }
+      return { point: axed, snapped: true, kind: 'axis' };
+    }
   }
+  // 2) 벽 끝점
+  const anchor = nearestAnchor(raw, wallAnchors, SNAP_RADIUS_M);
+  if (anchor) return { point: [anchor[0], anchor[1]], snapped: true, kind: 'wall-anchor' };
+  // 3) 벽 선분 위 (끝점이 아니어도 벽 라인에 붙음)
+  const proj = nearestWallProjection(raw, draft, SNAP_RADIUS_M, excludeWallId);
+  if (proj) return { point: proj, snapped: true, kind: 'wall-projection' };
   return { point: raw, snapped: false };
+}
+
+/** 축 스냅 상태를 유지한 채 벽 선분 위 점으로 끝점을 멈출 수 있는지 확인. */
+function isOnSameAxis(axisFrom: Coord, axisPoint: Coord, candidate: Coord): boolean {
+  const horizontal = axisPoint[1] === axisFrom[1];
+  const vertical = axisPoint[0] === axisFrom[0];
+  if (horizontal) return Math.abs(candidate[1] - axisFrom[1]) < AXIS_SNAP_TOLERANCE_M;
+  if (vertical) return Math.abs(candidate[0] - axisFrom[0]) < AXIS_SNAP_TOLERANCE_M;
+  return false;
 }
 
 /** 선택된 엔티티의 vertexIndex 번째 꼭짓점 좌표 (스냅 기준점 계산용). */
@@ -475,33 +491,34 @@ function collectEntitiesInRect(
       hits.push({ kind: 'opening', id: op.id });
     }
   }
-  for (const room of draft.rooms) {
-    const g = parseGeometry(room.polygon_geom);
-    if (g?.type !== 'Polygon') continue;
-    const outer = g.coordinates[0] ?? [];
-    if (outer.length > 0 && outer.every((p) => pointInRect(p, rect))) {
-      hits.push({ kind: 'room', id: room.id });
-    }
-  }
-  for (const obj of draft.objects) {
-    const g = parseGeometry(obj.point_geom);
-    if (g?.type !== 'Point') continue;
-    const [cx, cy] = g.coordinates;
-    const meta = (obj.metadata_json ?? {}) as Record<string, unknown>;
-    const w =
-      typeof meta.width_m === 'number' && meta.width_m > 0 ? meta.width_m : 1.6;
-    const h =
-      typeof meta.height_m === 'number' && meta.height_m > 0 ? meta.height_m : 1.6;
-    const corners: Coord[] = [
-      [cx - w / 2, cy - h / 2],
-      [cx + w / 2, cy - h / 2],
-      [cx - w / 2, cy + h / 2],
-      [cx + w / 2, cy + h / 2],
-    ];
-    if (corners.every((p) => pointInRect(p, rect))) {
-      hits.push({ kind: 'object', id: obj.id });
-    }
-  }
+  // [room/object 비활성화] 공간 편집 화면에서 방/가구/공간성 객체 선택 제외.
+  // for (const room of draft.rooms) {
+  //   const g = parseGeometry(room.polygon_geom);
+  //   if (g?.type !== 'Polygon') continue;
+  //   const outer = g.coordinates[0] ?? [];
+  //   if (outer.length > 0 && outer.every((p) => pointInRect(p, rect))) {
+  //     hits.push({ kind: 'room', id: room.id });
+  //   }
+  // }
+  // for (const obj of draft.objects) {
+  //   const g = parseGeometry(obj.point_geom);
+  //   if (g?.type !== 'Point') continue;
+  //   const [cx, cy] = g.coordinates;
+  //   const meta = (obj.metadata_json ?? {}) as Record<string, unknown>;
+  //   const w =
+  //     typeof meta.width_m === 'number' && meta.width_m > 0 ? meta.width_m : 1.6;
+  //   const h =
+  //     typeof meta.height_m === 'number' && meta.height_m > 0 ? meta.height_m : 1.6;
+  //   const corners: Coord[] = [
+  //     [cx - w / 2, cy - h / 2],
+  //     [cx + w / 2, cy - h / 2],
+  //     [cx - w / 2, cy + h / 2],
+  //     [cx + w / 2, cy + h / 2],
+  //   ];
+  //   if (corners.every((p) => pointInRect(p, rect))) {
+  //     hits.push({ kind: 'object', id: obj.id });
+  //   }
+  // }
   return hits;
 }
 
@@ -676,6 +693,10 @@ export function DraftSceneCanvas({
     () => deriveImageExtent(draft, imageDims),
     [draft, imageDims],
   );
+  useEffect(() => {
+    if (!imageExtent) return;
+    saveCachedViewBox(viewBoxCacheKey(draft), computeViewBox(draft, imageExtent));
+  }, [draft, imageExtent]);
 
   const [vb, setVb] = useState(() =>
     imageExtent ? computeViewBox(draft, imageExtent) : resolveInitialViewBox(draft),
@@ -738,13 +759,14 @@ export function DraftSceneCanvas({
     setCreating(null);
     setCursorPos(null);
     setSnapIndicator(null);
+    setAxisSnapState(null);
   }
 
   const isCreationMode =
     tool === 'rect' ||
-    tool === 'circle' ||
     tool === 'polygon' ||
-    tool === 'opening';
+    tool === 'door' ||
+    tool === 'window';
 
   // Escape 키로 진행 중 생성 취소
   useEffect(() => {
@@ -752,6 +774,7 @@ export function DraftSceneCanvas({
       if (e.key === 'Escape') {
         setCreating(null);
         setSnapIndicator(null);
+        setAxisSnapState(null);
       }
     };
     document.addEventListener('keydown', onKey);
@@ -848,7 +871,13 @@ export function DraftSceneCanvas({
           : null;
       const res = snapToWall(raw, draft, wallAnchors, axisFrom);
       setCursorPos(res.point);
-      setSnapIndicator(res.snapped ? res.point : null);
+      setSnapIndicator(res.snapped && res.kind !== 'axis' ? res.point : null);
+      if (res.kind === 'axis' && axisFrom) {
+        const axis: 'h' | 'v' = res.point[0] === axisFrom[0] ? 'v' : 'h';
+        setAxisSnapState({ axis, from: axisFrom, to: res.point });
+      } else {
+        setAxisSnapState(null);
+      }
     }
 
     if (!drag) {
@@ -1036,8 +1065,8 @@ export function DraftSceneCanvas({
       return;
     }
 
-    // ─ 문/창 (2 클릭 LineString, opening_type=door 기본) ─
-    if (tool === 'opening') {
+    // ─ 문/창 (2 클릭 LineString) ─
+    if (tool === 'door' || tool === 'window') {
       const raw = getSvgPoint(e);
       if (!raw) return;
       if (!creating || creating.kind !== 'opening') {
@@ -1049,7 +1078,7 @@ export function DraftSceneCanvas({
         const width = distance(start, pt);
         if (width > DRAG_THRESHOLD_M) {
           onCreate?.('opening', {
-            opening_type: 'door',
+            opening_type: tool,
             width_m: Number(width.toFixed(2)),
             height_m: 2.1,
             source_method: 'user_drawn',
@@ -1063,16 +1092,17 @@ export function DraftSceneCanvas({
     }
 
     // ─ 가구 (1 클릭 Point) ─
-    if (tool === 'circle') {
-      const pt = getSvgPoint(e);
-      if (!pt) return;
-      onCreate?.('object', {
-        object_type: 'furniture',
-        source_method: 'user_drawn',
-        point_geom: { type: 'Point', coordinates: pt },
-      });
-      return;
-    }
+    // [object 비활성화] 공간 편집 화면에서 가구/공간성 객체 추가 막음.
+    // if (tool === 'circle') {
+    //   const pt = getSvgPoint(e);
+    //   if (!pt) return;
+    //   onCreate?.('object', {
+    //     object_type: 'furniture',
+    //     source_method: 'user_drawn',
+    //     point_geom: { type: 'Point', coordinates: pt },
+    //   });
+    //   return;
+    // }
 
     // ─ 방 (다중 클릭 Polygon, 시작점 클릭 또는 Enter 로 닫기) ─
     // [room 비활성화] AP 후보 알고리즘이 room 정보를 강제로 쓰지 않기로 결정 → UI 노출 제거.
@@ -1152,9 +1182,9 @@ export function DraftSceneCanvas({
           />
         )}
         {/* 일반 렌더: 선택된 항목은 제외하고 그린 뒤, 마지막에 다시 위에 올림. */}
-        {/* 타입 있는 방(화장실 등)만 표시 — 벽으로 둘러싸인 영역 + 라벨. 표시 전용
-            (이름 없는 일반 방 room_0/1/2 는 잡동사니라 숨김). */}
-        {draft.rooms
+        {/* [room 비활성화] 공간 편집 화면에서 room/공간 영역 렌더 제거.
+            다시 켜려면 아래 블록 주석 해제. */}
+        {/* {draft.rooms
           .filter((r) => r.room_type)
           .map((room) => (
             <RoomShape
@@ -1166,7 +1196,7 @@ export function DraftSceneCanvas({
               onShapePointerDown={() => {}}
               onVertexPointerDown={() => {}}
             />
-          ))}
+          ))} */}
 
         {draft.walls
           .filter((w) => !isSelected('wall', w.id))
@@ -1200,7 +1230,9 @@ export function DraftSceneCanvas({
             />
           ))}
 
-        {draft.objects
+        {/* [object 비활성화] 공간 편집 화면에서 가구/공간성 객체 렌더 제거.
+            다시 켜려면 아래 블록 주석 해제. */}
+        {/* {draft.objects
           .filter((o) => !isSelected('object', o.id))
           .map((obj) => (
             <ObjectShape
@@ -1214,7 +1246,7 @@ export function DraftSceneCanvas({
                 startResizeDrag(e, { kind: 'object', id: obj.id }, sign)
               }
             />
-          ))}
+          ))} */}
 
         {/* 선택된 항목들 — 항상 맨 위에 렌더 (단일/다중 모두). */}
         {(selectedRefs ?? []).map((ref) => {
@@ -1268,20 +1300,22 @@ export function DraftSceneCanvas({
               />
             ) : null;
           }
-          const obj = draft.objects.find((o) => o.id === ref.id);
-          return obj ? (
-            <ObjectShape
-              key={`sel-${obj.id}`}
-              object={obj}
-              selected
-              drag={groupDrag(drag, selectedRefs, 'object', obj.id)}
-              handleSize={handleSize}
-              onShapePointerDown={(e) => startShapeDrag(e, { kind: 'object', id: obj.id })}
-              onResizePointerDown={(e, sign) =>
-                startResizeDrag(e, { kind: 'object', id: obj.id }, sign)
-              }
-            />
-          ) : null;
+          // [object 비활성화] 선택 상태에 남아있는 object 도 렌더하지 않음.
+          // const obj = draft.objects.find((o) => o.id === ref.id);
+          // return obj ? (
+          //   <ObjectShape
+          //     key={`sel-${obj.id}`}
+          //     object={obj}
+          //     selected
+          //     drag={groupDrag(drag, selectedRefs, 'object', obj.id)}
+          //     handleSize={handleSize}
+          //     onShapePointerDown={(e) => startShapeDrag(e, { kind: 'object', id: obj.id })}
+          //     onResizePointerDown={(e, sign) =>
+          //       startResizeDrag(e, { kind: 'object', id: obj.id }, sign)
+          //     }
+          //   />
+          // ) : null;
+          return null;
         })}
 
         {/* 다중 선택 bbox + 4 모서리 그룹 리사이즈 핸들 */}
@@ -1341,7 +1375,7 @@ export function DraftSceneCanvas({
               stroke="oklch(0.55 0.22 264)"
               strokeWidth="4"
               strokeDasharray="6 4"
-              strokeLinecap="round"
+              strokeLinecap="butt"
               vectorEffect="non-scaling-stroke"
             />
             <circle
@@ -1443,8 +1477,8 @@ export function DraftSceneCanvas({
           );
         })()}
 
-        {/* 가구 placement hover hint */}
-        {tool === 'circle' && cursorPos && (
+        {/* [object 비활성화] 가구 placement hover hint 제거. */}
+        {/* {tool === 'circle' && cursorPos && (
           <circle
             cx={cursorPos[0]}
             cy={cursorPos[1]}
@@ -1457,7 +1491,7 @@ export function DraftSceneCanvas({
             opacity="0.7"
             pointerEvents="none"
           />
-        )}
+        )} */}
 
         {/* Marquee 선택 박스 — 영역 안 도형들을 일괄 선택 */}
         {drag?.mode === 'marquee' &&
@@ -1501,8 +1535,8 @@ export function DraftSceneCanvas({
           </g>
         )}
 
-        {/* 축 스냅 가이드 — 벽/문창 vertex 가 반대편 꼭짓점 기준 정확히 수평/수직이 된 순간.
-            (a) 캔버스 전체에 cyan 점선, (b) 스냅된 vertex 위치에 cyan 도트, (c) 90° 뱃지. */}
+        {/* 축 스냅 가이드 — 벽/문창이 기준점 대비 정확히 수평/수직이 된 순간.
+            (a) 캔버스 전체에 초록 점선, (b) 스냅된 위치에 초록 도트, (c) 90° 뱃지. */}
         {axisSnap && (
           <g pointerEvents="none">
             {axisSnap.axis === 'h' ? (
@@ -1511,7 +1545,7 @@ export function DraftSceneCanvas({
                 y1={axisSnap.from[1]}
                 x2={vb.x + vb.w}
                 y2={axisSnap.from[1]}
-                stroke="oklch(0.82 0.22 135)"
+                stroke="oklch(0.72 0.19 145)"
                 strokeWidth="1.5"
                 strokeDasharray="0.18 0.12"
                 vectorEffect="non-scaling-stroke"
@@ -1522,7 +1556,7 @@ export function DraftSceneCanvas({
                 y1={vb.y}
                 x2={axisSnap.from[0]}
                 y2={vb.y + vb.h}
-                stroke="oklch(0.82 0.22 135)"
+                stroke="oklch(0.72 0.19 145)"
                 strokeWidth="1.5"
                 strokeDasharray="0.18 0.12"
                 vectorEffect="non-scaling-stroke"
@@ -1532,7 +1566,7 @@ export function DraftSceneCanvas({
               cx={axisSnap.to[0]}
               cy={axisSnap.to[1]}
               r={handleSize * 0.8}
-              fill="oklch(0.82 0.22 135)"
+              fill="oklch(0.72 0.19 145)"
             />
             {/* 90° 뱃지 — 스냅된 vertex 우상단에 살짝 띄워서. */}
             <g transform={`translate(${axisSnap.to[0] + handleSize * 1.6} ${axisSnap.to[1] - handleSize * 1.6})`}>
@@ -1542,7 +1576,7 @@ export function DraftSceneCanvas({
                 width={handleSize * 4.2}
                 height={handleSize * 1.8}
                 rx={handleSize * 0.4}
-                fill="oklch(0.82 0.22 135)"
+                fill="oklch(0.72 0.19 145)"
               />
               <text
                 x={handleSize * 2.1}
@@ -1578,11 +1612,11 @@ function CreationHint({
       creating?.kind === 'wall'
         ? '두 번째 점을 클릭해 벽을 완성하세요. 기존 끝점·수평/수직에 자동으로 붙습니다. (Esc 취소)'
         : '첫 번째 점을 클릭해 벽 그리기를 시작하세요. 기존 벽 끝점 근처면 딱 붙습니다.';
-  } else if (tool === 'opening') {
+  } else if (tool === 'door' || tool === 'window') {
     text =
       creating?.kind === 'opening'
-        ? '두 번째 점을 클릭해 문/창을 완성하세요. 벽 끝점·수평/수직에 자동으로 붙습니다. (Esc 취소)'
-        : '첫 번째 점을 클릭해 문/창 그리기를 시작하세요.';
+        ? `두 번째 점을 클릭해 ${tool === 'door' ? '문' : '창문'}을 완성하세요. 벽 끝점·수평/수직에 자동으로 붙습니다. (Esc 취소)`
+        : `첫 번째 점을 클릭해 ${tool === 'door' ? '문' : '창문'} 그리기를 시작하세요.`;
   } else if (tool === 'polygon') {
     if (!creating || creating.kind !== 'polygon') {
       text = '첫 번째 점을 클릭해 방 만들기를 시작하세요.';
@@ -1591,9 +1625,10 @@ function CreationHint({
     } else {
       text = `시작점을 다시 클릭하면 방이 완성됩니다. (현재 ${creating.points.length}개 점)`;
     }
-  } else if (tool === 'circle') {
-    text = '캔버스를 클릭해 가구를 배치하세요.';
-  }
+  // [object 비활성화] 가구 배치 안내 제거.
+  // else if (tool === 'circle') {
+  //   text = '캔버스를 클릭해 가구를 배치하세요.';
+  // }
   if (!text) return null;
   return (
     <div className="pointer-events-none absolute left-1/2 top-4 -translate-x-1/2 rounded-md bg-slate-900/90 px-3 py-1.5 text-xs font-medium text-white shadow-md">
@@ -1872,7 +1907,7 @@ function WallShape({
         y2={end[1]}
         stroke={selected ? 'oklch(0.55 0.22 264)' : 'oklch(0.25 0 0)'}
         strokeWidth={selected ? 6 : 4}
-        strokeLinecap="round"
+        strokeLinecap="butt"
         vectorEffect="non-scaling-stroke"
         pointerEvents="none"
       />
