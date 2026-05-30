@@ -26,14 +26,22 @@ class ApRecommendationRequest(BaseModel):
     shadow_threshold_dbm: float = Field(default=-80.0)
     # 음영 패널티 점수
     shadow_penalty: float = Field(default=100.0)
+    # 반환할 추천 개수
+    n_recommendations: int = Field(default=3, ge=1, le=10)
+
+
+class ApRecommendationItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rank: int
+    recommended_x: float
+    recommended_y: float
+    score: float
 
 
 class ApRecommendationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    recommended_x: float
-    recommended_y: float
-    score: float
+    recommendations: list[ApRecommendationItem]
     status: str = "success"
-    # 탐색된 후보 수
     candidates_evaluated: int

@@ -20,7 +20,7 @@ from app.core.geom import wkb_to_geojson
 from app.models.scene_version import SceneVersion
 from app.models.project import Project
 from app.models.user import User
-from app.schemas.rf.ap_recommendation import ApRecommendationRequest, ApRecommendationResponse
+from app.schemas.rf.ap_recommendation import ApRecommendationItem, ApRecommendationRequest, ApRecommendationResponse
 from app.services.rf.calibration_worker.path_loss import (
     AccessPoint,
     CalibrationParams,
@@ -93,8 +93,8 @@ def recommend_ap_location(
         sv.id, len(candidates), len(eval_points), len(existing_aps),
     )
 
-    # 7) Grid Search
-    best_x, best_y, best_score = _grid_search(
+    # 7) Grid Search — 상위 n_recommendations개 반환
+    top_results = _grid_search_topn(
         candidates=candidates,
         eval_points=eval_points,
         existing_aps=existing_aps,
@@ -102,17 +102,24 @@ def recommend_ap_location(
         params=params,
         shadow_threshold_dbm=request.shadow_threshold_dbm,
         shadow_penalty=request.shadow_penalty,
+        n=request.n_recommendations,
     )
 
     logger.info(
-        "AP 추천 완료: best=(%.2f, %.2f) score=%.1f",
-        best_x, best_y, best_score,
+        "AP 추천 완료: top%d, best=(%.2f, %.2f) score=%.1f",
+        len(top_results), top_results[0][0], top_results[0][1], top_results[0][2],
     )
 
     return ApRecommendationResponse(
-        recommended_x=round(best_x, 3),
-        recommended_y=round(best_y, 3),
-        score=round(best_score, 2),
+        recommendations=[
+            ApRecommendationItem(
+                rank=i + 1,
+                recommended_x=round(x, 3),
+                recommended_y=round(y, 3),
+                score=round(score, 2),
+            )
+            for i, (x, y, score) in enumerate(top_results)
+        ],
         candidates_evaluated=len(candidates),
     )
 
@@ -255,7 +262,7 @@ def _parse_existing_aps(raw: list[dict]) -> list[AccessPoint]:
     return aps
 
 
-def _grid_search(
+def _grid_search_topn(
     *,
     candidates: list[tuple[float, float]],
     eval_points: list[Measurement],
@@ -264,9 +271,10 @@ def _grid_search(
     params: CalibrationParams,
     shadow_threshold_dbm: float,
     shadow_penalty: float,
-) -> tuple[float, float, float]:
-    """모든 후보 좌표에 대해 점수 계산 후 최적 좌표 반환."""
-    best_x, best_y, best_score = candidates[0][0], candidates[0][1], float("-inf")
+    n: int,
+) -> list[tuple[float, float, float]]:
+    """모든 후보 좌표에 대해 점수 계산 후 상위 n개 반환 (x, y, score)."""
+    scored: list[tuple[float, float, float]] = []
 
     for (cx, cy) in candidates:
         test_ap = AccessPoint(name="test", x=cx, y=cy)
@@ -280,8 +288,7 @@ def _grid_search(
             else:
                 score += pred
 
-        if score > best_score:
-            best_score = score
-            best_x, best_y = cx, cy
+        scored.append((cx, cy, score))
 
-    return best_x, best_y, best_score
+    scored.sort(key=lambda t: t[2], reverse=True)
+    return scored[:n]
