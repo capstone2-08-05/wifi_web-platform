@@ -37,6 +37,7 @@ from app.models import (
     SceneDraft,
     User,
 )
+from app.models.asset import Asset
 from app.schemas.scene.scene_draft import (
     AnalyzeFromAssetResponse,
     DraftObjectResponse,
@@ -746,6 +747,32 @@ def rescale_scene_draft(
         wp["scale_source"] = scale_source
         summary["wall_postprocess"] = wp
     scene_draft.summary_json = summary
+
+    # 6) asset.metadata_json["scale_m_per_px"] 동기화.
+    # Android bounds 계산이 이 값에 의존하므로, scale 보정 시 반드시 같이 갱신해야
+    # 측정점이 도면 좌표계와 일치함. source_asset_id 없으면 floor의 최신 floorplan_image fallback.
+    asset_id = scene_draft.source_asset_id
+    if asset_id is None:
+        from sqlalchemy import select as _select
+        from app.models.asset import Asset as _Asset
+        fallback = db.execute(
+            _select(_Asset)
+            .where(
+                _Asset.floor_id == scene_draft.floor_id,
+                _Asset.asset_type == "floorplan_image",
+            )
+            .order_by(_Asset.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        asset_id = str(fallback.id) if fallback else None
+    if asset_id:
+        asset = db.get(Asset, str(asset_id))
+        if asset is not None:
+            asset_meta = dict(asset.metadata_json or {})
+            old_asset_scale = asset_meta.get("scale_m_per_px")
+            if isinstance(old_asset_scale, (int, float)) and old_asset_scale > 0:
+                asset_meta["scale_m_per_px"] = float(old_asset_scale) * f
+                asset.metadata_json = asset_meta
 
     # 1~5 모든 mutation 은 in-memory ORM 상태만 변경 — commit 에서 한 트랜잭션으로 flush.
     # 실패 시 좌표·metadata·summary 가 부분 적용되지 않게 전체 rollback (save_scene_draft 와 동일 패턴).

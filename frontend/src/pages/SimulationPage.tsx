@@ -44,6 +44,12 @@ import type { RfBackend } from '@/types/rf';
 import { cn } from '@/lib/utils';
 
 type SimulationState = 'idle' | 'running' | 'complete';
+type FrequencyBand = '2.4' | '5';
+
+const frequencyHzByBand: Record<FrequencyBand, number> = {
+  '2.4': 2.4e9,
+  '5': 5.0e9,
+};
 
 export default function SimulationPage() {
   const floorId = useAppStore((s) => s.selectedFloorId);
@@ -65,6 +71,8 @@ export default function SimulationPage() {
   // 시뮬 실행 백엔드 토글 — local(기본, 로컬 ai_api) | sagemaker(클라우드).
   // 로컬에서 분 단위로 결과 보는 게 dev 흐름이라 기본값을 local 로.
   const [backend, setBackend] = useState<RfBackend>('local');
+  const [frequencyBand, setFrequencyBand] = useState<FrequencyBand>('5');
+  const [txPowerDbm, setTxPowerDbm] = useState(20);
 
   // 캔버스 배경으로 보여줄 확정 버전 상세 (rooms/walls/openings/objects 포함).
   const versionDetailQuery = useSceneVersion(currentVersion?.id ?? null);
@@ -191,7 +199,18 @@ export default function SimulationPage() {
         // 모든 시뮬 파라미터는 backend `app/core/rf_defaults.py` 의 디폴트 사용 —
         // 5GHz / 20dBm / max_depth=3 / samples=100k 등. UI 에서 사용자가 직접 정하는
         // 값이 생기면 여기 채워 보내면 backend 가 우선 적용. 빈 `{}` 는 "new flow" 트리거.
-        simulation: {},
+        simulation: {
+          frequency_hz: frequencyHzByBand[frequencyBand],
+          tx_power_dbm: txPowerDbm,
+        },
+        metadata: {
+          rf_physical_ui: {
+            frequency_band: frequencyBand,
+            frequency_hz: frequencyHzByBand[frequencyBand],
+            tx_power_dbm: txPowerDbm,
+          },
+        },
+        apply_calibration: false,
         backend,
       },
       { onSuccess: (data) => setActiveRunId(data.id) },
@@ -257,6 +276,10 @@ export default function SimulationPage() {
         apsCount={aps.length}
         backend={backend}
         onBackendChange={setBackend}
+        frequencyBand={frequencyBand}
+        onFrequencyBandChange={setFrequencyBand}
+        txPowerDbm={txPowerDbm}
+        onTxPowerDbmChange={setTxPowerDbm}
         floorId={floorId ?? null}
         projectId={selectedProjectId}
         onStart={handleStart}
@@ -456,6 +479,10 @@ function PageHeader({
   apsCount,
   backend,
   onBackendChange,
+  frequencyBand,
+  onFrequencyBandChange,
+  txPowerDbm,
+  onTxPowerDbmChange,
   floorId,
   projectId,
   onStart,
@@ -467,6 +494,10 @@ function PageHeader({
   apsCount: number;
   backend: RfBackend;
   onBackendChange: (b: RfBackend) => void;
+  frequencyBand: FrequencyBand;
+  onFrequencyBandChange: (band: FrequencyBand) => void;
+  txPowerDbm: number;
+  onTxPowerDbmChange: (value: number) => void;
   floorId: string | null;
   projectId: string | null;
   onStart: () => void;
@@ -481,7 +512,7 @@ function PageHeader({
         </p>
       </div>
 
-      <div className="flex shrink-0 items-center gap-3">
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
         {state === 'idle' && (
           <>
             {/* 공간 유형 — Floor.space_type 직접 수정. 변경 시 즉시 저장 (다음 calibration 에 자동 반영).
@@ -490,6 +521,13 @@ function PageHeader({
               floorId={floorId}
               projectId={projectId}
               showLabel={false}
+            />
+            <RfPhysicalControls
+              frequencyBand={frequencyBand}
+              onFrequencyBandChange={onFrequencyBandChange}
+              txPowerDbm={txPowerDbm}
+              onTxPowerDbmChange={onTxPowerDbmChange}
+              disabled={isStarting}
             />
             <BackendToggle value={backend} onChange={onBackendChange} disabled={isStarting} />
           </>
@@ -525,6 +563,71 @@ function PageHeader({
 }
 
 /** SageMaker | Local 백엔드 토글 (idle 일 때만 노출). */
+function RfPhysicalControls({
+  frequencyBand,
+  onFrequencyBandChange,
+  txPowerDbm,
+  onTxPowerDbmChange,
+  disabled,
+}: {
+  frequencyBand: FrequencyBand;
+  onFrequencyBandChange: (band: FrequencyBand) => void;
+  txPowerDbm: number;
+  onTxPowerDbmChange: (value: number) => void;
+  disabled?: boolean;
+}) {
+  const bands: Array<{ key: FrequencyBand; label: string; hint: string }> = [
+    { key: '2.4', label: '2.4GHz', hint: 'Use this when Android measurements are on 2.4GHz Wi-Fi.' },
+    { key: '5', label: '5GHz', hint: 'Use this when Android measurements are on 5GHz Wi-Fi.' },
+  ];
+  const handleTxPowerChange = (value: string) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return;
+    onTxPowerDbmChange(Math.min(30, Math.max(0, parsed)));
+  };
+
+  return (
+    <div className="inline-flex items-center gap-2 rounded-lg border bg-background p-1 shadow-sm">
+      <div className="inline-flex items-center gap-0.5 rounded-md bg-muted/50 p-0.5">
+        {bands.map((band) => {
+          const active = frequencyBand === band.key;
+          return (
+            <button
+              key={band.key}
+              type="button"
+              onClick={() => onFrequencyBandChange(band.key)}
+              disabled={disabled}
+              title={band.hint}
+              className={cn(
+                'rounded px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                active
+                  ? 'bg-background text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {band.label}
+            </button>
+          );
+        })}
+      </div>
+      <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+        Tx
+        <input
+          type="number"
+          min={0}
+          max={30}
+          step={1}
+          value={txPowerDbm}
+          onChange={(event) => handleTxPowerChange(event.target.value)}
+          disabled={disabled}
+          className="h-7 w-14 rounded-md border bg-background px-2 text-right text-xs font-medium text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+        />
+        dBm
+      </label>
+    </div>
+  );
+}
+
 function BackendToggle({
   value,
   onChange,

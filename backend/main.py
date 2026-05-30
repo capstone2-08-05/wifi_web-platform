@@ -53,6 +53,7 @@ from app.routers.rf.ap_layouts import (
     rf_run_router as rf_run_ap_layouts_router,
 )
 from app.routers.rf.calibration_runs import router as calibration_runs_router
+from app.routers.rf.ap_recommendation import router as ap_recommendation_router
 from app.routers.inference.jobs import router as jobs_router
 from app.routers.inference.floorplan_jobs import router as floorplan_jobs_router
 from app.services.inference.job_poller import job_poller_lifespan
@@ -141,5 +142,6 @@ app.include_router(rf_jobs_router)
 app.include_router(ap_layouts_router)
 app.include_router(rf_run_ap_layouts_router)
 app.include_router(calibration_runs_router)
+app.include_router(ap_recommendation_router)
 app.include_router(jobs_router)
 app.include_router(floorplan_jobs_router)

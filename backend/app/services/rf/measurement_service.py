@@ -275,9 +275,14 @@ def _bounds_from_floorplan(floorplan: FloorplanInfoDTO) -> FloorBoundsDTO:
 
 
 def create_measurement_link(
-    db: Session, floor_id: str
+    db: Session, floor_id: str, *, recommended_measurement_purpose: str = "calibration"
 ) -> MeasurementLinkCreateResponseDTO:
     _validate_uuid(floor_id, "floor_id")
+    purpose = (
+        recommended_measurement_purpose
+        if recommended_measurement_purpose in {"calibration", "reference", "validation", "unknown"}
+        else "calibration"
+    )
 
     floor = db.query(Floor).filter(Floor.id == floor_id).one_or_none()
     if floor is None:
@@ -299,7 +304,7 @@ def create_measurement_link(
         floor_id=floor.id,
         scene_version_id=scene_version_id,
         asset_id=asset_id,
-        purpose="rssi_measurement",
+        purpose=purpose,
         status="active",
         expires_at=expires_at,
     )
@@ -399,6 +404,9 @@ def get_measurement_link_context(
         bounds=bounds,
         anchor_points=[],
         existing_ap_layouts=[],
+        recommended_measurement_purpose=link.purpose
+        if link.purpose in {"calibration", "reference", "validation", "unknown"}
+        else "calibration",
     )
 
 
@@ -412,6 +420,7 @@ def create_measurement_session(
         project_id=link.project_id,
         floor_id=link.floor_id,
         measurement_type=request.measurement_type,
+        measurement_purpose=request.measurement_purpose,
         device_info_json=request.device_info.model_dump(exclude_none=True),
         calibration_json=request.calibration.model_dump(exclude_none=True),
         status="in_progress",
@@ -427,6 +436,7 @@ def create_measurement_session(
         scene_version_id=link.scene_version_id,
         asset_id=link.asset_id,
         measurement_type=session_row.measurement_type,
+        measurement_purpose=session_row.measurement_purpose,
         status=session_row.status,
         created_at=session_row.created_at,
     )
@@ -456,6 +466,7 @@ def upload_measurement_points(
             point_geom=wkt_geom,
             z_m=point.floor_position.z,
             rssi_dbm=point.rssi_dbm,
+            measurement_purpose=point.measurement_purpose,
             ap_bssid=point.ap_bssid,
             ap_ssid=point.ap_ssid,
             channel=point.channel,
@@ -590,6 +601,7 @@ def _session_to_response(row: MeasurementSession) -> MeasurementSessionResponseD
         scene_version_id=None,
         asset_id=None,
         measurement_type=row.measurement_type,
+        measurement_purpose=row.measurement_purpose,
         status=row.status,
         created_at=row.created_at,
     )
@@ -615,6 +627,7 @@ def _point_to_response(row: MeasurementPoint) -> MeasurementPointResponseDTO:
             x=float(coords[0]), y=float(coords[1]), z=z
         ),
         rssi_dbm=float(row.rssi_dbm) if row.rssi_dbm is not None else None,
+        measurement_purpose=row.measurement_purpose,
         ap_bssid=row.ap_bssid,
         ap_ssid=row.ap_ssid,
         channel=row.channel,

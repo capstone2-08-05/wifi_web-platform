@@ -15,6 +15,8 @@ SpaceTypeLiteral = Literal[
     "cafe", "study_room", "classroom", "office", "residential", "unknown"
 ]
 
+MeasurementPurposeLiteral = Literal["calibration", "validation", "reference", "unknown"]
+
 
 class CalibrationRunCreate(BaseModel):
     """POST /calibration-runs — 명세 §11.1"""
@@ -25,6 +27,49 @@ class CalibrationRunCreate(BaseModel):
     version_id: UUID
     # 공간 유형 (soft prior). 미지정 시 backend runner 가 "unknown" 으로 fallback.
     space_type: Optional[SpaceTypeLiteral] = None
+
+
+class CalibrationEvaluationSplit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    strategy: Literal["purpose_or_random", "random"] = "purpose_or_random"
+    holdout_ratio: float = Field(default=0.3, gt=0.0, lt=1.0)
+    seed: int = 42
+
+
+class CalibrationEvaluationVisualization(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    include_reference_map: bool = True
+    reference_map_method: Literal["idw"] = "idw"
+    rssi_min_dbm: float = -90.0
+    rssi_max_dbm: float = -30.0
+
+
+class CalibrationEvaluationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    floor_id: UUID
+    scene_version_id: UUID
+    rf_run_id: UUID
+    measurement_session_ids: list[UUID] = Field(default_factory=list, min_length=1)
+    method: Literal["affine_rssi_transfer", "global_offset"] = "affine_rssi_transfer"
+    split: CalibrationEvaluationSplit = Field(default_factory=CalibrationEvaluationSplit)
+    visualization: CalibrationEvaluationVisualization = Field(
+        default_factory=CalibrationEvaluationVisualization
+    )
+
+
+class CalibrationEvaluationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    calibration_run_id: UUID
+    status: str
+    maps: dict[str, Any]
+    color_scale: dict[str, float]
+    points: dict[str, list[dict[str, Any]]]
+    metrics: dict[str, float]
+    evaluation: dict[str, Any]
 
 
 class CalibrationRunResponse(BaseModel):
