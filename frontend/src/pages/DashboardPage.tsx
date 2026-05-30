@@ -6,7 +6,7 @@ import {
   Loader2,
   Map,
   Radio,
-  Smartphone,
+  Sparkles,
   type LucideIcon,
 } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
@@ -48,9 +48,9 @@ const TONE: Record<
 const QUICK_ACTIONS = [
   {
     to: '/mobile',
-    icon: Smartphone,
-    label: '현장 모바일 앱 연결',
-    sub: 'QR 스캔으로 기기 연동',
+    icon: Sparkles,
+    label: 'AP 배치 추천',
+    sub: '우선 개선 영역 기반 최적 설치 위치',
     tone: 'blue',
   },
   {

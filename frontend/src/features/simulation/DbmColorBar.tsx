@@ -1,3 +1,7 @@
+import { useState } from 'react';
+import { ChevronDown } from 'lucide-react';
+import { cn } from '@/lib/utils';
+
 /**
  * RSSI dBm → 색 그라데이션 + tick 라벨 colorbar.
  *
@@ -30,8 +34,6 @@ interface Props {
   tickCount?: number;
   /** 라벨 — 컬러바 위쪽에 작게 표시 (예: "실측 RSSI", "예측 RSSI"). 미지정시 없음. */
   label?: string;
-  /** 데이터가 sim 기반 정확 스케일이 아닌 경우 (예: API 응답 없을때 fallback). 표시되면 "approx." 뱃지. */
-  approximate?: boolean;
   className?: string;
 }
 
@@ -40,9 +42,9 @@ export function DbmColorBar({
   vmax,
   tickCount = 5,
   label,
-  approximate = false,
   className,
 }: Props) {
+  const [expanded, setExpanded] = useState(true);
   // tick 위치 0~100% 균등 분포 + 값 보간.
   const ticks = Array.from({ length: tickCount }, (_, i) => {
     const t = tickCount === 1 ? 0 : i / (tickCount - 1);
@@ -54,57 +56,67 @@ export function DbmColorBar({
 
   return (
     <div
-      className={
-        'pointer-events-none flex flex-col gap-1 rounded-md border bg-card/95 px-3 py-2 shadow-sm backdrop-blur ' +
-        (className ?? '')
-      }
+      className={cn(
+        'pointer-events-auto flex flex-col gap-1 rounded-md border bg-card/95 px-3 py-2 shadow-sm backdrop-blur',
+        className,
+      )}
       role="img"
       aria-label={`RSSI 색 범례: ${vmin.toFixed(0)} ~ ${vmax.toFixed(0)} dBm`}
     >
-      {(label || approximate) && (
-        <div className="flex items-center justify-between text-[10px] font-medium text-muted-foreground">
-          <span>{label ?? ''}</span>
-          {approximate && (
-            <span className="text-[9px] text-muted-foreground/70">approx.</span>
-          )}
-        </div>
-      )}
-      {/* gradient bar */}
-      <div
-        className="h-3 w-full rounded-sm border border-border/60"
-        style={{ backgroundImage: INFERNO_GRADIENT }}
-      />
-      {/* tick marks — gradient 바로 아래 short vertical line + 값 */}
-      <div className="relative h-4 w-full">
-        {ticks.map((t, i) => (
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center justify-between gap-2 text-left text-[10px] font-medium text-muted-foreground"
+        aria-expanded={expanded}
+      >
+        <span>{label ?? 'RSSI 범례'}</span>
+        <span className="inline-flex items-center gap-1">
+          <ChevronDown
+            className={cn('h-3 w-3 transition-transform', expanded && 'rotate-180')}
+            aria-hidden="true"
+          />
+        </span>
+      </button>
+      {expanded && (
+        <>
+          {/* gradient bar */}
           <div
-            key={i}
-            className="absolute top-0 -translate-x-1/2 text-center"
-            style={{ left: `${t.pct}%` }}
-          >
-            <div className="mx-auto h-1 w-px bg-border" />
-            <div className="mt-0.5 font-mono text-[10px] tabular-nums text-foreground/70">
-              {t.value.toFixed(0)}
+            className="h-3 w-full rounded-sm border border-border/60"
+            style={{ backgroundImage: INFERNO_GRADIENT }}
+          />
+          {/* tick marks — gradient 바로 아래 short vertical line + 값 */}
+          <div className="relative h-4 w-full">
+            {ticks.map((t, i) => (
+              <div
+                key={i}
+                className="absolute top-0 -translate-x-1/2 text-center"
+                style={{ left: `${t.pct}%` }}
+              >
+                <div className="mx-auto h-1 w-px bg-border" />
+                <div className="mt-0.5 font-mono text-[10px] tabular-nums text-foreground/70">
+                  {t.value.toFixed(0)}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="text-right text-[9px] text-muted-foreground">dBm</div>
+          <div className="mt-1 border-t pt-1.5">
+            <p className="mb-1 text-[9px] font-medium text-muted-foreground">
+              숫자가 0에 가까울수록 신호가 강합니다.
+            </p>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[9px] leading-tight text-muted-foreground">
+              {DBM_QUALITY_LABELS.map((item) => (
+                <div key={item.dbm} className="flex items-center justify-between gap-2">
+                  <span className="font-mono tabular-nums text-foreground/75">
+                    {item.dbm} dBm
+                  </span>
+                  <span>{item.label}</span>
+                </div>
+              ))}
             </div>
           </div>
-        ))}
-      </div>
-      <div className="text-right text-[9px] text-muted-foreground">dBm</div>
-      <div className="mt-1 border-t pt-1.5">
-        <p className="mb-1 text-[9px] font-medium text-muted-foreground">
-          숫자가 0에 가까울수록 신호가 강합니다.
-        </p>
-        <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[9px] leading-tight text-muted-foreground">
-          {DBM_QUALITY_LABELS.map((item) => (
-            <div key={item.dbm} className="flex items-center justify-between gap-2">
-              <span className="font-mono tabular-nums text-foreground/75">
-                {item.dbm} dBm
-              </span>
-              <span>{item.label}</span>
-            </div>
-          ))}
-        </div>
-      </div>
+        </>
+      )}
     </div>
   );
 }

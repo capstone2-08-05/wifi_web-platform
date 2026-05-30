@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { NavLink, Outlet } from 'react-router-dom';
 import {
   LayoutGrid,
   Map,
   Radio,
-  Smartphone,
+  Sparkles,
   Activity,
   Settings,
   Wifi,
@@ -22,14 +22,11 @@ const NAV = [
   { to: '/editor', label: '공간 편집', icon: Map },
   { to: '/simulation', label: '시뮬레이션', icon: Radio },
   { to: '/measurement', label: '실측/진단', icon: Activity },
-  { to: '/mobile', label: '모바일 앱', icon: Smartphone },
+  { to: '/mobile', label: 'AP 배치 추천', icon: Sparkles },
 ] as const;
 
 export function AppLayout() {
   const [mobileConnectOpen, setMobileConnectOpen] = useState(false);
-  // /mobile 페이지에선 헤더의 "모바일 앱 연결" 버튼을 숨기고 페이지 내 카드 하단에 배치.
-  const location = useLocation();
-  const isMobileAppPage = location.pathname.startsWith('/mobile');
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background">
@@ -84,16 +81,14 @@ export function AppLayout() {
           </div>
           <div className="flex items-center gap-2">
             <InferenceModeToggle />
-            {!isMobileAppPage && (
-              <button
-                type="button"
-                onClick={() => setMobileConnectOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-sm font-medium text-foreground/80 shadow-sm transition-colors hover:bg-accent"
-              >
-                <QrCode className="h-4 w-4" />
-                모바일 앱 연결
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setMobileConnectOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-sm font-medium text-foreground/80 shadow-sm transition-colors hover:bg-accent"
+            >
+              <QrCode className="h-4 w-4" />
+              모바일 앱 연결
+            </button>
             <ProfileMenu />
           </div>
         </header>

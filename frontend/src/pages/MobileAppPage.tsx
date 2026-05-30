@@ -1,166 +1,507 @@
-import { useState } from 'react';
-import { Camera, MapPin, Smartphone } from 'lucide-react';
-import { MobileConnectModal } from '@/features/mobile/MobileConnectModal';
+import { useMemo, useState } from 'react';
+import { CheckCircle2, Loader2, Sparkles } from 'lucide-react';
+import type { HttpError } from '@/api/client';
+import { useAppStore } from '@/stores/app-store';
+import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
+import { useFloorRfRuns } from '@/hooks/use-rf-run';
+import { useApLayouts, useCreateApLayout } from '@/hooks/use-ap-layouts';
+import { useFloorAssets, useAssetDownloadUrl } from '@/hooks/use-assets';
+import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
+import { useApRecommendation } from '@/hooks/use-ap-recommendation';
+import { versionToDraftShape } from '@/features/editor/version-as-draft';
+import { DEFAULT_TX_POWER_DBM } from '@/features/simulation/SimulationCanvas';
+import {
+  apLayoutsToCanvas,
+  apsFromRfRunRequest,
+  nextApLayoutName,
+} from '@/features/ap-recommendation/ap-canvas-mappers';
+import { ApRecommendationCanvas } from '@/features/ap-recommendation/ApRecommendationCanvas';
+import {
+  AP_DEFAULT_Z_M,
+  buildApRecommendationPayload,
+  isValidSelectionBBox,
+  normalizeRecommendations,
+  type MeterBBox,
+} from '@/features/ap-recommendation/recommendation-utils';
+import type { ApRecommendationResult } from '@/types/ap-recommendation';
+import { cn } from '@/lib/utils';
 
-const FLOW_STEPS = [
-  '권한 동의 (시작하기 전)',
-  'QR 스캔을 통한 손쉬운 연결',
-  '직관적인 모드 선택',
-  'AR 기반 가구 스캔 UI',
-  '간단한 원클릭 와이파이 실측 수집',
-];
+type PageStatus = 'idle' | 'areaSelected' | 'loading' | 'success' | 'error';
+
+const PROGRESS_STEPS = [
+  { id: 1, label: '우선 개선 영역 선택' },
+  { id: 2, label: '최적 위치 계산' },
+  { id: 3, label: '추천 위치 선택' },
+] as const;
+
+const CARD_BORDER = 'border-[#E5EAF2]';
 
 export default function MobileAppPage() {
-  const [connectOpen, setConnectOpen] = useState(false);
-  return (
-    <div className="h-full overflow-auto bg-muted/20 p-10">
-      <div className="mx-auto flex max-w-6xl items-start justify-center gap-12">
-        <PhoneMockup />
-        <InfoCard onConnectClick={() => setConnectOpen(true)} />
-      </div>
-      <MobileConnectModal open={connectOpen} onClose={() => setConnectOpen(false)} />
-    </div>
-  );
-}
+  const floorId = useAppStore((s) => s.selectedFloorId);
+  const versionsQuery = useFloorVersions(floorId);
+  const currentVersion =
+    versionsQuery.data?.find((v) => v.is_current) ?? versionsQuery.data?.[0] ?? null;
+  const sceneVersionId = currentVersion?.id ?? null;
 
-function PhoneMockup() {
-  return (
-    <div className="relative w-[320px] shrink-0 rounded-[44px] border-[6px] border-foreground bg-background shadow-2xl">
-      {/* 노치 */}
-      <div className="absolute left-1/2 top-2 z-10 h-5 w-28 -translate-x-1/2 rounded-full bg-foreground" />
+  const versionDetailQuery = useSceneVersion(sceneVersionId);
+  const versionDetail = versionDetailQuery.data ?? null;
 
-      <div className="overflow-hidden rounded-[36px]">
-        {/* 상태바 */}
-        <div className="flex items-center justify-between px-6 pt-3 pb-1 text-[11px] font-semibold">
-          <span>12:30</span>
-          <StatusIcons />
+  const versionAsDraft = versionDetail ? versionToDraftShape(versionDetail) : null;
+  const sourceAssetId = versionAsDraft?.source_asset_id ?? null;
+  const floorAssetsQuery = useFloorAssets(floorId, 'floorplan_image');
+  const fallbackAsset = (floorAssetsQuery.data ?? [])
+    .slice()
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+  const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
+  const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
+  const localImage = useLocalFloorplanImage({ floorId, sourceAssetId });
+  const assetUrl = assetUrlQuery.data?.url ?? null;
+  const usableAssetUrl =
+    assetUrl && /^https?:\/\//i.test(assetUrl) ? assetUrl : null;
+  const backgroundImageUrl = usableAssetUrl ?? localImage ?? null;
+
+  const rfRunsQuery = useFloorRfRuns(floorId, { status: 'succeeded', page_size: 5 });
+  const latestRfRun = useMemo(() => {
+    const items = rfRunsQuery.data?.items ?? [];
+    if (!sceneVersionId) return items[0] ?? null;
+    return (
+      items.find((r) => r.scene_version_id === sceneVersionId) ?? items[0] ?? null
+    );
+  }, [rfRunsQuery.data, sceneVersionId]);
+  const latestRfRunId = latestRfRun?.id ?? null;
+  const apLayoutsQuery = useApLayouts(latestRfRunId);
+
+  const existingAps = useMemo(() => {
+    const layouts = apLayoutsQuery.data ?? [];
+    if (layouts.length > 0) return apLayoutsToCanvas(layouts);
+    return apsFromRfRunRequest(latestRfRun?.request_json as Record<string, unknown> | undefined);
+  }, [apLayoutsQuery.data, latestRfRun?.request_json]);
+
+  const [selectionBBox, setSelectionBBox] = useState<MeterBBox | null>(null);
+  const [recommendations, setRecommendations] = useState<ApRecommendationResult[]>([]);
+  const [selectedRank, setSelectedRank] = useState<number | null>(null);
+  const [savedRank, setSavedRank] = useState<number | null>(null);
+  const [pageError, setPageError] = useState<string | null>(null);
+
+  const recommendMutation = useApRecommendation();
+  const createLayout = useCreateApLayout();
+
+  const pageStatus: PageStatus = useMemo(() => {
+    if (recommendMutation.isPending) return 'loading';
+    if (recommendMutation.isError) return 'error';
+    if (recommendations.length > 0) return 'success';
+    if (isValidSelectionBBox(selectionBBox)) return 'areaSelected';
+    return 'idle';
+  }, [
+    recommendMutation.isPending,
+    recommendMutation.isError,
+    recommendations.length,
+    selectionBBox,
+  ]);
+
+  const activeStep = useMemo(() => {
+    if (savedRank != null || selectedRank != null) return 3;
+    if (pageStatus === 'success') return 3;
+    if (pageStatus === 'loading') return 2;
+    if (pageStatus === 'areaSelected') return 1;
+    return 1;
+  }, [pageStatus, selectedRank, savedRank]);
+
+  const handleSelectionChange = (bbox: MeterBBox | null) => {
+    setSelectionBBox(bbox);
+    setRecommendations([]);
+    setSelectedRank(null);
+    setSavedRank(null);
+    setPageError(null);
+    recommendMutation.reset();
+  };
+
+  const handleRecommend = () => {
+    if (!sceneVersionId) {
+      setPageError('도면 정보를 불러올 수 없습니다.');
+      return;
+    }
+    if (!isValidSelectionBBox(selectionBBox)) return;
+
+    const payload = buildApRecommendationPayload({
+      sceneVersionId,
+      bbox: selectionBBox,
+      existingAps,
+      txPowerDbm: DEFAULT_TX_POWER_DBM,
+    });
+
+    if (import.meta.env.DEV) {
+      console.debug('[AP Recommendation] request payload:', payload);
+    }
+
+    setPageError(null);
+    setSavedRank(null);
+    recommendMutation.mutate(payload, {
+      onSuccess: (data) => {
+        const normalized = normalizeRecommendations(data);
+        setRecommendations(normalized);
+        if (import.meta.env.DEV) {
+          console.debug('[AP Recommendation] response:', data, 'normalized:', normalized);
+        }
+      },
+      onError: (err) => {
+        const e = err as HttpError | null;
+        setPageError(e?.message ?? '추천 계산에 실패했습니다.');
+      },
+    });
+  };
+
+  const handleSelectRecommendation = (rec: ApRecommendationResult) => {
+    if (!latestRfRunId) {
+      setPageError('AP 배치를 저장하려면 먼저 시뮬레이션을 실행해 주세요.');
+      return;
+    }
+
+    setSelectedRank(rec.rank);
+    setPageError(null);
+
+    const apName = nextApLayoutName(apLayoutsQuery.data ?? [], existingAps);
+
+    createLayout.mutate(
+      {
+        rf_run_id: latestRfRunId,
+        ap_name: apName,
+        point_geom: {
+          type: 'Point',
+          coordinates: [rec.recommended_x, rec.recommended_y],
+        },
+        z_m: AP_DEFAULT_Z_M,
+        power_dbm: DEFAULT_TX_POWER_DBM,
+      },
+      {
+        onSuccess: () => {
+          setSavedRank(rec.rank);
+        },
+        onError: (err) => {
+          const e = err as HttpError | null;
+          setPageError(e?.message ?? 'AP 배치 저장에 실패했습니다.');
+          setSelectedRank(null);
+        },
+      },
+    );
+  };
+
+  const canRecommend =
+    !!sceneVersionId && isValidSelectionBBox(selectionBBox) && !recommendMutation.isPending;
+
+  const sceneLoading =
+    versionsQuery.isLoading ||
+    versionDetailQuery.isLoading ||
+    (floorId != null && !sceneVersionId && !versionsQuery.isError);
+
+  const statusHint = getStatusHint(pageStatus, pageError, savedRank);
+
+  return (
+    <div className="flex h-full flex-col overflow-auto bg-[#F8FAFC]">
+      {/* 본문 헤더 — Figma: 제목 + 설명 + 우측 CTA */}
+      <header className="shrink-0 px-6 pb-4 pt-6 lg:px-8">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold tracking-tight text-foreground">
+              AP 배치 추천
+            </h1>
+            <p className="mt-1.5 text-sm text-muted-foreground">
+              개선이 필요한 영역을 드래그하면 최적의 AP 설치 위치를 추천합니다.
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-col items-stretch gap-1.5 sm:items-end">
+            <button
+              type="button"
+              onClick={handleRecommend}
+              disabled={!canRecommend}
+              className={cn(
+                'inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold shadow-sm transition-colors',
+                canRecommend
+                  ? 'bg-blue-600 text-white hover:bg-blue-700'
+                  : 'cursor-not-allowed bg-muted text-muted-foreground',
+              )}
+            >
+              {recommendMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  최적 위치 계산 중…
+                </>
+              ) : (
+                <>
+                  <Sparkles className="h-4 w-4" />
+                  최적 배치 추천
+                </>
+              )}
+            </button>
+            {!latestRfRunId && sceneVersionId && (
+              <p className="text-[11px] text-amber-600 sm:text-right">
+                AP 저장은 시뮬레이션 실행 후 가능합니다.
+              </p>
+            )}
+          </div>
         </div>
+      </header>
 
-        {/* 본문 */}
-        <div className="flex h-[610px] flex-col px-6 pb-6 pt-8">
-          <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
-            <Smartphone className="h-6 w-6 text-primary" strokeWidth={1.8} />
+      {/* 본문 — lg: 캔버스(좌) + 추천 패널(우), md↓ 단일 컬럼 */}
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 px-6 pb-6 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-6 lg:px-8">
+        {/* 좌측: 캔버스 + 진행 단계 */}
+        <div className="flex min-h-0 flex-col gap-4">
+          <div
+            className={cn(
+              'relative flex min-h-[min(52vh,32rem)] flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-sm',
+              CARD_BORDER,
+              'border',
+            )}
+          >
+            {!floorId ? (
+              <EmptyState message="층을 선택해 주세요." />
+            ) : sceneLoading ? (
+              <div className="flex h-full min-h-[320px] items-center justify-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                도면 불러오는 중…
+              </div>
+            ) : !sceneVersionId ? (
+              <EmptyState message="도면 정보를 불러올 수 없습니다." />
+            ) : (
+              <ApRecommendationCanvas
+                sceneVersion={versionDetail}
+                backgroundImageUrl={backgroundImageUrl}
+                existingAps={existingAps}
+                selectionBBox={selectionBBox}
+                onSelectionChange={handleSelectionChange}
+                recommendations={recommendations}
+                selectedRecommendationRank={selectedRank}
+                disabled={recommendMutation.isPending || createLayout.isPending}
+              />
+            )}
+
+            {sceneVersionId && statusHint && pageStatus !== 'loading' && (
+              <div className="pointer-events-none absolute bottom-4 left-4 right-4">
+                <p className="rounded-lg border border-[#E5EAF2] bg-white/95 px-4 py-2.5 text-center text-xs text-muted-foreground shadow-sm backdrop-blur">
+                  {statusHint}
+                </p>
+              </div>
+            )}
           </div>
 
-          <h2 className="text-[22px] font-bold leading-snug">
-            시작하기 전에
-            <br />
-            권한이 필요해요
-          </h2>
-
-          <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
-            현장에서 원활하게 데이터를 수집하고 대시보드와 연결하기 위해 아래
-            권한을 허용해 주세요.
-          </p>
-
-          <ul className="mt-7 space-y-5">
-            <PermissionRow
-              icon={<Camera className="h-4 w-4" strokeWidth={1.8} />}
-              title="카메라"
-              description="웹 대시보드의 QR 코드를 스캔하고, 공간의 가구를 자동으로 인식합니다."
-            />
-            <PermissionRow
-              icon={<MapPin className="h-4 w-4" strokeWidth={1.8} />}
-              title="위치 및 주변 기기"
-              description="실제 걸어다니며 와이파이 신호 강도와 품질을 정확하게 측정합니다."
-            />
-          </ul>
-
-          <div className="flex-1" />
-
-          <button
-            type="button"
-            className="w-full rounded-xl bg-primary py-3.5 text-sm font-semibold text-primary-foreground shadow-sm hover:bg-primary/90"
+          {/* 진행 단계 카드 — 캔버스 아래 */}
+          <div
+            className={cn(
+              'shrink-0 rounded-2xl bg-white px-6 py-5 shadow-sm',
+              CARD_BORDER,
+              'border',
+            )}
           >
-            동의하고 시작하기
-          </button>
-
-          {/* iOS 하단 핸들 */}
-          <div className="mx-auto mt-3 h-1 w-28 rounded-full bg-foreground/80" />
+            <ProgressStepper activeStep={activeStep} pageStatus={pageStatus} />
+          </div>
         </div>
+
+        {/* 우측: 추천 결과 패널 (모바일에서는 하단 카드) */}
+        <aside
+          className={cn(
+            'flex min-h-[280px] flex-col overflow-hidden rounded-2xl bg-white shadow-sm lg:min-h-0 lg:self-stretch',
+            CARD_BORDER,
+            'border',
+          )}
+        >
+          <div className="border-b border-[#E5EAF2] px-5 py-4">
+            <h2 className="text-base font-bold text-foreground">최적 배치 추천</h2>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            {recommendations.length === 0 ? (
+              <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-2 px-4 text-center">
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-muted">
+                  <Sparkles className="h-5 w-5 text-muted-foreground" />
+                </div>
+                <p className="text-sm font-medium text-foreground/80">
+                  {pageStatus === 'loading'
+                    ? '최적 위치를 계산하고 있습니다…'
+                    : '추천 결과가 여기에 표시됩니다'}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  도면에서 우선 개선 영역을 드래그한 뒤 「최적 배치 추천」을 눌러주세요.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {recommendations.map((rec) => (
+                  <RecommendationCard
+                    key={rec.rank}
+                    rec={rec}
+                    selected={selectedRank === rec.rank}
+                    saved={savedRank === rec.rank}
+                    saving={createLayout.isPending && selectedRank === rec.rank}
+                    saveDisabled={!latestRfRunId || createLayout.isPending}
+                    onSelect={() => handleSelectRecommendation(rec)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </aside>
       </div>
     </div>
   );
 }
 
-function PermissionRow({
-  icon,
-  title,
-  description,
+function getStatusHint(
+  pageStatus: PageStatus,
+  pageError: string | null,
+  savedRank: number | null,
+): string | null {
+  switch (pageStatus) {
+    case 'idle':
+      return '도면 위에서 우선 개선할 영역을 드래그하여 선택하세요.';
+    case 'areaSelected':
+      return '영역이 선택되었습니다. 우측 상단 「최적 배치 추천」 버튼을 눌러주세요.';
+    case 'success':
+      return savedRank != null
+        ? '추천 위치가 AP 배치로 저장되었습니다.'
+        : '추천 위치를 확인하고 우측 패널에서 선택하세요.';
+    case 'error':
+      return pageError ?? '추천 계산에 실패했습니다. 다시 시도해 주세요.';
+    default:
+      return null;
+  }
+}
+
+function EmptyState({ message }: { message: string }) {
+  return (
+    <div className="flex h-full min-h-[320px] items-center justify-center px-6 text-center text-sm text-muted-foreground">
+      {message}
+    </div>
+  );
+}
+
+function RecommendationCard({
+  rec,
+  selected,
+  saved,
+  saving,
+  saveDisabled,
+  onSelect,
 }: {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
+  rec: ApRecommendationResult;
+  selected: boolean;
+  saved: boolean;
+  saving: boolean;
+  saveDisabled: boolean;
+  onSelect: () => void;
 }) {
   return (
-    <li className="flex items-start gap-3">
-      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
-        {icon}
+    <article
+      className={cn(
+        'rounded-xl border bg-white p-4 transition-colors',
+        saved || selected ? 'border-emerald-300 shadow-sm' : 'border-[#E5EAF2]',
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-sm font-bold text-white">
+          {rec.rank}
+        </div>
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-bold text-foreground">{rec.rank}순위 추천</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            위치 X {rec.recommended_x.toFixed(0)}m / Y {rec.recommended_y.toFixed(0)}m
+          </p>
+          <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+            우선 개선 영역 커버리지 가장 높음
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            후보 점수{' '}
+            <span className="font-semibold text-foreground">{rec.score.toFixed(1)}</span>
+          </p>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">
+            탐색 후보 수 {rec.candidates_evaluated}
+          </p>
+        </div>
       </div>
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <p className="text-[13px] font-semibold">{title}</p>
-        <p className="text-[11px] leading-relaxed text-muted-foreground">
-          {description}
-        </p>
-      </div>
-    </li>
-  );
-}
-
-function InfoCard({ onConnectClick }: { onConnectClick: () => void }) {
-  return (
-    <div className="flex w-[360px] shrink-0 flex-col gap-3">
-      <section className="rounded-2xl border bg-background p-6 shadow-sm">
-        <header className="flex items-center gap-2">
-          <Smartphone className="h-5 w-5 text-foreground" strokeWidth={1.8} />
-          <h3 className="text-base font-bold">모바일 앱 프로토타입</h3>
-        </header>
-
-        <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
-          비전문가인 소상공인이 현장에서 간편하게 와이파이 품질을 측정하고
-          가구를 스캔할 수 있도록 돕는 Android 컴패니언 앱 디자인입니다.
-        </p>
-
-        <h4 className="mt-6 text-sm font-semibold">주요 화면 플로우</h4>
-        <ul className="mt-3 space-y-2 text-[13px] text-foreground/80">
-          {FLOW_STEPS.map((step) => (
-            <li key={step} className="flex items-start gap-2">
-              <span className="mt-1.5 block h-1.5 w-1.5 shrink-0 rounded-full bg-foreground/60" />
-              <span>{step}</span>
-            </li>
-          ))}
-        </ul>
-      </section>
-
       <button
         type="button"
-        onClick={onConnectClick}
-        className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
+        onClick={onSelect}
+        disabled={saveDisabled && !saved}
+        className={cn(
+          'mt-4 w-full rounded-lg border py-2.5 text-sm font-medium transition-colors',
+          saved
+            ? 'border-emerald-500 bg-emerald-500 text-white'
+            : 'border-[#E5EAF2] bg-[#F8FAFC] text-foreground hover:bg-muted/60 disabled:cursor-not-allowed disabled:opacity-50',
+        )}
       >
-        <Smartphone className="h-4 w-4" />
-        모바일 앱 연결
+        {saving ? (
+          <span className="inline-flex items-center justify-center gap-1.5">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            저장 중…
+          </span>
+        ) : saved ? (
+          <span className="inline-flex items-center justify-center gap-1.5">
+            <CheckCircle2 className="h-4 w-4" />
+            저장됨
+          </span>
+        ) : (
+          '이 위치 선택'
+        )}
       </button>
-    </div>
+    </article>
   );
 }
 
-function StatusIcons() {
+function ProgressStepper({
+  activeStep,
+  pageStatus,
+}: {
+  activeStep: number;
+  pageStatus: PageStatus;
+}) {
   return (
-    <div className="flex items-center gap-1">
-      <svg width="14" height="10" viewBox="0 0 14 10" fill="currentColor">
-        <path d="M7 0a7 7 0 0 1 5 2.1l-1 1A5.6 5.6 0 0 0 7 1.4 5.6 5.6 0 0 0 3 3.1l-1-1A7 7 0 0 1 7 0Zm0 2.8a4.2 4.2 0 0 1 3 1.3l-1 1A2.8 2.8 0 0 0 7 4.2 2.8 2.8 0 0 0 5 5.1l-1-1A4.2 4.2 0 0 1 7 2.8Zm0 2.8a1.4 1.4 0 0 1 1 .4L7 7l-1-1a1.4 1.4 0 0 1 1-.4Z" />
-      </svg>
-      <svg width="14" height="10" viewBox="0 0 18 12" fill="currentColor">
-        <rect x="0" y="6" width="3" height="6" rx="1" />
-        <rect x="5" y="3" width="3" height="9" rx="1" />
-        <rect x="10" y="0" width="3" height="12" rx="1" />
-        <rect x="15" y="6" width="3" height="6" rx="1" opacity="0.4" />
-      </svg>
-      <svg width="22" height="11" viewBox="0 0 24 12" fill="none">
-        <rect x="0.5" y="0.5" width="20" height="11" rx="3" stroke="currentColor" />
-        <rect x="2" y="2" width="17" height="8" rx="1.5" fill="currentColor" />
-        <rect x="21" y="3.5" width="1.5" height="5" rx="0.75" fill="currentColor" />
-      </svg>
-    </div>
+    <ol className="flex items-start">
+      {PROGRESS_STEPS.map((step, index) => {
+        const done =
+          step.id < activeStep ||
+          (step.id === 1 && pageStatus !== 'idle') ||
+          (step.id === 2 && (pageStatus === 'success' || pageStatus === 'loading')) ||
+          (step.id === 3 && activeStep >= 3);
+        const current = step.id === activeStep && pageStatus !== 'error';
+        const isLast = index === PROGRESS_STEPS.length - 1;
+
+        return (
+          <li key={step.id} className="flex min-w-0 flex-1 items-start">
+            <div className="flex min-w-0 flex-1 flex-col items-center gap-2">
+              <div
+                className={cn(
+                  'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold',
+                  done && !current && 'bg-emerald-500 text-white',
+                  current && 'bg-blue-600 text-white',
+                  !done && !current && 'bg-muted text-muted-foreground',
+                )}
+              >
+                {done && !current ? (
+                  <CheckCircle2 className="h-4 w-4" />
+                ) : (
+                  step.id
+                )}
+              </div>
+              <span
+                className={cn(
+                  'max-w-28 text-center text-xs leading-tight',
+                  current ? 'font-semibold text-foreground' : 'text-muted-foreground',
+                )}
+              >
+                {step.label}
+              </span>
+            </div>
+            {!isLast && (
+              <div
+                className={cn(
+                  'mt-4 h-0.5 min-w-4 flex-1',
+                  step.id < activeStep ? 'bg-emerald-400' : 'bg-[#E5EAF2]',
+                )}
+                aria-hidden="true"
+              />
+            )}
+          </li>
+        );
+      })}
+    </ol>
   );
 }
