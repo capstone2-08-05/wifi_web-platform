@@ -8,6 +8,7 @@ import { useApLayouts, useCreateApLayout } from '@/hooks/use-ap-layouts';
 import { useFloorAssets, useAssetDownloadUrl } from '@/hooks/use-assets';
 import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
 import { useApRecommendation } from '@/hooks/use-ap-recommendation';
+import { useApRecommendationSession } from '@/hooks/use-ap-recommendation-session';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
 import { DEFAULT_TX_POWER_DBM } from '@/features/simulation/SimulationCanvas';
 import {
@@ -77,11 +78,20 @@ export default function MobileAppPage() {
     return apsFromRfRunRequest(latestRfRun?.request_json as Record<string, unknown> | undefined);
   }, [apLayoutsQuery.data, latestRfRun?.request_json]);
 
-  const [selectionBBox, setSelectionBBox] = useState<MeterBBox | null>(null);
-  const [recommendations, setRecommendations] = useState<ApRecommendationResult[]>([]);
-  const [selectedRank, setSelectedRank] = useState<number | null>(null);
-  const [savedRank, setSavedRank] = useState<number | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
+
+  const {
+    selectionBBox,
+    recommendations,
+    selectedRank,
+    savedRank,
+    setSelectionBBox,
+    setRecommendations,
+    setSelectedRank,
+    setSavedRank,
+    persistSavedSession,
+    resetSession,
+  } = useApRecommendationSession(floorId, sceneVersionId);
 
   const recommendMutation = useApRecommendation();
   const createLayout = useCreateApLayout();
@@ -100,12 +110,19 @@ export default function MobileAppPage() {
   ]);
 
   const activeStep = useMemo(() => {
-    if (savedRank != null || selectedRank != null) return 3;
+    if (savedRank != null) return 4;
+    if (selectedRank != null) return 3;
     if (pageStatus === 'success') return 3;
     if (pageStatus === 'loading') return 2;
     if (pageStatus === 'areaSelected') return 1;
     return 1;
   }, [pageStatus, selectedRank, savedRank]);
+
+  /** 저장 완료 후 — 선택한 순위 AP만 캔버스에 표시, 나머지 추천 마커 숨김 */
+  const canvasRecommendations = useMemo(() => {
+    if (savedRank == null) return recommendations;
+    return recommendations.filter((r) => r.rank === savedRank);
+  }, [recommendations, savedRank]);
 
   const handleSelectionChange = (bbox: MeterBBox | null) => {
     setSelectionBBox(bbox);
@@ -151,6 +168,20 @@ export default function MobileAppPage() {
     });
   };
 
+  const handleResetRecommendation = () => {
+    resetSession();
+    setPageError(null);
+    recommendMutation.reset();
+  };
+
+  const handleHeaderAction = () => {
+    if (recommendations.length > 0) {
+      handleResetRecommendation();
+      return;
+    }
+    handleRecommend();
+  };
+
   const handleSelectRecommendation = (rec: ApRecommendationResult) => {
     if (!latestRfRunId) {
       setPageError('AP 배치를 저장하려면 먼저 시뮬레이션을 실행해 주세요.');
@@ -176,6 +207,13 @@ export default function MobileAppPage() {
       {
         onSuccess: () => {
           setSavedRank(rec.rank);
+          persistSavedSession({
+            sceneVersionId,
+            selectionBBox,
+            recommendations,
+            selectedRank: rec.rank,
+            savedRank: rec.rank,
+          });
         },
         onError: (err) => {
           const e = err as HttpError | null;
@@ -186,8 +224,17 @@ export default function MobileAppPage() {
     );
   };
 
+  const hasRecommendation = recommendations.length > 0;
+  const isRecommendPending = recommendMutation.isPending;
+
   const canRecommend =
-    !!sceneVersionId && isValidSelectionBBox(selectionBBox) && !recommendMutation.isPending;
+    !hasRecommendation &&
+    !!sceneVersionId &&
+    isValidSelectionBBox(selectionBBox) &&
+    !isRecommendPending;
+
+  const headerButtonDisabled =
+    isRecommendPending || (!hasRecommendation && !canRecommend);
 
   const sceneLoading =
     versionsQuery.isLoading ||
@@ -212,20 +259,31 @@ export default function MobileAppPage() {
           <div className="flex shrink-0 flex-col items-stretch gap-1.5 sm:items-end">
             <button
               type="button"
-              onClick={handleRecommend}
-              disabled={!canRecommend}
+              onClick={handleHeaderAction}
+              disabled={headerButtonDisabled}
               className={cn(
                 'inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold shadow-sm transition-colors',
-                canRecommend
-                  ? 'bg-blue-600 text-white hover:bg-blue-700'
-                  : 'cursor-not-allowed bg-muted text-muted-foreground',
+                isRecommendPending && 'cursor-not-allowed bg-muted text-muted-foreground',
+                !isRecommendPending &&
+                  hasRecommendation &&
+                  'border border-blue-200 bg-white text-blue-600 hover:bg-blue-50',
+                !isRecommendPending &&
+                  !hasRecommendation &&
+                  canRecommend &&
+                  'bg-blue-600 text-white hover:bg-blue-700',
+                !isRecommendPending &&
+                  !hasRecommendation &&
+                  !canRecommend &&
+                  'cursor-not-allowed bg-muted text-muted-foreground',
               )}
             >
-              {recommendMutation.isPending ? (
+              {isRecommendPending ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
                   최적 위치 계산 중…
                 </>
+              ) : hasRecommendation ? (
+                '다시 생성하기'
               ) : (
                 <>
                   <Sparkles className="h-4 w-4" />
@@ -269,9 +327,10 @@ export default function MobileAppPage() {
                 existingAps={existingAps}
                 selectionBBox={selectionBBox}
                 onSelectionChange={handleSelectionChange}
-                recommendations={recommendations}
+                recommendations={canvasRecommendations}
                 selectedRecommendationRank={selectedRank}
-                disabled={recommendMutation.isPending || createLayout.isPending}
+                disabled={isRecommendPending || createLayout.isPending}
+                dragDisabled={isRecommendPending || hasRecommendation}
               />
             )}
 
@@ -357,8 +416,8 @@ function getStatusHint(
       return '영역이 선택되었습니다. 우측 상단 「최적 배치 추천」 버튼을 눌러주세요.';
     case 'success':
       return savedRank != null
-        ? '추천 위치가 AP 배치로 저장되었습니다.'
-        : '추천 위치를 확인하고 우측 패널에서 선택하세요.';
+        ? '추천 위치가 AP 배치로 저장되었습니다. 다른 영역을 선택하려면 「다시 생성하기」를 눌러주세요.'
+        : '추천 위치를 확인하고 우측 패널에서 선택하세요. 다른 영역을 선택하려면 「다시 생성하기」를 눌러주세요.';
     case 'error':
       return pageError ?? '추천 계산에 실패했습니다. 다시 시도해 주세요.';
     default:
@@ -398,10 +457,10 @@ function RecommendationCard({
     >
       <div className="flex items-start gap-3">
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-sm font-bold text-white">
-          {rec.rank}
+          AP
         </div>
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-bold text-foreground">{rec.rank}순위 추천</h3>
+          <h3 className="text-sm font-bold text-foreground">추천 위치</h3>
           <p className="mt-1 text-xs text-muted-foreground">
             위치 X {rec.recommended_x.toFixed(0)}m / Y {rec.recommended_y.toFixed(0)}m
           </p>
@@ -459,8 +518,7 @@ function ProgressStepper({
         const done =
           step.id < activeStep ||
           (step.id === 1 && pageStatus !== 'idle') ||
-          (step.id === 2 && (pageStatus === 'success' || pageStatus === 'loading')) ||
-          (step.id === 3 && activeStep >= 3);
+          (step.id === 2 && (pageStatus === 'success' || pageStatus === 'loading'));
         const current = step.id === activeStep && pageStatus !== 'error';
         const isLast = index === PROGRESS_STEPS.length - 1;
 
