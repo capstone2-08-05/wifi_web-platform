@@ -598,12 +598,22 @@ function MiniRssiMap({
             );
           }),
         )}
-        {calibrationPoints.map((p) => (
-          <circle key={`c-${p.point_id}`} cx={p.x_m} cy={p.y_m} r={w * 0.012} fill="#0f766e" stroke="white" strokeWidth={w * 0.004} />
+        {calibrationPoints.map((p, idx) => (
+          <circle
+            key={`c-${p.point_id}`}
+            cx={p.x_m}
+            cy={p.y_m}
+            r={w * 0.012}
+            fill="#0f766e"
+            stroke="white"
+            strokeWidth={w * 0.004}
+          >
+            <title>{pointTooltip(p, idx, 'calibration')}</title>
+          </circle>
         ))}
         {size === 'large' &&
           errorMode &&
-          validationPoints.map((p) => {
+          validationPoints.map((p, idx) => {
             const err = errorMode === 'baseline' ? p.baseline_error_db : p.calibrated_error_db;
             if (typeof err !== 'number' || !Number.isFinite(err)) return null;
             const radius = w * (0.01 + Math.min(err, 18) / 18 * 0.028);
@@ -617,22 +627,51 @@ function MiniRssiMap({
                 opacity="0.28"
                 stroke={errorColor(err)}
                 strokeWidth={w * 0.003}
-              />
+              >
+                <title>{pointTooltip(p, idx, 'comparison')}</title>
+              </circle>
             );
           })}
-        {validationPoints.map((p) => (
+        {validationPoints.map((p, idx) => (
           <path
             key={`v-${p.point_id}`}
             d={`M ${p.x_m} ${p.y_m - w * 0.014} L ${p.x_m - w * 0.014} ${p.y_m + w * 0.014} L ${p.x_m + w * 0.014} ${p.y_m + w * 0.014} Z`}
             fill="#dc2626"
             stroke="white"
             strokeWidth={w * 0.004}
-          />
+          >
+            <title>{pointTooltip(p, idx, 'comparison')}</title>
+          </path>
         ))}
       </svg>
       {size === 'large' && <RssiScaleBar min={colorScale.min_dbm} max={colorScale.max_dbm} />}
     </div>
   );
+}
+
+function pointTooltip(
+  point: CalibrationEvaluationResponse['points']['validation'][number],
+  index: number,
+  kind: 'calibration' | 'comparison',
+): string {
+  const pointName = `P${String(index + 1).padStart(2, '0')}`;
+  const purpose = kind === 'calibration' ? 'calibration' : 'comparison';
+  const lines = [
+    `${pointName} (${purpose})`,
+    `Measured RSSI: ${formatTooltipNumber(point.rssi_dbm, 'dBm')}`,
+    `Baseline pred: ${formatTooltipNumber(point.baseline_pred_dbm, 'dBm')}`,
+    `Calibrated pred: ${formatTooltipNumber(point.calibrated_pred_dbm, 'dBm')}`,
+    `Before error: ${formatTooltipNumber(point.baseline_error_db, 'dB')}`,
+    `After error: ${formatTooltipNumber(point.calibrated_error_db, 'dB')}`,
+    `Position: ${formatTooltipNumber(point.x_m, 'm')}, ${formatTooltipNumber(point.y_m, 'm')}`,
+  ];
+  return lines.join('\n');
+}
+
+function formatTooltipNumber(value: unknown, unit: string): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? `${value.toFixed(1)} ${unit}`
+    : '--';
 }
 
 function RssiScaleBar({ min, max }: { min: number; max: number }) {
