@@ -42,6 +42,7 @@ import { toast } from '@/stores/toast-store';
 import type { ApCandidate, ApLayout } from '@/types/ap-layout';
 import type { RfBackend } from '@/types/rf';
 import { cn } from '@/lib/utils';
+import { nextApSequentialName } from '@/lib/ap-layout-naming';
 
 type SimulationState = 'idle' | 'running' | 'complete';
 type FrequencyBand = '2.4' | '5';
@@ -753,10 +754,9 @@ function ApPlacementPanel({ rfRunId }: { rfRunId: string }) {
 
   const handleConfirmCandidate = (c: ApCandidate) => {
     if (!c.point_geom) return;
-    const seq = layouts.length + 1;
     createLayout.mutate({
       rf_run_id: rfRunId,
-      ap_name: `AP-${String(seq).padStart(2, '0')}`,
+      ap_name: nextApSequentialName(layouts.map((l) => l.ap_name)),
       point_geom: c.point_geom,
       z_m: c.z_m ?? 2.5,
     });

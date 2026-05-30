@@ -181,6 +181,9 @@ export function ApRecommendationCanvas({
   const labelFontM = canvasLabelFontM(vb.w);
   const selectionBadgeH = labelFontM * 1.55;
   const selectionBadgeW = labelFontM * 8.2;
+  const selectionBadgeY = clampedSelectionBBox
+    ? Math.max(sceneBounds.yMin, clampedSelectionBBox.y_min - selectionBadgeH)
+    : 0;
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-[#f8fafc] [background-image:radial-gradient(circle,oklch(0.92_0_0)_1px,transparent_1px)] bg-size-[18px_18px] bg-position-[0_0]">
@@ -257,14 +260,14 @@ export function ApRecommendationCanvas({
               />
               <rect
                 x={clampedSelectionBBox.x_min}
-                y={clampedSelectionBBox.y_min - selectionBadgeH}
+                y={selectionBadgeY}
                 width={selectionBadgeW}
                 height={selectionBadgeH}
                 fill="oklch(0.55 0.22 254)"
               />
               <text
                 x={clampedSelectionBBox.x_min + labelFontM * 0.45}
-                y={clampedSelectionBBox.y_min - selectionBadgeH * 0.38}
+                y={selectionBadgeY + selectionBadgeH * 0.62}
                 fontSize={labelFontM * 0.92}
                 fontWeight="600"
                 fill="white"

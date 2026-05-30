@@ -294,7 +294,11 @@ function snapToWall(
     if (axed[0] !== raw[0] || axed[1] !== raw[1]) {
       const wallStop = nearestWallProjection(axed, draft, SNAP_RADIUS_M, excludeWallId);
       if (wallStop && isOnSameAxis(axisFrom, axed, wallStop)) {
-        return { point: wallStop, snapped: true, kind: 'axis' };
+        const horizontal = Math.abs(axed[1] - axisFrom[1]) < AXIS_SNAP_TOLERANCE_M;
+        const correctedPoint: Coord = horizontal
+          ? [wallStop[0], axisFrom[1]]
+          : [axisFrom[0], wallStop[1]];
+        return { point: correctedPoint, snapped: true, kind: 'axis' };
       }
       return { point: axed, snapped: true, kind: 'axis' };
     }

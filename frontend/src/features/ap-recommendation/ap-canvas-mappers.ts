@@ -1,4 +1,5 @@
 import { parseGeometry } from '@/features/editor/geometry-utils';
+import { nextApSequentialName } from '@/lib/ap-layout-naming';
 import type { ApLayout } from '@/types/ap-layout';
 import type { CanvasExistingAp } from './ApRecommendationCanvas';
 
@@ -34,11 +35,14 @@ export function apsFromRfRunRequest(
   return out;
 }
 
-/** POST /ap-layouts — 새 AP 이름 (기존 배치·캔버스 AP 수 기준). */
+/** POST /ap-layouts — 새 AP 이름 (기존 이름 접미사 최댓값 + 1). */
 export function nextApLayoutName(
   layouts: { ap_name: string }[],
-  canvasAps: { id: string }[],
+  canvasAps: { id: string; label?: string }[],
 ): string {
-  const seq = Math.max(layouts.length, canvasAps.length) + 1;
-  return `AP-${String(seq).padStart(2, '0')}`;
+  const names = [
+    ...layouts.map((l) => l.ap_name),
+    ...canvasAps.flatMap((a) => [a.label, a.id].filter((v): v is string => !!v)),
+  ];
+  return nextApSequentialName(names);
 }
