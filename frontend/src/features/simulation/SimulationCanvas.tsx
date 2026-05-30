@@ -26,6 +26,8 @@ export const DEFAULT_TX_POWER_DBM = 20;
 
 const MAX_APS = 8;
 const DEFAULT_AP_Z_M = 2.5;
+const AP_MARKER_RADIUS_M = 0.26;
+const AP_LABEL_FONT_SIZE_M = 0.19;
 
 interface Props {
   sceneVersion: SceneVersion | null | undefined;
@@ -287,9 +289,11 @@ export function SimulationCanvas({
         {(sceneVersion?.openings ?? []).map((o) => (
           <OpeningShape key={o.id} opening={o} />
         ))}
-        {(sceneVersion?.objects ?? []).map((o) => (
+        {/* [object 비활성화] 시뮬레이션 캔버스에서 가구/공간성 객체 렌더 제거.
+            다시 켜려면 아래 블록 주석 해제. */}
+        {/* {(sceneVersion?.objects ?? []).map((o) => (
           <ObjectShape key={o.id} object={o} />
-        ))}
+        ))} */}
 
         {aps.map((ap) => (
           <ApMarker
@@ -477,9 +481,9 @@ function ApMarker({
   onRemove: () => void;
 }) {
   const fill = 'oklch(0.55 0.22 254)';
-  const r = 0.13;
+  const r = AP_MARKER_RADIUS_M;
   // lucide Wifi 아이콘 (24x24 viewBox) 을 r 안에 들어갈 크기로 스케일.
-  const iconSize = r * 1.3; // 원 지름의 약 65%
+  const iconSize = r * 1.1; // 원 지름의 약 55%
   const iconScale = iconSize / 24;
   return (
     <g className={isDragging ? 'cursor-grabbing' : 'cursor-grab'}>
@@ -510,9 +514,9 @@ function ApMarker({
         <rect
           x={ap.x_m - 0.18}
           y={ap.y_m + r + 0.04}
-          width="0.36"
-          height="0.16"
-          rx="0.04"
+          width={r * 1.8}
+          height={r * 0.75}
+          rx={r * 0.18}
           fill="white"
           stroke="oklch(0.85 0.02 240)"
           strokeWidth="1"
@@ -520,10 +524,10 @@ function ApMarker({
         />
         <text
           x={ap.x_m}
-          y={ap.y_m + r + 0.12}
+          y={ap.y_m + r + r * 0.38}
           textAnchor="middle"
           dominantBaseline="middle"
-          fontSize="0.1"
+          fontSize={AP_LABEL_FONT_SIZE_M}
           fontWeight="600"
           fill="oklch(0.25 0.04 240)"
           style={{ userSelect: 'none' }}
@@ -531,7 +535,7 @@ function ApMarker({
           {ap.id.toUpperCase()}
         </text>
       </g>
-      {/* 삭제 버튼 — 우측 상단 작은 빨간 원 + × 표시 */}
+      {/* 삭제 버튼 — AP 크기에 맞춰 우측 상단에 충분히 크게 표시. */}
       <g
         onPointerDown={(e) => {
           e.stopPropagation();
@@ -542,18 +546,18 @@ function ApMarker({
         <circle
           cx={ap.x_m + r * 0.85}
           cy={ap.y_m - r * 0.85}
-          r="0.055"
+          r={r * 0.34}
           fill="oklch(0.65 0.21 25)"
           stroke="white"
-          strokeWidth="1"
+          strokeWidth="1.5"
           vectorEffect="non-scaling-stroke"
         />
         <text
           x={ap.x_m + r * 0.85}
-          y={ap.y_m - r * 0.85 + 0.003}
+          y={ap.y_m - r * 0.85}
           textAnchor="middle"
           dominantBaseline="middle"
-          fontSize="0.07"
+          fontSize={r * 0.42}
           fontWeight="700"
           fill="white"
           pointerEvents="none"

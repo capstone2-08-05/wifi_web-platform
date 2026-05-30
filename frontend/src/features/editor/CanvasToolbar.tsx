@@ -29,7 +29,7 @@ const TOP_TOOLS: ToolDef[] = [
 ];
 
 const SHAPE_TOOLS: ToolDef[] = [
-  { id: 'rect', icon: WallIcon, label: '벽/구조물', onClick: 'change' },
+  { id: 'rect', icon: WallIcon, label: '벽', onClick: 'change' },
   // [room 비활성화] '방 만들기' 도구 노출 제거. 다시 켜려면 아래 줄 주석 해제.
   // { id: 'polygon', icon: Hexagon, label: '방 만들기', onClick: 'change' },
   { id: 'door', icon: DoorOpen, label: '문 추가', onClick: 'change' },

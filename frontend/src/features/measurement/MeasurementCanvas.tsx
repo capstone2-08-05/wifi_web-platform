@@ -36,6 +36,9 @@ export type MeasurementViewMode = 'route' | 'heatmap' | 'both';
 /** 측정점 색 모드 — heatmap 배경과 시각 통일하려면 'dbm', 신호 품질 한눈에 보려면 'quality'. */
 export type PointColorMode = 'quality' | 'dbm';
 
+const AP_MARKER_RADIUS_M = 0.32;
+const AP_LABEL_FONT_SIZE_M = 0.22;
+
 interface Props {
   sceneVersion: SceneVersion | null | undefined;
   /** 원본 도면 이미지 (배경에 연하게 깔림). 공간편집/시뮬과 동일한 방식. */
@@ -405,9 +408,11 @@ export function MeasurementCanvas({
         {(sceneVersion?.openings ?? []).map((o) => (
           <OpeningShape key={o.id} opening={o} />
         ))}
-        {(sceneVersion?.objects ?? []).map((o) => (
+        {/* [object 비활성화] 실측 캔버스에서 가구/공간성 객체 렌더 제거.
+            다시 켜려면 아래 블록 주석 해제. */}
+        {/* {(sceneVersion?.objects ?? []).map((o) => (
           <ObjectShape key={o.id} object={o} />
-        ))}
+        ))} */}
 
         {/* 측정 경로 라인 — route/both 모드에서만 (heatmap 모드는 점만 표시). */}
         {showLine && sortedPoints.length >= 2 && (
@@ -619,7 +624,7 @@ function objectTypeLabel(t: string | null | undefined): string | null {
 
 function ApMarker({ ap }: { ap: PlacedApSimple }) {
   const fill = 'oklch(0.55 0.22 254)';
-  const r = 0.5;
+  const r = AP_MARKER_RADIUS_M;
   const iconSize = r * 1.1;
   const iconScale = iconSize / 24;
   return (
@@ -641,10 +646,10 @@ function ApMarker({ ap }: { ap: PlacedApSimple }) {
       {ap.label && (
         <text
           x={ap.x_m}
-          y={ap.y_m + r + 0.35}
+          y={ap.y_m + r + r * 0.7}
           textAnchor="middle"
           dominantBaseline="middle"
-          fontSize={0.35}
+          fontSize={AP_LABEL_FONT_SIZE_M}
           fontWeight="600"
           fill="oklch(0.4 0.1 254)"
         >

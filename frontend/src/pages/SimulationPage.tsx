@@ -356,7 +356,6 @@ export default function SimulationPage() {
                       vmin={heatmapColorScale?.vminDbm ?? -85}
                       vmax={heatmapColorScale?.vmaxDbm ?? -30}
                       label="예측 RSSI (시뮬)"
-                      approximate={!heatmapColorScale}
                     />
                   </div>
                 )}

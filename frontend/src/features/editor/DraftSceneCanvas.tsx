@@ -1625,6 +1625,7 @@ function CreationHint({
     } else {
       text = `시작점을 다시 클릭하면 방이 완성됩니다. (현재 ${creating.points.length}개 점)`;
     }
+  }
   // [object 비활성화] 가구 배치 안내 제거.
   // else if (tool === 'circle') {
   //   text = '캔버스를 클릭해 가구를 배치하세요.';

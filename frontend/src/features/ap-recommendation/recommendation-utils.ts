@@ -1,0 +1,190 @@
+import type {
+  ExistingAp,
+  ApRecommendationRequest,
+  ApRecommendationResponse,
+  ApRecommendationResult,
+} from '@/types/ap-recommendation';
+import type { UUID } from '@/types/common';
+import { parseGeometry } from '@/features/editor/geometry-utils';
+
+/** AP 설치 높이 기본값 — SimulationCanvas DEFAULT_AP_Z_M 과 동일. */
+export const AP_DEFAULT_Z_M = 2.5;
+
+/** 미터 단위 선택 영역 (API x_min/x_max/y_min/y_max). */
+export interface MeterBBox {
+  x_min: number;
+  x_max: number;
+  y_min: number;
+  y_max: number;
+}
+
+const MIN_SELECTION_M = 0.2;
+
+/** normalizeRect 결과 → MeterBBox. */
+export function meterBBoxFromRect(rect: {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}): MeterBBox {
+  return {
+    x_min: rect.x,
+    x_max: rect.x + rect.w,
+    y_min: rect.y,
+    y_max: rect.y + rect.h,
+  };
+}
+
+export function isValidSelectionBBox(bbox: MeterBBox | null): bbox is MeterBBox {
+  if (!bbox) return false;
+  const w = bbox.x_max - bbox.x_min;
+  const h = bbox.y_max - bbox.y_min;
+  return w >= MIN_SELECTION_M && h >= MIN_SELECTION_M;
+}
+
+/** POST /ap-recommendation 요청 본문 조립 (백엔드 default 필드는 생략). */
+export function buildApRecommendationPayload(params: {
+  sceneVersionId: UUID;
+  bbox: MeterBBox;
+  existingAps: { id: string; x_m: number; y_m: number }[];
+  txPowerDbm?: number;
+}): ApRecommendationRequest {
+  return {
+    scene_version_id: params.sceneVersionId,
+    x_min: params.bbox.x_min,
+    x_max: params.bbox.x_max,
+    y_min: params.bbox.y_min,
+    y_max: params.bbox.y_max,
+    existing_aps: mapToExistingAps(params.existingAps, params.txPowerDbm),
+  };
+}
+
+/** 단일 응답 → rank 배열. 추후 복수 추천 API 대응용. */
+export function normalizeRecommendations(
+  response: ApRecommendationResponse | ApRecommendationResponse[] | null | undefined,
+): ApRecommendationResult[] {
+  if (!response) return [];
+  const list = Array.isArray(response) ? response : [response];
+  return list.map((item, i) => ({
+    rank: i + 1,
+    recommended_x: item.recommended_x,
+    recommended_y: item.recommended_y,
+    score: item.score,
+    status: item.status,
+    candidates_evaluated: item.candidates_evaluated,
+  }));
+}
+
+/** 캔버스 AP → API existing_aps. tx_power_dbm 없으면 필드 생략(백엔드 default 20). */
+export function mapToExistingAps(
+  aps: { id: string; x_m: number; y_m: number }[],
+  txPowerDbm?: number,
+): ExistingAp[] {
+  return aps.map((ap) => {
+    const base: ExistingAp = { id: ap.id, x_m: ap.x_m, y_m: ap.y_m };
+    if (txPowerDbm != null && Number.isFinite(txPowerDbm)) {
+      base.tx_power_dbm = txPowerDbm;
+    }
+    return base;
+  });
+}
+
+/** 두 코너 → (x,y,w,h) 사각형 정규화. */
+export function normalizeRect(
+  a: [number, number],
+  b: [number, number],
+): { x: number; y: number; w: number; h: number } {
+  const x = Math.min(a[0], b[0]);
+  const y = Math.min(a[1], b[1]);
+  const w = Math.abs(a[0] - b[0]);
+  const h = Math.abs(a[1] - b[1]);
+  return { x, y, w, h };
+}
+
+/** 드래그 선택 가능 영역 (미터). 도면 이미지 extent 또는 벽/개구부 tight bounds. */
+export interface SceneBounds {
+  xMin: number;
+  xMax: number;
+  yMin: number;
+  yMax: number;
+}
+
+export function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+export function clampCoord(
+  point: [number, number],
+  bounds: SceneBounds,
+): [number, number] {
+  return [
+    clamp(point[0], bounds.xMin, bounds.xMax),
+    clamp(point[1], bounds.yMin, bounds.yMax),
+  ];
+}
+
+/** 사각형을 scene bounds 안으로 제한. */
+export function clampRectToBounds(
+  rect: { x: number; y: number; w: number; h: number },
+  bounds: SceneBounds,
+): { x: number; y: number; w: number; h: number } {
+  const x1 = clamp(rect.x, bounds.xMin, bounds.xMax);
+  const y1 = clamp(rect.y, bounds.yMin, bounds.yMax);
+  const x2 = clamp(rect.x + rect.w, bounds.xMin, bounds.xMax);
+  const y2 = clamp(rect.y + rect.h, bounds.yMin, bounds.yMax);
+  return normalizeRect([x1, y1], [x2, y2]);
+}
+
+/** MeterBBox를 scene bounds 안으로 제한. */
+export function clampMeterBBox(bbox: MeterBBox, bounds: SceneBounds): MeterBBox {
+  const x_min = clamp(bbox.x_min, bounds.xMin, bounds.xMax);
+  const x_max = clamp(bbox.x_max, bounds.xMin, bounds.xMax);
+  const y_min = clamp(bbox.y_min, bounds.yMin, bounds.yMax);
+  const y_max = clamp(bbox.y_max, bounds.yMin, bounds.yMax);
+  return {
+    x_min: Math.min(x_min, x_max),
+    x_max: Math.max(x_min, x_max),
+    y_min: Math.min(y_min, y_max),
+    y_max: Math.max(y_min, y_max),
+  };
+}
+
+interface GeometryBoundsInput {
+  walls?: { centerline_geom?: Record<string, unknown> | null }[];
+  openings?: { line_geom?: Record<string, unknown> | null }[];
+}
+
+function extendBoundsFromGeometry(
+  b: { minX: number; minY: number; maxX: number; maxY: number },
+  geom: Record<string, unknown> | null | undefined,
+) {
+  const g = parseGeometry(geom);
+  if (g?.type !== 'LineString') return;
+  for (const [x, y] of g.coordinates) {
+    if (x < b.minX) b.minX = x;
+    if (y < b.minY) b.minY = y;
+    if (x > b.maxX) b.maxX = x;
+    if (y > b.maxY) b.maxY = y;
+  }
+}
+
+/** 도면 이미지 extent 우선, 없으면 벽/개구부 union tight bounds. */
+export function computeSceneBounds(
+  scene: GeometryBoundsInput | null | undefined,
+  imageExtent: { w: number; h: number } | null,
+): SceneBounds {
+  if (imageExtent && imageExtent.w > 0 && imageExtent.h > 0) {
+    return { xMin: 0, yMin: 0, xMax: imageExtent.w, yMax: imageExtent.h };
+  }
+  const b = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+  for (const wall of scene?.walls ?? []) {
+    extendBoundsFromGeometry(b, wall.centerline_geom);
+  }
+  for (const opening of scene?.openings ?? []) {
+    extendBoundsFromGeometry(b, opening.line_geom);
+  }
+  if (!Number.isFinite(b.minX)) {
+    return { xMin: 0, yMin: 0, xMax: 10, yMax: 10 };
+  }
+  return { xMin: b.minX, yMin: b.minY, xMax: b.maxX, yMax: b.maxY };
+}
