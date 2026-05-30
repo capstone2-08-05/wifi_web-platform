@@ -49,6 +49,9 @@ import {
   type PlacedApSimple,
 } from '@/features/measurement/MeasurementCanvas';
 
+const EMPTY_MEASUREMENT_SESSIONS: MeasurementSession[] = [];
+const EMPTY_MEASUREMENT_POINTS: ApiPoint[] = [];
+
 export default function MeasurementPage() {
   const floorId = useAppStore((s) => s.selectedFloorId);
 
@@ -96,12 +99,12 @@ export default function MeasurementPage() {
 
   // 측정 세션. 기본은 최근 세션 자동 선택, 사용자가 '이력 보기' 로 다른 세션 선택 가능.
   const sessionsQuery = useFloorMeasurementSessions(floorId);
-  const sessions = sessionsQuery.data?.items ?? [];
+  const sessions = sessionsQuery.data?.items ?? EMPTY_MEASUREMENT_SESSIONS;
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const activeSession =
     sessions.find((s) => s.id === selectedSessionId) ?? sessions[0] ?? null;
   const pointsQuery = useMeasurementPoints(activeSession?.id ?? null);
-  const points = pointsQuery.data?.items ?? [];
+  const points = pointsQuery.data?.items ?? EMPTY_MEASUREMENT_POINTS;
 
   const canvasPoints = useMemo(() => apiPointsToCanvas(points), [points]);
   // 캔버스 dbm color mode 에서 점 색 계산용 — id → 실측 RSSI 매핑.
@@ -179,8 +182,9 @@ export default function MeasurementPage() {
   const evaluateCalibration = useEvaluateCalibrationRun();
   const [calibrationEvaluation, setCalibrationEvaluation] =
     useState<CalibrationEvaluationResponse | null>(null);
-  // BO 가 9차원 fit 하므로 최소 8점 (backend 가드와 일치). 그 미만이면 overfit → 다음
-  // 시뮬이 극단적으로 왜곡됨 (벽 무한히 두꺼워짐 등). 사용자가 실수로 누르지 않도록 막음.
+  // Affine RSSI transfer + residual IDW는 적은 측정점으로도 계산은 가능하지만,
+  // 화면에서 바로 신뢰 가능한 보정맵처럼 보이지 않도록 프론트에서는 더 보수적으로 8점부터 허용한다.
+  // 백엔드 평가는 기존 데이터 호환을 위해 최소 5점 guard를 별도로 유지한다.
   const MIN_MEASUREMENTS_FOR_CALIBRATION = 8;
   const hasEnoughMeasurements = points.length >= MIN_MEASUREMENTS_FOR_CALIBRATION;
   const canCalibrate =
@@ -267,9 +271,6 @@ export default function MeasurementPage() {
       {
         onSuccess: (result) => {
           setCalibrationEvaluation(result);
-        },
-        onError: () => {
-          lastAutoCalibrationKey.current = null;
         },
       },
     );

@@ -35,6 +35,10 @@ from app.core.geom import wkb_to_geojson
 
 JOB_TYPE_CALIBRATION = "calibration"
 ALLOWED_CALIBRATION_STATUS = {"queued", "running", "completed", "failed"}
+# MVP defaults for the local residual layer. Keep these in one place so the
+# map computation and response metadata cannot drift.
+RESIDUAL_IDW_RADIUS_M = 6.0
+RESIDUAL_IDW_WEIGHT = 0.6
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +532,7 @@ def _idw_residual_at(
     residual_points: list[tuple[float, float, float]],
     *,
     power: float = 2.0,
-    radius_m: float | None = 6.0,
+    radius_m: float | None = RESIDUAL_IDW_RADIUS_M,
 ) -> float:
     numerator = 0.0
     denominator = 0.0
@@ -562,9 +566,8 @@ def _hybrid_calibrated_value(
     residual_points: list[tuple[float, float, float]],
 ) -> float:
     transfer_value = _apply_rssi_transfer(baseline_dbm, transfer)
-    residual_weight = 0.6
     residual = _idw_residual_at(x, y, residual_points)
-    return transfer_value + residual_weight * residual
+    return transfer_value + RESIDUAL_IDW_WEIGHT * residual
 
 
 def _calibrated_map(
@@ -820,8 +823,8 @@ def evaluate_calibration_run(
                 "intercept_db": round(float(rssi_transfer["intercept"]), 6),
                 "mean_offset_db": round(offset_db, 6),
                 "residual_method": "idw",
-                "residual_weight": 0.6,
-                "residual_radius_m": 6.0,
+                "residual_weight": RESIDUAL_IDW_WEIGHT,
+                "residual_radius_m": RESIDUAL_IDW_RADIUS_M,
                 "residual_point_count": len(residual_points),
                 "purpose": "First matches the simulated RSSI scale to phone measurements, then blends local residuals with IDW.",
             },
@@ -860,8 +863,8 @@ def evaluate_calibration_run(
             "intercept_db": round(float(rssi_transfer["intercept"]), 4),
             "mean_offset_db": round(offset_db, 4),
             "residual_method": "idw",
-            "residual_weight": 0.6,
-            "residual_radius_m": 6.0,
+            "residual_weight": RESIDUAL_IDW_WEIGHT,
+            "residual_radius_m": RESIDUAL_IDW_RADIUS_M,
             "equivalent_tx_power_offset_db": round(offset_db, 4),
         },
         "rf_physical": rf_physical,

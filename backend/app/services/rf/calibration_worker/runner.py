@@ -83,6 +83,31 @@ def _clamp(value: float, low: float, high: float) -> float:
     return min(high, max(low, value))
 
 
+def _intersect_bounds(
+    requested: tuple[float, float],
+    hard_limits: tuple[float, float],
+) -> tuple[float, float]:
+    """Return requested bounds clipped to hard limits, with a safe fallback.
+
+    Space priors are intentionally data/config driven. If a future prior falls
+    fully outside the physical hard limits, a naive intersection can produce an
+    invalid interval such as (0.7, 0.5). In that case use the nearest valid
+    hard-limit edge as a zero-width interval instead of crashing the optimizer.
+    """
+    req_low, req_high = requested
+    hard_low, hard_high = hard_limits
+    low = max(req_low, hard_low)
+    high = min(req_high, hard_high)
+    if low <= high:
+        return (low, high)
+    if req_high < hard_low:
+        return (hard_low, hard_low)
+    if req_low > hard_high:
+        return (hard_high, hard_high)
+    # Defensive fallback for malformed input where requested low/high are reversed.
+    return (hard_low, hard_high)
+
+
 def _build_bo_bounds(space_type: SpaceType) -> list[tuple[float, float]]:
     """공간 유형 prior 기반 BO bounds — _PARAM_NAMES 순서와 1:1.
 
@@ -92,9 +117,9 @@ def _build_bo_bounds(space_type: SpaceType) -> list[tuple[float, float]]:
     return (
         [prior["path_loss_exp_bounds"]]
         + [
-            (
-                max(prior["material_scale_bounds"][m][0], _PHYSICAL_MATERIAL_SCALE_BOUNDS[0]),
-                min(prior["material_scale_bounds"][m][1], _PHYSICAL_MATERIAL_SCALE_BOUNDS[1]),
+            _intersect_bounds(
+                prior["material_scale_bounds"][m],
+                _PHYSICAL_MATERIAL_SCALE_BOUNDS,
             )
             for m in CALIBRATABLE_MATERIALS
         ]
