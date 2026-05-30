@@ -52,8 +52,10 @@ interface Props {
    * 있으면 'heatmap' / 'both' 모드에서 측정점 radial gradient 대신 이 이미지를 깔아준다.
    */
   estimatedHeatmap?: {
-    url: string;
+    url?: string;
+    valuesDbm?: number[][];
     bounds: { min_x: number; min_y: number; max_x: number; max_y: number };
+    rssiRange?: { min: number; max: number };
   } | null;
   /** dbm color mode 일 때 색 범위 (heatmap rssi_range 와 일치시켜야 통일). 미지정 시 -90~-30. */
   pointColorRange?: { min: number; max: number };
@@ -265,7 +267,30 @@ export function MeasurementCanvas({
         {/* 히트맵: 도형보다 아래에 깔아 도면이 위에 보이도록.
             GP regression dense heatmap 이 있으면 그것을 우선 표시 (전체 도면 커버).
             없으면 측정점 주변 radial gradient 로 fallback. */}
-        {showHeatmap && estimatedHeatmap ? (
+        {showHeatmap && estimatedHeatmap?.valuesDbm ? (
+          <g opacity={0.65} pointerEvents="none">
+            {estimatedHeatmap.valuesDbm.map((row, rowIdx) =>
+              row.map((value, colIdx) => {
+                const rows = estimatedHeatmap.valuesDbm?.length ?? 1;
+                const cols = row.length || 1;
+                const bounds = estimatedHeatmap.bounds;
+                const cellW = (bounds.max_x - bounds.min_x) / cols;
+                const cellH = (bounds.max_y - bounds.min_y) / rows;
+                const range = estimatedHeatmap.rssiRange ?? pointColorRange ?? { min: -90, max: -30 };
+                return (
+                  <rect
+                    key={`calibrated-${rowIdx}-${colIdx}`}
+                    x={bounds.min_x + colIdx * cellW}
+                    y={bounds.min_y + rowIdx * cellH}
+                    width={cellW}
+                    height={cellH}
+                    fill={dbmToInfernoColor(value, range.min, range.max)}
+                  />
+                );
+              }),
+            )}
+          </g>
+        ) : showHeatmap && estimatedHeatmap?.url ? (
           <image
             href={estimatedHeatmap.url}
             xlinkHref={estimatedHeatmap.url}

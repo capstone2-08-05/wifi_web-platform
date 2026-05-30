@@ -1,16 +1,16 @@
-"""calibration best_params 를 RF 시뮬 입력(scene_json/simulation)에 반영 (#88).
+"""Apply calibration parameters to a Sionna RT RF input.
 
-SageMaker RF 컨테이너는 correction_profile 필드를 안 받으므로, 보정값을
-scene/simulation 값에 미리 녹여서(mutation) 전달한다. 컨테이너 수정 불필요.
+The calibration worker uses a fast surrogate path-loss model to estimate several
+parameters. Not every surrogate parameter is a valid Sionna RT knob. For the
+physical rerun we intentionally apply only parameters that map cleanly to the
+Sionna input:
 
-SageMaker 경로에서 표현 가능한 보정 (4개 중 2개, 고영향):
-  - 재질 attenuation_scale → wall thickness 에 곱함
-      (공용 런타임 수식 effective_thickness = geometric × scale 와 동일 효과)
-  - tx_power_offset_db     → simulation.tx_power_dbm 에 더함
+- material attenuation scale -> effective wall thickness scale
+- tx_power_offset_db -> bounded simulation.tx_power_dbm adjustment
 
-표현 불가 (컨테이너 하드코딩, 저영향 — 추후 컨테이너가 correction_profile 지원하면 추가):
-  - floor_thickness_m
-  - furniture_default_thickness_m
+Surrogate-only parameters such as path_loss_exp, floor_thickness_m, and
+furniture_default_thickness_m are kept in metrics for diagnosis, but are not
+forced into the Sionna scene.
 """
 from __future__ import annotations
 
@@ -21,12 +21,19 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.calibration_run import CalibrationRun
+from app.models.floor import Floor
+from app.models.scene_version import SceneVersion
 
 logger = logging.getLogger(__name__)
 
 
-# calibration material key → scene.json (Sionna) material key.
-# scene_version_export 의 MATERIAL_ALIAS 와 일치해야 함 (drywall→plasterboard 등).
+MIN_SIONNA_TX_POWER_DBM = 10.0
+MAX_SIONNA_TX_POWER_DBM = 23.0
+MIN_SIONNA_WALL_SCALE = 0.7
+MAX_SIONNA_WALL_SCALE = 2.0
+DEFAULT_TX_POWER_DBM = 20.0
+
+
 _CALIB_TO_SIONNA: dict[str, str] = {
     "drywall": "plasterboard",
     "concrete": "concrete",
@@ -37,11 +44,17 @@ _CALIB_TO_SIONNA: dict[str, str] = {
 _SIONNA_TO_CALIB: dict[str, str] = {v: k for k, v in _CALIB_TO_SIONNA.items()}
 
 
-def get_latest_calibration(
-    db: Session, scene_version_id: str
-) -> CalibrationRun | None:
-    """해당 scene_version 의 가장 최근 completed CalibrationRun. 없으면 None."""
-    return db.execute(
+def _clamp(value: float, low: float, high: float) -> float:
+    return min(high, max(low, value))
+
+
+def _has_best_params(run: CalibrationRun | None) -> bool:
+    return bool(run and (run.metrics_json or {}).get("best_params"))
+
+
+def get_latest_calibration(db: Session, scene_version_id: str) -> CalibrationRun | None:
+    """Return latest completed calibration for this scene, then same project/space type."""
+    exact = db.execute(
         select(CalibrationRun)
         .where(
             CalibrationRun.scene_version_id == str(scene_version_id),
@@ -50,6 +63,35 @@ def get_latest_calibration(
         .order_by(CalibrationRun.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
+    if _has_best_params(exact):
+        return exact
+
+    target = db.execute(
+        select(SceneVersion, Floor)
+        .join(Floor, SceneVersion.floor_id == Floor.id)
+        .where(SceneVersion.id == str(scene_version_id))
+    ).first()
+    if target is None:
+        return None
+    sv, floor = target
+    if not floor.space_type:
+        return None
+
+    candidates = db.execute(
+        select(CalibrationRun)
+        .join(Floor, CalibrationRun.floor_id == Floor.id)
+        .where(
+            CalibrationRun.project_id == sv.project_id,
+            CalibrationRun.status == "completed",
+            Floor.space_type == floor.space_type,
+        )
+        .order_by(CalibrationRun.created_at.desc())
+        .limit(10)
+    ).scalars().all()
+    for candidate in candidates:
+        if _has_best_params(candidate):
+            return candidate
+    return None
 
 
 def apply_to_scene_and_sim(
@@ -57,39 +99,65 @@ def apply_to_scene_and_sim(
     simulation: dict[str, Any],
     best_params: dict[str, Any],
 ) -> dict[str, Any]:
-    """scene_json.walls 두께 + simulation.tx_power_dbm 을 보정값으로 in-place 조정.
+    """Mutate scene_json/simulation with bounded physical calibration values."""
+    raw_scales: dict[str, float] = {
+        str(k): float(v)
+        for k, v in (best_params.get("material_attenuation_scales") or {}).items()
+        if v is not None
+    }
+    tx_offset_raw = float(best_params.get("tx_power_offset_db") or 0.0)
 
-    반환: 적용 요약 dict (감사/디버그용). scene_json / simulation 은 직접 수정됨.
-    """
-    scales: dict[str, float] = best_params.get("material_attenuation_scales") or {}
-    tx_offset = float(best_params.get("tx_power_offset_db") or 0.0)
-
-    # 1) 재질별 attenuation_scale → wall thickness 배수
     walls = scene_json.get("walls") or []
     scaled_count = 0
-    for w in walls:
-        sionna_mat = str(w.get("material") or "").lower()
+    applied_scales: dict[str, float] = {}
+    for wall in walls:
+        sionna_mat = str(wall.get("material") or "").lower()
         calib_key = _SIONNA_TO_CALIB.get(sionna_mat, sionna_mat)
-        scale = scales.get(calib_key)
-        if scale is not None and scale > 0:
-            w["thickness"] = float(w.get("thickness") or 0.12) * float(scale)
-            scaled_count += 1
+        if calib_key not in raw_scales:
+            continue
+        raw_scale = raw_scales[calib_key]
+        scale = _clamp(raw_scale, MIN_SIONNA_WALL_SCALE, MAX_SIONNA_WALL_SCALE)
+        wall["thickness"] = float(wall.get("thickness") or 0.12) * scale
+        applied_scales[calib_key] = scale
+        scaled_count += 1
 
-    # tx_power_offset_db 는 Sionna 에 적용하지 않음.
-    # BO 가 찾은 offset 은 단순 path-loss 수식 모델의 오차를 보정한 값이므로,
-    # 이미 물리적으로 정확한 Sionna 레이트레이싱에 그대로 더하면 신호가 크게 낮아짐.
+    base_tx_power = float(simulation.get("tx_power_dbm") or DEFAULT_TX_POWER_DBM)
+    requested_tx_power = base_tx_power + tx_offset_raw
+    calibrated_tx_power = _clamp(
+        requested_tx_power,
+        MIN_SIONNA_TX_POWER_DBM,
+        MAX_SIONNA_TX_POWER_DBM,
+    )
+    simulation["tx_power_dbm"] = calibrated_tx_power
+
     summary = {
+        "application_mode": "bounded_physical_sionna_rerun",
         "walls_scaled": scaled_count,
-        "tx_power_offset_db_applied": 0.0,
-        "material_scales": scales,
-        "unapplied": {
-            "tx_power_offset_db": tx_offset,
+        "tx_power_dbm_before": round(base_tx_power, 4),
+        "tx_power_offset_db_requested": round(tx_offset_raw, 4),
+        "tx_power_dbm_requested": round(requested_tx_power, 4),
+        "tx_power_offset_db_applied": round(calibrated_tx_power - base_tx_power, 4),
+        "tx_power_dbm_after": round(calibrated_tx_power, 4),
+        "tx_power_dbm_bounds": {
+            "min": MIN_SIONNA_TX_POWER_DBM,
+            "max": MAX_SIONNA_TX_POWER_DBM,
+        },
+        "material_scales_requested": raw_scales,
+        "material_scales_applied": applied_scales,
+        "wall_scale_bounds": {
+            "min": MIN_SIONNA_WALL_SCALE,
+            "max": MAX_SIONNA_WALL_SCALE,
+        },
+        "not_applied_to_sionna": {
+            "path_loss_exp": best_params.get("path_loss_exp"),
             "floor_thickness_m": best_params.get("floor_thickness_m"),
             "furniture_default_thickness_m": best_params.get("furniture_default_thickness_m"),
         },
     }
     logger.info(
-        "calibration applied to RF input: %d walls scaled, tx_offset=%.2f",
-        scaled_count, 0.0,
+        "bounded physical calibration applied: walls=%d tx=%.2f->%.2f dBm",
+        scaled_count,
+        base_tx_power,
+        calibrated_tx_power,
     )
     return summary

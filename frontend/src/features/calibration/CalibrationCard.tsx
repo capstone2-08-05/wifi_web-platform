@@ -28,6 +28,7 @@ interface Props {
   spaceType: SpaceType;
   onSpaceTypeChange: (next: SpaceType) => void;
   onCalibrate: () => void;
+  showCalibrateButton?: boolean;
   onAddReferenceMeasurement?: () => void;
   parameterUpdates: ParameterUpdate[];
   evaluation?: CalibrationEvaluationResponse | null;
@@ -47,6 +48,7 @@ export function CalibrationCard({
   spaceType,
   onSpaceTypeChange,
   onCalibrate,
+  showCalibrateButton = true,
   onAddReferenceMeasurement,
   parameterUpdates,
   evaluation,
@@ -108,6 +110,7 @@ export function CalibrationCard({
         onAddReferenceMeasurement={onAddReferenceMeasurement}
       />
 
+      {showCalibrateButton && (
       <button
         type="button"
         onClick={onCalibrate}
@@ -117,6 +120,7 @@ export function CalibrationCard({
         <Sliders className="h-3.5 w-3.5" />
         {succeeded ? '다시 보정 실행' : '보정 실행'}
       </button>
+      )}
       {!canCalibrate && disabledReason && (
         <p className="mt-2 text-[11px] text-muted-foreground">{disabledReason}</p>
       )}
@@ -209,6 +213,7 @@ function CalibrationEvaluationPanel({
     'metric_point_source' in evaluation.evaluation.split
       ? String((evaluation.evaluation.split as Record<string, unknown>).metric_point_source)
       : 'reference';
+  const frequencyText = formatFrequencyCheck(evaluation);
   const fmt = (v: unknown, digits = 1) =>
     typeof v === 'number' && Number.isFinite(v) ? v.toFixed(digits) : '--';
   return (
@@ -220,6 +225,11 @@ function CalibrationEvaluationPanel({
         <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
           Metrics use {comparisonLabel} points as the measured comparison data. Reference maps are interpolated measurements, not absolute ground truth.
         </p>
+        {frequencyText && (
+          <p className="mt-1 rounded-md border bg-background px-2 py-1 text-[10px] leading-relaxed text-muted-foreground">
+            {frequencyText}
+          </p>
+        )}
       </div>
 
       <button
@@ -359,6 +369,7 @@ function CalibrationEvaluationDetailModal({
     'metric_point_source' in evaluation.evaluation.split
       ? String((evaluation.evaluation.split as Record<string, unknown>).metric_point_source)
       : 'reference';
+  const frequencyText = formatFrequencyCheck(evaluation);
   const fmt = (v: unknown, digits = 1) =>
     typeof v === 'number' && Number.isFinite(v) ? v.toFixed(digits) : '--';
 
@@ -377,6 +388,9 @@ function CalibrationEvaluationDetailModal({
             <p className="text-xs text-muted-foreground">
               Same floorplan, grid, bounds, and RSSI color scale. Metrics use {comparisonLabel} points as measured comparison data.
             </p>
+            {frequencyText && (
+              <p className="mt-1 text-xs text-muted-foreground">{frequencyText}</p>
+            )}
           </div>
           <div className="flex items-center gap-2">
             {onAddReferenceMeasurement && (
@@ -700,6 +714,23 @@ function errorColor(errorDb: number): string {
   if (errorDb <= 3) return '#10b981';
   if (errorDb <= 7) return '#f59e0b';
   return '#ef4444';
+}
+
+function formatFrequencyCheck(evaluation: CalibrationEvaluationResponse): string | null {
+  const measurement = evaluation.evaluation?.['measurement_frequency'];
+  const physical = evaluation.evaluation?.['rf_physical'];
+  if (!measurement || typeof measurement !== 'object') return null;
+  const m = measurement as Record<string, unknown>;
+  if (m.available !== true) return '실측 frequency_mhz가 없어 2.4GHz/5GHz 여부를 확인할 수 없습니다.';
+  const p = physical && typeof physical === 'object' ? (physical as Record<string, unknown>) : {};
+  const measuredBand = String(m.dominant_band ?? 'unknown');
+  const avgMhz = typeof m.avg_frequency_mhz === 'number' ? m.avg_frequency_mhz : null;
+  const rfGhz = typeof p.frequency_ghz === 'number' ? p.frequency_ghz : null;
+  const txPower = typeof p.tx_power_dbm === 'number' ? p.tx_power_dbm : null;
+  const measured = avgMhz != null ? `${measuredBand} (${(avgMhz / 1000).toFixed(2)}GHz avg)` : measuredBand;
+  const simulated = rfGhz != null ? `${rfGhz.toFixed(2)}GHz` : 'unknown GHz';
+  const tx = txPower != null ? `, Tx ${txPower.toFixed(1)}dBm` : '';
+  return `실측 주파수: ${measured} / RF 시뮬레이션: ${simulated}${tx}`;
 }
 
 function rssiColor(value: number, min: number, max: number): string {

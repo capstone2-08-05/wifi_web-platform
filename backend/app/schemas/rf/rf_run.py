@@ -80,8 +80,8 @@ class RfRunCreate(BaseModel):
     simulation: Optional[RfSimulationParams] = None
     metadata: Optional[dict[str, Any]] = None
     # 해당 scene_version 의 최신 completed CalibrationRun 보정값을 시뮬에 반영할지 (#88).
-    # true(기본): 보정 적용 / false: raw 시뮬 (보정 전후 비교용).
-    apply_calibration: bool = True
+    # 기본은 raw 시뮬레이션이다. 보정 후 재실행처럼 의도가 명확한 요청만 true 로 보낸다.
+    apply_calibration: bool = False
     # 시뮬 실행 백엔드 선택. sagemaker(기본)=클라우드 async, local=로컬 ai_api 직접 호출.
     backend: RfBackend = "sagemaker"
     # 옛 호출자 호환 (deprecated)

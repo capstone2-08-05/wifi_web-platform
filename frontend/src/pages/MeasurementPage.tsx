@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -37,11 +37,7 @@ import { useApLayouts } from '@/hooks/use-ap-layouts';
 import { useFloorAssets, useAssetDownloadUrl } from '@/hooks/use-assets';
 import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
-import {
-  useEvaluateCalibrationRun,
-  useCalibrationParameterUpdates,
-  useCalibrationRun,
-} from '@/hooks/use-calibration-run';
+import { useEvaluateCalibrationRun } from '@/hooks/use-calibration-run';
 import { CalibrationCard } from '@/features/calibration/CalibrationCard';
 import type { CalibrationEvaluationResponse, SpaceType } from '@/types/calibration-run';
 import { parseGeometry } from '@/features/editor/geometry-utils';
@@ -181,14 +177,8 @@ export default function MeasurementPage() {
   // §11 캘리브레이션 — 현재 측정 세션 + 최근 RF Run + 현재 버전을 입력으로 사용.
   // 측정 페이지에 둠: 진단 카드에서 차이를 발견한 직후 보정 가능.
   const evaluateCalibration = useEvaluateCalibrationRun();
-  const [activeCalibrationId, setActiveCalibrationId] = useState<string | null>(null);
   const [calibrationEvaluation, setCalibrationEvaluation] =
     useState<CalibrationEvaluationResponse | null>(null);
-  const calibrationPoll = useCalibrationRun(activeCalibrationId);
-  const paramUpdatesQuery = useCalibrationParameterUpdates(
-    activeCalibrationId,
-    calibrationPoll.isSucceeded,
-  );
   // BO 가 9차원 fit 하므로 최소 8점 (backend 가드와 일치). 그 미만이면 overfit → 다음
   // 시뮬이 극단적으로 왜곡됨 (벽 무한히 두꺼워짐 등). 사용자가 실수로 누르지 않도록 막음.
   const MIN_MEASUREMENTS_FOR_CALIBRATION = 8;
@@ -198,7 +188,7 @@ export default function MeasurementPage() {
     !!latestRfRunId &&
     !!currentVersion?.id &&
     hasEnoughMeasurements;
-  const evaluationSessionIds = (() => {
+  const evaluationSessionIds = useMemo(() => {
     const ids = new Set<string>();
     for (const session of sessions) {
       if (
@@ -211,7 +201,7 @@ export default function MeasurementPage() {
     }
     if (activeSession?.id) ids.add(activeSession.id);
     return [...ids];
-  })();
+  }, [activeSession, sessions]);
   const calibrationDisabledReason = !hasMeasurement
     ? '먼저 측정을 진행해주세요.'
     : !hasEnoughMeasurements
@@ -228,7 +218,7 @@ export default function MeasurementPage() {
         rf_run_id: latestRfRunId,
         scene_version_id: currentVersion.id,
         measurement_session_ids: evaluationSessionIds.length > 0 ? evaluationSessionIds : [activeSession.id],
-        method: 'global_offset',
+        method: 'affine_rssi_transfer',
         split: { strategy: 'purpose_or_random', holdout_ratio: 0.3, seed: 42 },
         visualization: {
           include_reference_map: true,
@@ -239,12 +229,80 @@ export default function MeasurementPage() {
       },
       {
         onSuccess: (result) => {
-          setActiveCalibrationId(result.calibration_run_id);
           setCalibrationEvaluation(result);
         },
       },
     );
   };
+
+  const lastAutoCalibrationKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (mode !== 'both') return;
+    if (!canCalibrate || !activeSession || !latestRfRunId || !currentVersion) return;
+    const sessionIds = evaluationSessionIds.length > 0 ? evaluationSessionIds : [activeSession.id];
+    const key = [
+      activeSession.floor_id,
+      currentVersion.id,
+      latestRfRunId,
+      sessionIds.join(','),
+      points.length,
+    ].join('|');
+    if (lastAutoCalibrationKey.current === key) return;
+    lastAutoCalibrationKey.current = key;
+    evaluateCalibration.mutate(
+      {
+        floor_id: activeSession.floor_id,
+        rf_run_id: latestRfRunId,
+        scene_version_id: currentVersion.id,
+        measurement_session_ids: sessionIds,
+        method: 'affine_rssi_transfer',
+        split: { strategy: 'purpose_or_random', holdout_ratio: 0.3, seed: 42 },
+        visualization: {
+          include_reference_map: true,
+          reference_map_method: 'idw',
+          rssi_min_dbm: -90,
+          rssi_max_dbm: -30,
+        },
+      },
+      {
+        onSuccess: (result) => {
+          setCalibrationEvaluation(result);
+        },
+        onError: () => {
+          lastAutoCalibrationKey.current = null;
+        },
+      },
+    );
+  }, [
+    mode,
+    canCalibrate,
+    activeSession,
+    latestRfRunId,
+    currentVersion,
+    evaluationSessionIds,
+    points.length,
+    evaluateCalibration,
+  ]);
+
+  const calibratedMainHeatmap = useMemo(() => {
+    const map = calibrationEvaluation?.maps.calibrated;
+    if (!map) return null;
+    return {
+      valuesDbm: map.values_dbm,
+      bounds: map.bounds_m,
+      rssiRange: {
+        min: calibrationEvaluation.color_scale.min_dbm,
+        max: calibrationEvaluation.color_scale.max_dbm,
+      },
+    };
+  }, [calibrationEvaluation]);
+
+  const displayedHeatmap =
+    mode === 'both' && calibratedMainHeatmap ? calibratedMainHeatmap : estimatedHeatmap;
+  const displayedRange =
+    mode === 'both' && calibratedMainHeatmap
+      ? calibratedMainHeatmap.rssiRange
+      : pointColorRange;
 
 
   return (
@@ -279,7 +337,11 @@ export default function MeasurementPage() {
               {/* route 모드 (양호/주의/불량) 만 카드 상단 inline 표시. dbm 모드는 캔버스 하단에 colorbar. */}
               <div className="flex flex-wrap items-center gap-2">
                 {mode === 'route' && <Legend colorMode="quality" range={pointColorRange} />}
-                {mode !== 'route' && activeCoverage?.method && (
+                {mode === 'both' && calibratedMainHeatmap ? (
+                  <span className="inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/5 px-2 py-1 text-xs font-medium text-primary">
+                    RSSI transfer 보정맵
+                  </span>
+                ) : mode !== 'route' && activeCoverage?.method && (
                   <MethodBadge
                     method={activeCoverage.method}
                     expected={mode === 'both' ? 'residual_kriging' : 'gp_only'}
@@ -292,18 +354,18 @@ export default function MeasurementPage() {
                   backgroundImageUrl={backgroundImageUrl}
                   points={canvasPoints}
                   pointRssiByOrder={pointRssiByOrder}
-                  pointColorRange={pointColorRange}
+                  pointColorRange={displayedRange}
                   aps={canvasAps}
                   mode={mode}
-                  estimatedHeatmap={estimatedHeatmap}
+                  estimatedHeatmap={displayedHeatmap}
                 />
                 {!hasMeasurement && <CanvasEmptyOverlay loading={pointsQuery.isFetching} />}
                 {/* dbm 모드 colorbar — 도면 좌상단. gradient + tick 값 수직 정렬로 "이 색=이 dBm" 직관. */}
-                {mode !== 'route' && pointColorRange && (
+                {mode !== 'route' && displayedRange && (
                   <div className="pointer-events-none absolute left-3 top-3 z-10 w-70">
                     <DbmColorBar
-                      vmin={pointColorRange.min}
-                      vmax={pointColorRange.max}
+                      vmin={displayedRange.min}
+                      vmax={displayedRange.max}
                       label="실측 RSSI"
                     />
                   </div>
@@ -319,19 +381,20 @@ export default function MeasurementPage() {
               measuredAvgDbm={measuredAvgDbm}
             />
             <CalibrationCard
-              run={calibrationPoll.run}
-              isPolling={calibrationPoll.isPolling}
+              run={null}
+              isPolling={false}
               isStarting={evaluateCalibration.isPending}
               canCalibrate={canCalibrate}
               disabledReason={calibrationDisabledReason}
               spaceType={spaceType}
               onSpaceTypeChange={setSpaceTypeOverride}
               onCalibrate={handleCalibrate}
+              showCalibrateButton={false}
               onAddReferenceMeasurement={() => {
                 setMobilePurpose('reference');
                 setMobileOpen(true);
               }}
-              parameterUpdates={paramUpdatesQuery.data ?? []}
+              parameterUpdates={[]}
               evaluation={calibrationEvaluation}
               backgroundImageUrl={backgroundImageUrl}
             />

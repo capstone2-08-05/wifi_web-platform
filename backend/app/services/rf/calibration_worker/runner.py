@@ -75,6 +75,12 @@ _PARAM_NAMES: list[str] = (
 # 기본 evaluation budget (env override 가능)
 _BO_N_INITIAL = int(os.getenv("CALIBRATION_BO_N_INITIAL", "12"))
 _BO_N_ITER = int(os.getenv("CALIBRATION_BO_N_ITER", "38"))
+_PHYSICAL_TX_OFFSET_BOUNDS = (-8.0, 3.0)
+_PHYSICAL_MATERIAL_SCALE_BOUNDS = (0.7, 2.0)
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return min(high, max(low, value))
 
 
 def _build_bo_bounds(space_type: SpaceType) -> list[tuple[float, float]]:
@@ -85,9 +91,15 @@ def _build_bo_bounds(space_type: SpaceType) -> list[tuple[float, float]]:
     prior = get_prior(space_type)
     return (
         [prior["path_loss_exp_bounds"]]
-        + [prior["material_scale_bounds"][m] for m in CALIBRATABLE_MATERIALS]
         + [
-            (-10.0, 10.0),   # tx_power_offset_db
+            (
+                max(prior["material_scale_bounds"][m][0], _PHYSICAL_MATERIAL_SCALE_BOUNDS[0]),
+                min(prior["material_scale_bounds"][m][1], _PHYSICAL_MATERIAL_SCALE_BOUNDS[1]),
+            )
+            for m in CALIBRATABLE_MATERIALS
+        ]
+        + [
+            _PHYSICAL_TX_OFFSET_BOUNDS,   # tx_power_offset_db
             (0.02, 0.20),    # floor_thickness_m
             (0.02, 0.30),    # furniture_default_thickness_m
         ]
@@ -372,6 +384,19 @@ async def _run_pipeline(db: Session, cr: CalibrationRun, job: Job) -> None:
             "path_loss_exp_bounds": list(prior["path_loss_exp_bounds"]),
             "description": prior["description"],
         },
+        "sionna_physical_application": {
+            "applied_parameters": [
+                "simulation.tx_power_dbm",
+                "scene_json.walls[].thickness",
+            ],
+            "tx_power_offset_bounds_db": list(_PHYSICAL_TX_OFFSET_BOUNDS),
+            "material_scale_bounds": list(_PHYSICAL_MATERIAL_SCALE_BOUNDS),
+            "surrogate_only_parameters": [
+                "physical.path_loss_exp",
+                "scene_defaults.floor_thickness_m",
+                "scene_defaults.furniture_default_thickness_m",
+            ],
+        },
         "feedback_message": _build_feedback_message(
             space_type=space_type,
             baseline_rmse=baseline_metrics.rmse_dbm,
@@ -478,13 +503,21 @@ def _compose_params(prev: CalibrationParams, delta: CalibrationParams) -> Calibr
         | set(CALIBRATABLE_MATERIALS)
     )
     composed_scales = {
-        m: prev.material_attenuation_scales.get(m, 1.0)
-           * delta.material_attenuation_scales.get(m, 1.0)
+        m: _clamp(
+            prev.material_attenuation_scales.get(m, 1.0)
+            * delta.material_attenuation_scales.get(m, 1.0),
+            _PHYSICAL_MATERIAL_SCALE_BOUNDS[0],
+            _PHYSICAL_MATERIAL_SCALE_BOUNDS[1],
+        )
         for m in materials
     }
     return CalibrationParams(
         path_loss_exp=delta.path_loss_exp,
-        tx_power_offset_db=prev.tx_power_offset_db + delta.tx_power_offset_db,
+        tx_power_offset_db=_clamp(
+            prev.tx_power_offset_db + delta.tx_power_offset_db,
+            _PHYSICAL_TX_OFFSET_BOUNDS[0],
+            _PHYSICAL_TX_OFFSET_BOUNDS[1],
+        ),
         floor_thickness_m=delta.floor_thickness_m,
         furniture_default_thickness_m=delta.furniture_default_thickness_m,
         material_attenuation_scales=composed_scales,
@@ -524,46 +557,27 @@ def _write_parameter_updates(
     rows: list[ParameterUpdate] = []
 
     for m in CALIBRATABLE_MATERIALS:
+        scale = round(params.scale_for(m), 3)
+        if abs(scale - baseline.scale_for(m)) < 0.001:
+            continue
         rows.append(ParameterUpdate(
             calibration_run_id=cr.id,
             target_type="scene_version",
             target_id=cr.scene_version_id,
-            parameter_name=f"materials.{m}.attenuation_scale",
+            parameter_name=f"walls.{m}.effective_thickness_scale",
             old_value_json={"value": baseline.scale_for(m)},
-            new_value_json={"value": round(params.scale_for(m), 3)},
+            new_value_json={"value": scale},
         ))
-    rows.append(ParameterUpdate(
-        calibration_run_id=cr.id,
-        target_type="scene_version",
-        target_id=cr.scene_version_id,
-        parameter_name="physical.path_loss_exp",
-        old_value_json={"value": baseline.path_loss_exp},
-        new_value_json={"value": round(params.path_loss_exp, 3)},
-    ))
-    rows.append(ParameterUpdate(
-        calibration_run_id=cr.id,
-        target_type="scene_version",
-        target_id=cr.scene_version_id,
-        parameter_name="physical.tx_power_offset_db",
-        old_value_json={"value": baseline.tx_power_offset_db},
-        new_value_json={"value": round(params.tx_power_offset_db, 3)},
-    ))
-    rows.append(ParameterUpdate(
-        calibration_run_id=cr.id,
-        target_type="scene_version",
-        target_id=cr.scene_version_id,
-        parameter_name="scene_defaults.floor_thickness_m",
-        old_value_json={"value": baseline.floor_thickness_m},
-        new_value_json={"value": round(params.floor_thickness_m, 4)},
-    ))
-    rows.append(ParameterUpdate(
-        calibration_run_id=cr.id,
-        target_type="scene_version",
-        target_id=cr.scene_version_id,
-        parameter_name="scene_defaults.furniture_default_thickness_m",
-        old_value_json={"value": baseline.furniture_default_thickness_m},
-        new_value_json={"value": round(params.furniture_default_thickness_m, 4)},
-    ))
+    tx_offset = round(params.tx_power_offset_db, 3)
+    if abs(tx_offset - baseline.tx_power_offset_db) >= 0.001:
+        rows.append(ParameterUpdate(
+            calibration_run_id=cr.id,
+            target_type="scene_version",
+            target_id=cr.scene_version_id,
+            parameter_name="physical.tx_power_offset_db",
+            old_value_json={"value": baseline.tx_power_offset_db},
+            new_value_json={"value": tx_offset},
+        ))
     for r in rows:
         db.add(r)
 

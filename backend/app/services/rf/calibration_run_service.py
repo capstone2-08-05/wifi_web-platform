@@ -267,6 +267,7 @@ class _EvalPoint:
     measured_rssi_dbm: float
     purpose: str
     split: str
+    frequency_mhz: int | None = None
     baseline_pred_dbm: float | None = None
     calibrated_pred_dbm: float | None = None
     invalid_reason: str | None = None
@@ -393,6 +394,7 @@ def _split_points(
                 measured_rssi_dbm=float(p.rssi_dbm),
                 purpose=purpose,
                 split=split,
+                frequency_mhz=p.frequency_mhz,
             )
         )
 
@@ -484,11 +486,146 @@ def _evaluation_points_for_metrics(points: list[_EvalPoint]) -> tuple[list[_Eval
     ]
 
 
-def _calibrated_map(values: list[list[float]], offset_db: float) -> list[list[float]]:
-    return [
-        [float(v) + offset_db if math.isfinite(float(v)) else float(v) for v in row]
-        for row in values
+def _fit_rssi_transfer(points: list[_EvalPoint]) -> dict[str, float]:
+    pairs = [
+        (float(p.baseline_pred_dbm), float(p.measured_rssi_dbm))
+        for p in points
+        if p.baseline_pred_dbm is not None
     ]
+    if not pairs:
+        return {"slope": 1.0, "intercept": 0.0, "mean_offset_db": 0.0}
+
+    xs = [p[0] for p in pairs]
+    ys = [p[1] for p in pairs]
+    mean_x = sum(xs) / len(xs)
+    mean_y = sum(ys) / len(ys)
+    mean_offset = mean_y - mean_x
+    var_x = sum((x - mean_x) ** 2 for x in xs)
+    if len(pairs) < 2 or var_x < 1e-6:
+        return {"slope": 1.0, "intercept": mean_offset, "mean_offset_db": mean_offset}
+
+    cov_xy = sum((x - mean_x) * (y - mean_y) for x, y in pairs)
+    raw_slope = cov_xy / var_x
+    # Indoor phone RSSI often has a much smaller dynamic range than raw RF maps.
+    # Keep the transfer monotonic and avoid amplifying the original contrast.
+    slope = min(1.0, max(0.05, raw_slope))
+    intercept = mean_y - slope * mean_x
+    return {
+        "slope": slope,
+        "intercept": intercept,
+        "mean_offset_db": mean_offset,
+        "raw_slope": raw_slope,
+    }
+
+
+def _apply_rssi_transfer(value_dbm: float, transfer: dict[str, float]) -> float:
+    return float(transfer["slope"]) * value_dbm + float(transfer["intercept"])
+
+
+def _idw_residual_at(
+    x: float,
+    y: float,
+    residual_points: list[tuple[float, float, float]],
+    *,
+    power: float = 2.0,
+    radius_m: float | None = 6.0,
+) -> float:
+    numerator = 0.0
+    denominator = 0.0
+    nearest_dist = math.inf
+    for px, py, residual in residual_points:
+        dist = math.hypot(x - px, y - py)
+        nearest_dist = min(nearest_dist, dist)
+        if dist < 1e-6:
+            return residual
+        if radius_m is not None and dist > radius_m:
+            continue
+        weight = 1.0 / (dist ** power)
+        numerator += weight * residual
+        denominator += weight
+    if denominator <= 0:
+        return 0.0
+    residual = numerator / denominator
+    if radius_m is None:
+        return residual
+    # Fade residual influence near the search-radius edge to avoid painting
+    # unmeasured distant areas too aggressively.
+    fade = max(0.0, min(1.0, 1.0 - nearest_dist / radius_m))
+    return residual * fade
+
+
+def _hybrid_calibrated_value(
+    baseline_dbm: float,
+    x: float,
+    y: float,
+    transfer: dict[str, float],
+    residual_points: list[tuple[float, float, float]],
+) -> float:
+    transfer_value = _apply_rssi_transfer(baseline_dbm, transfer)
+    residual_weight = 0.6
+    residual = _idw_residual_at(x, y, residual_points)
+    return transfer_value + residual_weight * residual
+
+
+def _calibrated_map(
+    radio_map: _RadioMap,
+    transfer: dict[str, float],
+    residual_points: list[tuple[float, float, float]],
+) -> list[list[float]]:
+    values = radio_map.values
+    height = radio_map.height
+    width = radio_map.width
+    return [
+        [
+            _hybrid_calibrated_value(
+                float(v),
+                radio_map.min_x if width == 1 else radio_map.min_x + (radio_map.max_x - radio_map.min_x) * col_idx / (width - 1),
+                radio_map.min_y if height == 1 else radio_map.min_y + (radio_map.max_y - radio_map.min_y) * row_idx / (height - 1),
+                transfer,
+                residual_points,
+            )
+            if math.isfinite(float(v))
+            else float(v)
+            for col_idx, v in enumerate(row)
+        ]
+        for row_idx, row in enumerate(values)
+    ]
+
+
+def _measurement_frequency_summary(points: list[_EvalPoint]) -> dict[str, Any]:
+    freqs = [int(p.frequency_mhz) for p in points if p.frequency_mhz is not None and p.frequency_mhz > 0]
+    if not freqs:
+        return {"available": False, "message": "No measurement frequency_mhz values were uploaded."}
+    bands = {
+        "2.4GHz": sum(1 for f in freqs if 2400 <= f < 2500),
+        "5GHz": sum(1 for f in freqs if 4900 <= f < 5900),
+        "6GHz": sum(1 for f in freqs if 5925 <= f < 7125),
+        "other": sum(1 for f in freqs if not (2400 <= f < 2500 or 4900 <= f < 5900 or 5925 <= f < 7125)),
+    }
+    dominant_band = max(bands, key=lambda k: bands[k])
+    avg_mhz = sum(freqs) / len(freqs)
+    return {
+        "available": True,
+        "point_count": len(freqs),
+        "avg_frequency_mhz": round(avg_mhz, 1),
+        "dominant_band": dominant_band,
+        "bands": bands,
+    }
+
+
+def _rf_physical_summary(rf_run: RfRun) -> dict[str, Any]:
+    request_sim = (rf_run.request_json or {}).get("simulation") or {}
+    radio_map = (rf_run.metrics_json or {}).get("radio_map") or {}
+    physical = radio_map.get("physical") or radio_map.get("config", {}).get("physical") or {}
+    frequency_hz = request_sim.get("frequency_hz")
+    frequency_ghz = physical.get("frequency_ghz")
+    if frequency_ghz is None and frequency_hz is not None:
+        frequency_ghz = float(frequency_hz) / 1e9
+    tx_power_dbm = physical.get("tx_power_dbm", request_sim.get("tx_power_dbm"))
+    return {
+        "frequency_ghz": float(frequency_ghz) if frequency_ghz is not None else None,
+        "tx_power_dbm": float(tx_power_dbm) if tx_power_dbm is not None else None,
+    }
 
 
 def _idw_reference_map(radio_map: _RadioMap, points: list[_EvalPoint]) -> list[list[float]]:
@@ -526,6 +663,8 @@ def _point_payload(p: _EvalPoint) -> dict[str, Any]:
         "measurement_purpose": p.purpose,
         "split": p.split,
     }
+    if p.frequency_mhz is not None:
+        payload["frequency_mhz"] = p.frequency_mhz
     if p.baseline_pred_dbm is not None:
         payload["baseline_pred_dbm"] = p.baseline_pred_dbm
         payload["baseline_error_db"] = abs(p.baseline_pred_dbm - p.measured_rssi_dbm)
@@ -591,10 +730,30 @@ def evaluate_calibration_run(
             "No valid calibration points remain after radio map sampling.",
             400,
         )
-    offset_db = sum(p.measured_rssi_dbm - float(p.baseline_pred_dbm) for p in valid_calibration) / len(valid_calibration)
+    rssi_transfer = _fit_rssi_transfer(valid_calibration)
+    residual_points = [
+        (
+            p.x_m,
+            p.y_m,
+            p.measured_rssi_dbm - _apply_rssi_transfer(float(p.baseline_pred_dbm), rssi_transfer),
+        )
+        for p in valid_calibration
+        if p.baseline_pred_dbm is not None
+    ]
+    offset_db = float(rssi_transfer["mean_offset_db"])
     calibrated_points: list[_EvalPoint] = []
     for p in sampled:
-        calibrated_pred = p.baseline_pred_dbm + offset_db if p.baseline_pred_dbm is not None else None
+        calibrated_pred = (
+            _hybrid_calibrated_value(
+                float(p.baseline_pred_dbm),
+                p.x_m,
+                p.y_m,
+                rssi_transfer,
+                residual_points,
+            )
+            if p.baseline_pred_dbm is not None
+            else None
+        )
         calibrated_points.append(
             _EvalPoint(
                 **{
@@ -646,8 +805,8 @@ def evaluate_calibration_run(
             },
         },
         "calibrated": {
-            "label": "Calibrated Simulation",
-            "values_dbm": _calibrated_map(radio_map.values, offset_db),
+            "label": "Calibrated Simulation (Transfer + Residual IDW)",
+            "values_dbm": _calibrated_map(radio_map, rssi_transfer, residual_points),
             "bounds_m": {
                 "min_x": radio_map.min_x,
                 "min_y": radio_map.min_y,
@@ -655,6 +814,17 @@ def evaluate_calibration_run(
                 "max_y": radio_map.max_y,
             },
             "offset_db": offset_db,
+            "metadata": {
+                "method": "affine_rssi_transfer_plus_residual_idw",
+                "slope": round(float(rssi_transfer["slope"]), 6),
+                "intercept_db": round(float(rssi_transfer["intercept"]), 6),
+                "mean_offset_db": round(offset_db, 6),
+                "residual_method": "idw",
+                "residual_weight": 0.6,
+                "residual_radius_m": 6.0,
+                "residual_point_count": len(residual_points),
+                "purpose": "First matches the simulated RSSI scale to phone measurements, then blends local residuals with IDW.",
+            },
         },
     }
     if measured_reference is not None:
@@ -668,9 +838,34 @@ def evaluate_calibration_run(
         "metric_point_source": metric_point_source,
         "n_invalid_points": len(invalid_points),
     }
+    frequency_summary = _measurement_frequency_summary(calibrated_points)
+    rf_physical = _rf_physical_summary(rr)
+    if frequency_summary.get("available") and rf_physical.get("frequency_ghz") is not None:
+        measured_band = str(frequency_summary.get("dominant_band"))
+        rf_band = "2.4GHz" if 2.3 <= float(rf_physical["frequency_ghz"]) < 2.6 else (
+            "5GHz" if 4.9 <= float(rf_physical["frequency_ghz"]) < 5.9 else (
+                "6GHz" if 5.925 <= float(rf_physical["frequency_ghz"]) < 7.125 else "other"
+            )
+        )
+        if measured_band != "other" and measured_band != rf_band:
+            warnings.append(
+                f"Measured Wi-Fi band is mostly {measured_band}, but RF simulation used {rf_physical['frequency_ghz']:.2f}GHz ({rf_band})."
+            )
     evaluation = {
         "split": split_meta,
-        "calibration": {"method": payload.method, "offset_db": round(offset_db, 4)},
+        "calibration": {
+            "method": "affine_rssi_transfer_plus_residual_idw",
+            "offset_db": round(offset_db, 4),
+            "slope": round(float(rssi_transfer["slope"]), 4),
+            "intercept_db": round(float(rssi_transfer["intercept"]), 4),
+            "mean_offset_db": round(offset_db, 4),
+            "residual_method": "idw",
+            "residual_weight": 0.6,
+            "residual_radius_m": 6.0,
+            "equivalent_tx_power_offset_db": round(offset_db, 4),
+        },
+        "rf_physical": rf_physical,
+        "measurement_frequency": frequency_summary,
         "visualization": {
             "map_type": "three_way_comparison",
             "reference_map_method": payload.visualization.reference_map_method,
