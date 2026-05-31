@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   ChevronRight,
   Clock,
+  Loader2,
   MapPin,
   Smartphone,
   TrendingUp,
@@ -38,7 +39,7 @@ import { useFloorAssets, useAssetDownloadUrl } from '@/hooks/use-assets';
 import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
 import { useEvaluateCalibrationRun } from '@/hooks/use-calibration-run';
-import { CalibrationCard } from '@/features/calibration/CalibrationCard';
+import { CalibrationCard, type CalibrationGate } from '@/features/calibration/CalibrationCard';
 import type { CalibrationEvaluationResponse, SpaceType } from '@/types/calibration-run';
 import { parseGeometry } from '@/features/editor/geometry-utils';
 import {
@@ -78,24 +79,11 @@ export default function MeasurementPage() {
     assetUrl && /^https?:\/\//i.test(assetUrl) ? assetUrl : null;
   const backgroundImageUrl = usableAssetUrl ?? localImage ?? null;
 
-  // calibration soft prior 용 공간 유형.
-  // - Source of truth: Floor.space_type (헤더의 도면 셀렉터에서 설정)
-  // - 이 페이지에서도 일회성 override 가능 — 사용자가 다른 prior 로 실험하고 싶을 때
-  // - floor 가 바뀌면 그 floor 의 값으로 자동 리셋.
-  const [spaceTypeOverrideState, setSpaceTypeOverrideState] = useState<{
-    floorId: string | null;
-    value: SpaceType | null;
-  }>({ floorId: null, value: null });
-  const spaceTypeOverride =
-    spaceTypeOverrideState.floorId === floorId ? spaceTypeOverrideState.value : null;
-  const setSpaceTypeOverride = (value: SpaceType | null) => {
-    setSpaceTypeOverrideState({ floorId: floorId ?? null, value });
-  };
-  // Floor 의 space_type 을 reactive 하게 읽음 — 헤더에서 변경하면 즉시 반영.
+  // calibration soft prior — Floor.space_type 이 source of truth (헤더 FloorSpaceTypeSelector).
   const projectIdForFloors = useAppStore((s) => s.selectedProjectId);
   const floorsList = useFloors(projectIdForFloors);
   const currentFloor = floorsList.data?.find((f) => f.id === floorId) ?? null;
-  const spaceType: SpaceType = spaceTypeOverride ?? currentFloor?.space_type ?? 'unknown';
+  const spaceType: SpaceType = currentFloor?.space_type ?? 'unknown';
 
   // 측정 세션. 기본은 최근 세션 자동 선택, 사용자가 '이력 보기' 로 다른 세션 선택 가능.
   const sessionsQuery = useFloorMeasurementSessions(floorId);
@@ -206,14 +194,20 @@ export default function MeasurementPage() {
     if (activeSession?.id) ids.add(activeSession.id);
     return [...ids];
   }, [activeSession, sessions]);
-  const calibrationDisabledReason = !hasMeasurement
-    ? '먼저 측정을 진행해주세요.'
+  const calibrationGate: CalibrationGate = !hasMeasurement
+    ? 'no_measurement'
     : !hasEnoughMeasurements
-    ? `보정 신뢰성 확보를 위해 측정점이 ${MIN_MEASUREMENTS_FOR_CALIBRATION}개 이상 필요합니다 ` +
-      `(현재 ${points.length}개). 도면 전반 골고루 더 측정해주세요.`
-    : !latestRfRunId
-    ? '비교할 시뮬레이션 결과가 없습니다. 시뮬레이션 페이지에서 실행해주세요.'
-    : null;
+      ? 'insufficient_points'
+      : !latestRfRunId
+        ? 'no_simulation'
+        : 'ready';
+  const calibrationDisabledReason = !hasMeasurement
+    ? null
+    : !hasEnoughMeasurements
+      ? `보정을 위해 측정점 ${MIN_MEASUREMENTS_FOR_CALIBRATION}개 이상이 필요합니다 (현재 ${points.length}개). 도면 곳곳을 더 측정해주세요.`
+      : !latestRfRunId
+        ? null
+        : null;
   const handleCalibrate = () => {
     if (!canCalibrate || !activeSession || !latestRfRunId || !currentVersion) return;
     evaluateCalibration.mutate(
@@ -387,10 +381,12 @@ export default function MeasurementPage() {
               isStarting={evaluateCalibration.isPending}
               canCalibrate={canCalibrate}
               disabledReason={calibrationDisabledReason}
+              calibrationGate={calibrationGate}
               spaceType={spaceType}
-              onSpaceTypeChange={setSpaceTypeOverride}
+              showSpaceTypeField={false}
               onCalibrate={handleCalibrate}
-              showCalibrateButton={false}
+              showCalibrateButton
+              showMeasurementLink={false}
               onAddReferenceMeasurement={() => {
                 setMobilePurpose('reference');
                 setMobileOpen(true);
@@ -589,7 +585,7 @@ function PageHeader({
         <button
           type="button"
           onClick={onStartMeasurement}
-          className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
+          className="inline-flex items-center gap-2 rounded-lg bg-blue-500 px-4 py-2 text-sm font-medium text-white shadow-sm shadow-blue-500/20 hover:bg-blue-600"
         >
           <Smartphone className="h-4 w-4" />
           새로운 측정 시작
@@ -761,15 +757,56 @@ function LegendDot({ color, label }: { color: string; label: string }) {
 
 function CanvasEmptyOverlay({ loading }: { loading: boolean }) {
   return (
-    <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-      <div className="pointer-events-auto max-w-sm rounded-xl border bg-background/95 px-5 py-4 text-center shadow-sm backdrop-blur">
-        <p className="text-sm font-semibold">
-          {loading ? '측정 데이터 불러오는 중...' : '측정 데이터가 없습니다'}
-        </p>
-        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-          상단의 "새로운 측정 시작" 또는 헤더의 "모바일 앱 연결" 로 측정을 진행하면
-          여기에 결과가 표시됩니다.
-        </p>
+    <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6 pb-20">
+      <div
+        className={cn(
+          'pointer-events-auto w-full max-w-md -translate-y-6 animate-panel-rise',
+          'rounded-2xl border border-sky-200/90 bg-sky-50/95 px-6 py-5 shadow-md backdrop-blur-sm',
+        )}
+      >
+        <div className="flex items-start gap-4">
+          <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-sky-100 text-sky-600">
+            {loading ? (
+              <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
+            ) : (
+              <MapPin className="h-5 w-5" aria-hidden />
+            )}
+          </span>
+          <div className="min-w-0 space-y-4 text-left">
+            <div className="space-y-2">
+              <p className="text-base font-semibold leading-relaxed text-sky-950">
+                {loading ? '측정 데이터를 불러오는 중' : '아직 측정 데이터가 없어요'}
+              </p>
+              <p className="text-xs leading-relaxed text-sky-900/75">
+                {loading
+                  ? '잠시만 기다려주세요.'
+                  : '모바일로 도면 위를 걸으며 측정하면 결과가 이곳에 표시됩니다.'}
+              </p>
+            </div>
+            {!loading && (
+              <ol className="space-y-2.5 text-xs leading-relaxed text-sky-900/80">
+                <li className="flex items-center gap-2.5">
+                  <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white text-[10px] font-bold text-sky-700 ring-1 ring-sky-200">
+                    1
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <Smartphone className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                    헤더에서 모바일 앱 연결
+                  </span>
+                </li>
+                <li className="flex items-center gap-2.5">
+                  <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white text-[10px] font-bold text-sky-700 ring-1 ring-sky-200">
+                    2
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <Activity className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                    상단에서 새로운 측정 시작
+                  </span>
+                </li>
+              </ol>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

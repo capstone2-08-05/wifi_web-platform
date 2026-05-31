@@ -26,6 +26,17 @@ import {
   saveCachedScaleRatio,
   useImageNaturalDimensions,
 } from './floorplan-image-extent';
+import {
+  CANVAS_BLUE,
+  CANVAS_BLUE_FAINT,
+  CANVAS_BLUE_TINT,
+  CANVAS_BLUE_TINT_STRONG,
+  CANVAS_OBJECT_FILL,
+  CANVAS_OBJECT_LABEL,
+  CANVAS_OBJECT_STROKE,
+  CANVAS_WALL,
+  CANVAS_WINDOW,
+} from '@/lib/canvas-scene-colors';
 import type { EditorTool } from '@/stores/editor-store';
 
 interface Bounds {
@@ -214,6 +225,11 @@ type CreatingState =
 
 /** 폴리곤 닫기 임계값 (미터). 시작점 근처 클릭으로 인식. */
 const POLYGON_CLOSE_THRESHOLD_M = 0.4;
+
+/** 벽·문·창 실선/미리보기 점선 공통 stroke (OpeningShape·WallShape 와 동일). */
+const STROKE_WALL = CANVAS_WALL;
+const STROKE_DOOR = CANVAS_BLUE;
+const STROKE_WINDOW = CANVAS_WINDOW;
 
 /** 끝점 스냅 반경 (미터). 이 안에 기존 끝점이 있으면 딱 붙음. */
 const SNAP_RADIUS_M = 0.25;
@@ -1344,7 +1360,7 @@ export function DraftSceneCanvas({
                   width={b.w}
                   height={b.h}
                   fill="none"
-                  stroke="oklch(0.55 0.22 264)"
+                  stroke={CANVAS_BLUE}
                   strokeWidth="1.5"
                   strokeDasharray="0.18 0.12"
                   vectorEffect="non-scaling-stroke"
@@ -1376,7 +1392,7 @@ export function DraftSceneCanvas({
               y1={creating.firstPoint[1]}
               x2={cursorPos[0]}
               y2={cursorPos[1]}
-              stroke="oklch(0.55 0.22 264)"
+              stroke={STROKE_WALL}
               strokeWidth="4"
               strokeDasharray="6 4"
               strokeLinecap="butt"
@@ -1386,7 +1402,7 @@ export function DraftSceneCanvas({
               cx={creating.firstPoint[0]}
               cy={creating.firstPoint[1]}
               r="0.07"
-              fill="oklch(0.55 0.22 264)"
+              fill={STROKE_WALL}
             />
           </g>
         )}
@@ -1399,7 +1415,7 @@ export function DraftSceneCanvas({
               y1={creating.firstPoint[1]}
               x2={cursorPos[0]}
               y2={cursorPos[1]}
-              stroke="oklch(0.55 0.22 264)"
+              stroke={tool === 'window' ? STROKE_WINDOW : STROKE_DOOR}
               strokeWidth="5"
               strokeDasharray="4 3"
               vectorEffect="non-scaling-stroke"
@@ -1408,7 +1424,7 @@ export function DraftSceneCanvas({
               cx={creating.firstPoint[0]}
               cy={creating.firstPoint[1]}
               r="0.07"
-              fill="oklch(0.55 0.22 264)"
+              fill={tool === 'window' ? STROKE_WINDOW : STROKE_DOOR}
             />
           </g>
         )}
@@ -1425,8 +1441,8 @@ export function DraftSceneCanvas({
               {canClose && pts.length >= 3 && (
                 <polygon
                   points={polyPoints}
-                  fill="oklch(0.92 0.05 264 / 0.3)"
-                  stroke="oklch(0.55 0.22 264)"
+                  fill={CANVAS_BLUE_TINT_STRONG}
+                  stroke={CANVAS_BLUE}
                   strokeWidth="3"
                   strokeDasharray="6 4"
                   vectorEffect="non-scaling-stroke"
@@ -1437,7 +1453,7 @@ export function DraftSceneCanvas({
                 <polyline
                   points={polyPoints}
                   fill="none"
-                  stroke="oklch(0.55 0.22 264)"
+                  stroke={CANVAS_BLUE}
                   strokeWidth="3"
                   strokeDasharray="6 4"
                   strokeLinecap="round"
@@ -1452,7 +1468,7 @@ export function DraftSceneCanvas({
                   y1={pts[pts.length - 1][1]}
                   x2={cursorPos[0]}
                   y2={cursorPos[1]}
-                  stroke="oklch(0.55 0.22 264)"
+                  stroke={CANVAS_BLUE}
                   strokeWidth="2"
                   strokeDasharray="3 3"
                   strokeLinecap="round"
@@ -1470,8 +1486,8 @@ export function DraftSceneCanvas({
                     cx={p[0]}
                     cy={p[1]}
                     r={isFirstHighlighted ? 0.13 : isFirst ? 0.09 : 0.06}
-                    fill={isFirstHighlighted ? 'oklch(0.55 0.22 264)' : 'white'}
-                    stroke="oklch(0.55 0.22 264)"
+                    fill={isFirstHighlighted ? CANVAS_BLUE : 'white'}
+                    stroke={CANVAS_BLUE}
                     strokeWidth={isFirstHighlighted ? 2 : 2}
                     vectorEffect="non-scaling-stroke"
                   />
@@ -1488,7 +1504,7 @@ export function DraftSceneCanvas({
             cy={cursorPos[1]}
             r="0.18"
             fill="oklch(0.9 0.04 256)"
-            stroke="oklch(0.55 0.22 264)"
+            stroke={CANVAS_BLUE}
             strokeWidth="2"
             strokeDasharray="3 2"
             vectorEffect="non-scaling-stroke"
@@ -1508,8 +1524,8 @@ export function DraftSceneCanvas({
                 y={r.y}
                 width={r.w}
                 height={r.h}
-                fill="oklch(0.62 0.18 264 / 0.08)"
-                stroke="oklch(0.62 0.18 264)"
+                fill={CANVAS_BLUE_FAINT}
+                stroke={CANVAS_BLUE}
                 strokeWidth="1.5"
                 strokeDasharray="4 3"
                 vectorEffect="non-scaling-stroke"
@@ -1814,8 +1830,8 @@ function RoomShape({
     <g>
       <polygon
         points={points}
-        fill={selected ? 'oklch(0.92 0.05 264)' : 'oklch(0.95 0.01 256)'}
-        stroke={selected ? 'oklch(0.55 0.22 264)' : 'oklch(0.86 0 0)'}
+        fill={selected ? CANVAS_BLUE_TINT : 'oklch(0.95 0.01 256)'}
+        stroke={selected ? CANVAS_BLUE : 'oklch(0.86 0 0)'}
         strokeWidth={selected ? 3 : 1.5}
         vectorEffect="non-scaling-stroke"
         className="cursor-pointer"
@@ -1910,7 +1926,7 @@ function WallShape({
         y1={start[1]}
         x2={end[0]}
         y2={end[1]}
-        stroke={selected ? 'oklch(0.55 0.22 264)' : 'oklch(0.25 0 0)'}
+        stroke={selected ? STROKE_DOOR : STROKE_WALL}
         strokeWidth={selected ? 6 : 4}
         strokeLinecap="butt"
         vectorEffect="non-scaling-stroke"
@@ -1940,7 +1956,7 @@ function OpeningShape({
   const [start, end] = coords;
   if (!start || !end) return null;
   const isDoor = opening.opening_type === 'door';
-  const baseColor = isDoor ? 'oklch(0.55 0.22 264)' : 'oklch(0.7 0.18 200)';
+  const baseColor = isDoor ? STROKE_DOOR : STROKE_WINDOW;
   const label = isDoor ? '문' : '창문';
   // 라벨은 선의 중점에서 수직 방향으로 살짝 떨어뜨려 배치.
   const midX = (start[0] + end[0]) / 2;
@@ -2030,9 +2046,9 @@ function ObjectShape({
     w = Math.max(0.2, w * Math.abs(sx));
     h = Math.max(0.2, h * Math.abs(sy));
   }
-  const fill = selected ? 'oklch(0.92 0.05 264)' : 'oklch(0.95 0.03 240)';
-  const stroke = selected ? 'oklch(0.55 0.22 264)' : 'oklch(0.74 0.08 240)';
-  const labelFill = 'oklch(0.4 0.04 240)';
+  const fill = selected ? CANVAS_BLUE_TINT : CANVAS_OBJECT_FILL;
+  const stroke = selected ? CANVAS_BLUE : CANVAS_OBJECT_STROKE;
+  const labelFill = CANVAS_OBJECT_LABEL;
   // 공간성 객체는 선택 여부와 무관하게 항상 점선 (공간 vs 가구 구분 일관).
   const strokeDasharray = spaceLike ? '0.18 0.12' : undefined;
 
@@ -2149,7 +2165,7 @@ function ResizeCorner({
         cy={y}
         r={size}
         fill="white"
-        stroke="oklch(0.55 0.22 264)"
+        stroke={CANVAS_BLUE}
         strokeWidth="1.5"
         vectorEffect="non-scaling-stroke"
       />
@@ -2208,7 +2224,7 @@ function GroupResizeHandle({
         width={inner}
         height={inner}
         fill="white"
-        stroke="oklch(0.55 0.22 264)"
+        stroke={CANVAS_BLUE}
         strokeWidth="2"
         vectorEffect="non-scaling-stroke"
       />
@@ -2235,7 +2251,7 @@ function VertexHandle({
         cy={y}
         r={size}
         fill="white"
-        stroke="oklch(0.55 0.22 264)"
+        stroke={CANVAS_BLUE}
         strokeWidth="1.5"
         vectorEffect="non-scaling-stroke"
       />

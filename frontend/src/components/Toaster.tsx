@@ -1,6 +1,9 @@
+import { useState } from 'react';
 import { CheckCircle2, Info, X, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useToastStore, type Toast, type ToastKind } from '@/stores/toast-store';
+
+const EXIT_MS = 220;
 
 const KIND_STYLES: Record<ToastKind, { icon: typeof CheckCircle2; iconClass: string; ring: string }> = {
   success: {
@@ -25,7 +28,7 @@ export function Toaster() {
   const dismiss = useToastStore((s) => s.dismiss);
 
   return (
-    <div className="pointer-events-none fixed bottom-6 right-6 z-50 flex w-full max-w-sm flex-col gap-2">
+    <div className="pointer-events-none fixed bottom-6 right-6 z-50 flex w-full max-w-sm flex-col gap-2.5">
       {toasts.map((t) => (
         <ToastItem key={t.id} toast={t} onDismiss={() => dismiss(t.id)} />
       ))}
@@ -34,14 +37,23 @@ export function Toaster() {
 }
 
 function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }) {
+  const [exiting, setExiting] = useState(false);
   const style = KIND_STYLES[toast.kind];
   const Icon = style.icon;
+
+  const handleDismiss = () => {
+    if (exiting) return;
+    setExiting(true);
+    window.setTimeout(onDismiss, EXIT_MS);
+  };
+
   return (
     <div
       role="status"
       className={cn(
         'pointer-events-auto flex items-start gap-3 rounded-xl border bg-background p-3.5 shadow-lg ring-1',
         style.ring,
+        exiting ? 'animate-toast-out' : 'animate-toast-in',
       )}
     >
       <Icon className={cn('mt-0.5 h-5 w-5 shrink-0', style.iconClass)} />
@@ -55,7 +67,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
       </div>
       <button
         type="button"
-        onClick={onDismiss}
+        onClick={handleDismiss}
         aria-label="닫기"
         className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
       >

@@ -13,6 +13,14 @@ import type {
   SceneVersion,
 } from '@/types/scene';
 import { cn } from '@/lib/utils';
+import {
+  CANVAS_AP_LABEL_BORDER,
+  CANVAS_BLUE,
+  CANVAS_OBJECT_FILL,
+  CANVAS_OBJECT_LABEL,
+  CANVAS_OBJECT_STROKE,
+  CANVAS_WINDOW,
+} from '@/lib/canvas-scene-colors';
 
 export interface PlacedAp {
   id: string;          // 'ap1', 'ap2', ... — 사용자/SageMaker 식별자
@@ -109,6 +117,21 @@ function computeViewBox(
   return { x: b.minX - padding, y: b.minY - padding, w: w + 2 * padding, h: h + 2 * padding };
 }
 
+/** viewBox 와 히트맵 bounds 의 union — clipPath 밖으로 히트맵이 잘리지 않게. */
+function unionViewBoxWithHeatmapBounds(
+  vb: { x: number; y: number; w: number; h: number },
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+): { x: number; y: number; w: number; h: number } {
+  const minX = Math.min(vb.x, bounds.minX);
+  const minY = Math.min(vb.y, bounds.minY);
+  const maxX = Math.max(vb.x + vb.w, bounds.maxX);
+  const maxY = Math.max(vb.y + vb.h, bounds.maxY);
+  const w = maxX - minX || 1;
+  const h = maxY - minY || 1;
+  const padding = Math.max(w, h) * 0.05;
+  return { x: minX - padding, y: minY - padding, w: w + 2 * padding, h: h + 2 * padding };
+}
+
 /**
  * 시뮬레이션 페이지 캔버스 — 확정 버전 도형(rooms/walls/openings/objects)을 read-only 로
  * 보여주고, 그 위에 사용자가 AP 를 자유롭게 배치/드래그/삭제. 최대 8개.
@@ -144,14 +167,31 @@ export function SimulationCanvas({
     [imageDims, sceneVersion?.source_asset_id, sceneVersion?.floor_id],
   );
 
-  // viewBox: editor/measurement 와 같은 floor 캐시를 우선 사용해 페이지 간 도면 크기를 고정.
-  // 캐시가 없을 때만 image+shape union 으로 계산.
+  // viewBox: AP 배치(idle) 는 editor 캐시 우선. 결과(히트맵) 보기는 과거 run 의 bounds 가
+  // 현재 편집 캐시와 어긋나 clip 되는 경우가 있어 scene+image(+heatmap) union 으로 계산.
   const vb = useMemo(() => {
+    if (readOnly && heatmapUrl) {
+      const base = imageExtent
+        ? computeViewBox(sceneVersion, imageExtent)
+        : computeViewBox(sceneVersion, null);
+      if (heatmapBounds) {
+        return unionViewBoxWithHeatmapBounds(base, heatmapBounds);
+      }
+      return base;
+    }
     const cached = loadCachedViewBox(sceneVersion?.floor_id ?? null);
     if (cached) return cached;
     if (imageExtent) return computeViewBox(sceneVersion, imageExtent);
     return computeViewBox(sceneVersion, null);
-  }, [sceneId, sceneVersion?.floor_id, imageExtent]);
+  }, [
+    sceneId,
+    sceneVersion,
+    sceneVersion?.floor_id,
+    imageExtent,
+    readOnly,
+    heatmapUrl,
+    heatmapBounds,
+  ]);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<Coord>([0, 0]);
 
@@ -220,7 +260,7 @@ export function SimulationCanvas({
     : 'cursor-default';
 
   return (
-    <div className="relative flex h-full w-full items-center justify-center overflow-hidden bg-[#f8fafc] p-6 [background-image:radial-gradient(circle,_oklch(0.92_0_0)_1px,_transparent_1px)] [background-position:0_0] [background-size:18px_18px]">
+    <div className="relative flex h-full w-full items-center justify-center overflow-hidden bg-slate-50/80 p-4 [background-image:radial-gradient(circle,_rgb(148_163_184_/_0.12)_1px,_transparent_1px)] [background-position:0_0] [background-size:20px_20px]">
       <svg
         ref={svgRef}
         viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
@@ -272,7 +312,7 @@ export function SimulationCanvas({
             width={heatmapBounds ? heatmapBounds.maxX - heatmapBounds.minX : vb.w}
             height={heatmapBounds ? heatmapBounds.maxY - heatmapBounds.minY : vb.h}
             preserveAspectRatio={heatmapBounds ? 'none' : 'xMidYMid meet'}
-            opacity={0.6}
+            opacity={0.72}
             pointerEvents="none"
             onError={() => {
               console.warn('[SimulationCanvas] 히트맵 이미지 로드 실패:', heatmapUrl);
@@ -383,7 +423,7 @@ function OpeningShape({ opening }: { opening: DraftOpening }) {
   const end = g.coordinates[g.coordinates.length - 1];
   if (!start || !end) return null;
   const isDoor = opening.opening_type === 'door';
-  const color = isDoor ? 'oklch(0.55 0.22 264)' : 'oklch(0.7 0.18 200)';
+  const color = isDoor ? CANVAS_BLUE : CANVAS_WINDOW;
   const label = isDoor ? '문' : '창문';
   const midX = (start[0] + end[0]) / 2;
   const midY = (start[1] + end[1]) / 2;
@@ -441,8 +481,8 @@ function ObjectShape({ object }: { object: DraftObject }) {
         width={w}
         height={h}
         rx="0.15"
-        fill="oklch(0.95 0.03 240)"
-        stroke="oklch(0.74 0.08 240)"
+        fill={CANVAS_OBJECT_FILL}
+        stroke={CANVAS_OBJECT_STROKE}
         strokeWidth="1.5"
         strokeDasharray={strokeDasharray}
         vectorEffect="non-scaling-stroke"
@@ -455,7 +495,7 @@ function ObjectShape({ object }: { object: DraftObject }) {
           dominantBaseline="middle"
           fontSize={computeLabelFontSize(label, w, h)}
           fontWeight="500"
-          fill="oklch(0.4 0.04 240)"
+          fill={CANVAS_OBJECT_LABEL}
           style={{ userSelect: 'none' }}
         >
           {label}
@@ -480,7 +520,7 @@ function ApMarker({
   onPointerDown: (e: React.PointerEvent) => void;
   onRemove: () => void;
 }) {
-  const fill = 'oklch(0.55 0.22 254)';
+  const fill = CANVAS_BLUE;
   const r = AP_MARKER_RADIUS_M;
   // lucide Wifi 아이콘 (24x24 viewBox) 을 r 안에 들어갈 크기로 스케일.
   const iconSize = r * 1.1; // 원 지름의 약 55%
@@ -518,7 +558,7 @@ function ApMarker({
           height={r * 0.75}
           rx={r * 0.18}
           fill="white"
-          stroke="oklch(0.85 0.02 240)"
+          stroke={CANVAS_AP_LABEL_BORDER}
           strokeWidth="1"
           vectorEffect="non-scaling-stroke"
         />
@@ -529,7 +569,7 @@ function ApMarker({
           dominantBaseline="middle"
           fontSize={AP_LABEL_FONT_SIZE_M}
           fontWeight="600"
-          fill="oklch(0.25 0.04 240)"
+          fill={fill}
           style={{ userSelect: 'none' }}
         >
           {ap.id.toUpperCase()}

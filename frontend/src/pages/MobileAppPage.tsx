@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { CheckCircle2, Loader2, Sparkles } from 'lucide-react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { CheckCircle2, ChevronDown, Loader2, RotateCcw, Sparkles } from 'lucide-react';
 import type { HttpError } from '@/api/client';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
@@ -35,7 +35,7 @@ const PROGRESS_STEPS = [
   { id: 3, label: '추천 위치 선택' },
 ] as const;
 
-const CARD_BORDER = 'border-[#E5EAF2]';
+const CARD_BORDER = 'border-slate-200';
 
 export default function MobileAppPage() {
   const floorId = useAppStore((s) => s.selectedFloorId);
@@ -242,39 +242,68 @@ export default function MobileAppPage() {
     (floorId != null && !sceneVersionId && !versionsQuery.isError);
 
   const statusHint = getStatusHint(pageStatus, pageError, savedRank);
+  const hintStepId = useMemo(
+    () => getHintStepId(pageStatus, activeStep),
+    [pageStatus, activeStep],
+  );
+
+  const canvasAreaRef = useRef<HTMLDivElement>(null);
+  const stepIconRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const [bubbleLeftPx, setBubbleLeftPx] = useState<number | null>(null);
+
+  const registerStepIconRef = useCallback((index: number, el: HTMLDivElement | null) => {
+    stepIconRefs.current[index] = el;
+  }, []);
+
+  useLayoutEffect(() => {
+    const syncBubblePosition = () => {
+      const canvas = canvasAreaRef.current;
+      const icon = stepIconRefs.current[hintStepId - 1];
+      if (!canvas || !icon) {
+        setBubbleLeftPx(null);
+        return;
+      }
+      const canvasRect = canvas.getBoundingClientRect();
+      const iconRect = icon.getBoundingClientRect();
+      setBubbleLeftPx(iconRect.left + iconRect.width / 2 - canvasRect.left);
+    };
+
+    syncBubblePosition();
+    window.addEventListener('resize', syncBubblePosition);
+    return () => window.removeEventListener('resize', syncBubblePosition);
+  }, [hintStepId, statusHint, sceneVersionId, pageStatus]);
 
   return (
-    <div className="flex h-full flex-col overflow-auto bg-[#F8FAFC]">
-      {/* 본문 헤더 — Figma: 제목 + 설명 + 우측 CTA */}
-      <header className="shrink-0 px-6 pb-4 pt-6 lg:px-8">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+    <div className="flex h-full flex-col overflow-auto bg-background">
+      <header className="shrink-0 px-6 pb-3 pt-5 lg:px-8">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
-            <h1 className="text-2xl font-bold tracking-tight text-foreground">
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
               AP 배치 추천
             </h1>
-            <p className="mt-1.5 text-sm text-muted-foreground">
+            <p className="mt-1 text-sm text-slate-500">
               개선이 필요한 영역을 드래그하면 최적의 AP 설치 위치를 추천합니다.
             </p>
           </div>
-          <div className="flex shrink-0 flex-col items-stretch gap-1.5 sm:items-end">
+          <div className="flex shrink-0 flex-col items-stretch gap-1 sm:items-end">
             <button
               type="button"
               onClick={handleHeaderAction}
               disabled={headerButtonDisabled}
               className={cn(
-                'inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold shadow-sm transition-colors',
-                isRecommendPending && 'cursor-not-allowed bg-muted text-muted-foreground',
+                'inline-flex h-9 items-center justify-center gap-1.5 rounded-md px-4 text-sm font-medium transition-colors',
+                isRecommendPending && 'cursor-not-allowed bg-slate-100 text-slate-400',
                 !isRecommendPending &&
                   hasRecommendation &&
-                  'border border-blue-200 bg-white text-blue-600 hover:bg-blue-50',
+                  'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50',
                 !isRecommendPending &&
                   !hasRecommendation &&
                   canRecommend &&
-                  'bg-blue-600 text-white hover:bg-blue-700',
+                  'bg-blue-500 text-white shadow-sm shadow-blue-500/20 hover:bg-blue-600',
                 !isRecommendPending &&
                   !hasRecommendation &&
                   !canRecommend &&
-                  'cursor-not-allowed bg-muted text-muted-foreground',
+                  'cursor-not-allowed bg-slate-100 text-slate-400',
               )}
             >
               {isRecommendPending ? (
@@ -283,7 +312,10 @@ export default function MobileAppPage() {
                   최적 위치 계산 중…
                 </>
               ) : hasRecommendation ? (
-                '다시 생성하기'
+                <>
+                  <RotateCcw className="h-4 w-4" />
+                  다시 생성하기
+                </>
               ) : (
                 <>
                   <Sparkles className="h-4 w-4" />
@@ -300,15 +332,13 @@ export default function MobileAppPage() {
         </div>
       </header>
 
-      {/* 본문 — lg: 캔버스(좌) + 추천 패널(우), md↓ 단일 컬럼 */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 px-6 pb-6 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-6 lg:px-8">
-        {/* 좌측: 캔버스 + 진행 단계 */}
-        <div className="flex min-h-0 flex-col gap-4">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 px-6 pb-5 lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-5 lg:px-8">
+        <div className="flex min-h-0 flex-col gap-3">
           <div
+            ref={canvasAreaRef}
             className={cn(
-              'relative flex min-h-[min(52vh,32rem)] flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-sm',
+              'relative flex min-h-[min(52vh,32rem)] flex-1 flex-col overflow-hidden rounded-xl border bg-white shadow-sm',
               CARD_BORDER,
-              'border',
             )}
           >
             {!floorId ? (
@@ -334,53 +364,51 @@ export default function MobileAppPage() {
               />
             )}
 
-            {sceneVersionId && statusHint && pageStatus !== 'loading' && (
-              <div className="pointer-events-none absolute bottom-4 left-4 right-4">
-                <p className="rounded-lg border border-[#E5EAF2] bg-white/95 px-4 py-2.5 text-center text-xs text-muted-foreground shadow-sm backdrop-blur">
-                  {statusHint}
-                </p>
-              </div>
+            {sceneVersionId && statusHint && bubbleLeftPx != null && (
+              <CanvasStatusBubble message={statusHint} leftPx={bubbleLeftPx} />
             )}
           </div>
 
-          {/* 진행 단계 카드 — 캔버스 아래 */}
           <div
             className={cn(
-              'shrink-0 rounded-2xl bg-white px-6 py-5 shadow-sm',
+              'shrink-0 rounded-lg border bg-white px-3 py-2.5',
               CARD_BORDER,
-              'border',
             )}
           >
-            <ProgressStepper activeStep={activeStep} pageStatus={pageStatus} />
+            <ProgressStepper
+              activeStep={activeStep}
+              pageStatus={pageStatus}
+              registerStepIconRef={registerStepIconRef}
+            />
           </div>
         </div>
 
-        {/* 우측: 추천 결과 패널 (모바일에서는 하단 카드) */}
         <aside
           className={cn(
-            'flex min-h-[280px] flex-col overflow-hidden rounded-2xl bg-white shadow-sm lg:min-h-0 lg:self-stretch',
+            'flex min-h-[260px] flex-col overflow-hidden rounded-xl border bg-white shadow-sm lg:min-h-0 lg:self-stretch',
             CARD_BORDER,
-            'border',
           )}
         >
-          <div className="border-b border-[#E5EAF2] px-5 py-4">
-            <h2 className="text-base font-bold text-foreground">최적 배치 추천</h2>
+          <div className="border-b border-slate-200 px-5 py-4">
+            <h2 className="text-base font-semibold text-slate-900">최적 배치 추천</h2>
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
             {recommendations.length === 0 ? (
               <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-2 px-4 text-center">
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-muted">
-                  <Sparkles className="h-5 w-5 text-muted-foreground" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100">
+                  <Sparkles className="h-5 w-5 text-slate-400" />
                 </div>
-                <p className="text-sm font-medium text-foreground/80">
+                <p className="text-sm font-medium text-slate-700">
                   {pageStatus === 'loading'
                     ? '최적 위치를 계산하고 있습니다…'
-                    : '추천 결과가 여기에 표시됩니다'}
+                    : '추천 결과가 아직 없습니다'}
                 </p>
-                <p className="text-xs text-muted-foreground">
-                  도면에서 우선 개선 영역을 드래그한 뒤 「최적 배치 추천」을 눌러주세요.
-                </p>
+                {pageStatus !== 'loading' && (
+                  <p className="text-xs leading-relaxed text-slate-500">
+                    도면에서 개선이 필요한 영역을 드래그한 뒤, 최적 배치 추천을 실행하세요.
+                  </p>
+                )}
               </div>
             ) : (
               <div className="space-y-3">
@@ -388,10 +416,10 @@ export default function MobileAppPage() {
                   <RecommendationCard
                     key={rec.rank}
                     rec={rec}
-                    selected={selectedRank === rec.rank}
                     saved={savedRank === rec.rank}
                     saving={createLayout.isPending && selectedRank === rec.rank}
                     saveDisabled={!latestRfRunId || createLayout.isPending}
+                    hasExistingAps={existingAps.length > 0}
                     onSelect={() => handleSelectRecommendation(rec)}
                   />
                 ))}
@@ -404,6 +432,40 @@ export default function MobileAppPage() {
   );
 }
 
+function CanvasStatusBubble({
+  message,
+  leftPx,
+}: {
+  message: string;
+  leftPx: number;
+}) {
+  return (
+    <div
+      className="pointer-events-none absolute bottom-3 z-10 -translate-x-1/2"
+      style={{ left: leftPx }}
+    >
+      <div
+        key={message}
+        className="relative w-max max-w-md animate-bubble-rise rounded-xl border border-sky-200 bg-sky-50/95 px-4 py-2.5 shadow-sm backdrop-blur-sm"
+      >
+        <p className="text-center text-xs leading-relaxed text-sky-900/90">{message}</p>
+        <span
+          className="absolute -bottom-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 border-b border-r border-sky-200 bg-sky-50/95"
+          aria-hidden="true"
+        />
+      </div>
+    </div>
+  );
+}
+
+function getHintStepId(pageStatus: PageStatus, activeStep: number): number {
+  if (pageStatus === 'idle') return 1;
+  if (pageStatus === 'areaSelected') return 2;
+  if (pageStatus === 'loading') return 2;
+  if (pageStatus === 'success') return 3;
+  return Math.min(activeStep, 3);
+}
+
 function getStatusHint(
   pageStatus: PageStatus,
   pageError: string | null,
@@ -411,13 +473,15 @@ function getStatusHint(
 ): string | null {
   switch (pageStatus) {
     case 'idle':
-      return '도면 위에서 우선 개선할 영역을 드래그하여 선택하세요.';
+      return '개선이 필요한 영역을 드래그해 선택하세요.';
     case 'areaSelected':
-      return '영역이 선택되었습니다. 우측 상단 「최적 배치 추천」 버튼을 눌러주세요.';
+      return '영역이 선택되었습니다. 우측 상단 「최적 배치 추천」을 실행하세요.';
+    case 'loading':
+      return null;
     case 'success':
       return savedRank != null
-        ? '추천 위치가 AP 배치로 저장되었습니다. 다른 영역을 선택하려면 「다시 생성하기」를 눌러주세요.'
-        : '추천 위치를 확인하고 우측 패널에서 선택하세요. 다른 영역을 선택하려면 「다시 생성하기」를 눌러주세요.';
+        ? 'AP 배치가 저장되었습니다. 다른 영역은 다시 생성하기로 선택하세요.'
+        : '추천 위치를 확인한 뒤 우측 패널에서 저장할 수 있습니다.';
     case 'error':
       return pageError ?? '추천 계산에 실패했습니다. 다시 시도해 주세요.';
     default:
@@ -435,24 +499,26 @@ function EmptyState({ message }: { message: string }) {
 
 function RecommendationCard({
   rec,
-  selected,
   saved,
   saving,
   saveDisabled,
+  hasExistingAps,
   onSelect,
 }: {
   rec: ApRecommendationResult;
-  selected: boolean;
   saved: boolean;
   saving: boolean;
   saveDisabled: boolean;
+  hasExistingAps: boolean;
   onSelect: () => void;
 }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
   return (
     <article
       className={cn(
         'rounded-xl border bg-white p-4 transition-colors',
-        saved || selected ? 'border-emerald-300 shadow-sm' : 'border-[#E5EAF2]',
+        saved ? 'border-emerald-200 shadow-sm' : 'border-slate-200',
       )}
     >
       <div className="flex items-start gap-3">
@@ -460,47 +526,96 @@ function RecommendationCard({
           AP
         </div>
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-bold text-foreground">추천 위치</h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            위치 X {rec.recommended_x.toFixed(0)}m / Y {rec.recommended_y.toFixed(0)}m
-          </p>
-          <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-            우선 개선 영역 커버리지 가장 높음
-          </p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            후보 점수{' '}
-            <span className="font-semibold text-foreground">{rec.score.toFixed(1)}</span>
-          </p>
-          <p className="mt-0.5 text-[11px] text-muted-foreground">
-            탐색 후보 수 {rec.candidates_evaluated}
+          <h3 className="text-sm font-semibold leading-snug text-slate-900">
+            이 위치에 AP를 설치하는 것을
+            <br />
+            추천합니다
+          </h3>
+          <p className="mt-1.5 text-xs leading-relaxed text-slate-500">
+            선택한 영역을 더 안정적으로 커버할 수 있는
+            <br />
+            위치입니다.
           </p>
         </div>
       </div>
-      <button
-        type="button"
-        onClick={onSelect}
-        disabled={saveDisabled && !saved}
-        className={cn(
-          'mt-4 w-full rounded-lg border py-2.5 text-sm font-medium transition-colors',
-          saved
-            ? 'border-emerald-500 bg-emerald-500 text-white'
-            : 'border-[#E5EAF2] bg-[#F8FAFC] text-foreground hover:bg-muted/60 disabled:cursor-not-allowed disabled:opacity-50',
+
+      <div className="mt-4 space-y-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs">
+        <div>
+          <p className="text-slate-500">도면 기준 위치</p>
+          <p className="mt-0.5 font-medium text-slate-900">
+            가로 {rec.recommended_x.toFixed(0)}m · 세로 {rec.recommended_y.toFixed(0)}m
+          </p>
+        </div>
+        {rec.candidates_evaluated > 0 && (
+          <p className="text-slate-500">
+            총 {rec.candidates_evaluated}개 후보 위치를 비교했습니다.
+          </p>
         )}
-      >
-        {saving ? (
-          <span className="inline-flex items-center justify-center gap-1.5">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            저장 중…
-          </span>
-        ) : saved ? (
-          <span className="inline-flex items-center justify-center gap-1.5">
-            <CheckCircle2 className="h-4 w-4" />
-            저장됨
-          </span>
-        ) : (
-          '이 위치 선택'
+      </div>
+
+      <div className="mt-4">
+        <p className="text-xs font-semibold text-slate-900">추천 이유</p>
+        <ul className="mt-1.5 list-inside list-disc space-y-1 text-xs leading-relaxed text-slate-500">
+          <li>선택한 우선 개선 영역을 기준으로 계산했습니다.</li>
+          {hasExistingAps && <li>기존 AP 위치를 함께 고려했습니다.</li>}
+        </ul>
+      </div>
+
+      <div className="mt-3 border-t border-slate-200 pt-3">
+        <button
+          type="button"
+          onClick={() => setDetailsOpen((v) => !v)}
+          className="flex w-full items-center justify-between text-xs text-slate-500 hover:text-slate-700"
+          aria-expanded={detailsOpen}
+        >
+          <span>상세 정보</span>
+          <ChevronDown
+            className={cn('h-3.5 w-3.5 transition-transform', detailsOpen && 'rotate-180')}
+            aria-hidden="true"
+          />
+        </button>
+        {detailsOpen && (
+          <p className="mt-2 text-[11px] text-slate-500">
+            상세 점수: {rec.score.toFixed(1)}
+          </p>
         )}
-      </button>
+      </div>
+
+      {saved ? (
+        <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
+          <div className="flex gap-2.5">
+            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" aria-hidden="true" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-emerald-900">AP 배치로 저장 완료</p>
+              <p className="mt-1 text-xs leading-relaxed text-emerald-800/90">
+                저장된 AP 배치 목록에 반영됩니다.
+              </p>
+              <p className="mt-1.5 text-xs leading-relaxed text-emerald-800/75">
+                다른 영역을 추천하려면 다시 생성하기를 눌러주세요.
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={onSelect}
+          disabled={saveDisabled}
+          className={cn(
+            'mt-4 w-full rounded-lg border border-slate-200 bg-slate-50 py-2.5 text-sm font-medium text-slate-900 transition-colors',
+            'hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50',
+          )}
+        >
+          {saving ? (
+            <span className="inline-flex items-center justify-center gap-1.5">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              저장 중…
+            </span>
+          ) : (
+            '이 위치에 AP 배치하기'
+          )}
+        </button>
+      )}
     </article>
   );
 }
@@ -508,58 +623,70 @@ function RecommendationCard({
 function ProgressStepper({
   activeStep,
   pageStatus,
+  registerStepIconRef,
 }: {
   activeStep: number;
   pageStatus: PageStatus;
+  registerStepIconRef?: (index: number, el: HTMLDivElement | null) => void;
 }) {
   return (
-    <ol className="flex items-start">
-      {PROGRESS_STEPS.map((step, index) => {
-        const done =
-          step.id < activeStep ||
-          (step.id === 1 && pageStatus !== 'idle') ||
-          (step.id === 2 && (pageStatus === 'success' || pageStatus === 'loading'));
-        const current = step.id === activeStep && pageStatus !== 'error';
-        const isLast = index === PROGRESS_STEPS.length - 1;
+    <div className="flex justify-center">
+      <ol className="flex items-center">
+        {PROGRESS_STEPS.map((step, index) => {
+          const done =
+            step.id < activeStep ||
+            (step.id === 1 && pageStatus !== 'idle') ||
+            (step.id === 2 && (pageStatus === 'success' || pageStatus === 'loading'));
+          const current = step.id === activeStep && pageStatus !== 'error';
+          const isLast = index === PROGRESS_STEPS.length - 1;
 
-        return (
-          <li key={step.id} className="flex min-w-0 flex-1 items-start">
-            <div className="flex min-w-0 flex-1 flex-col items-center gap-2">
-              <div
-                className={cn(
-                  'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold',
-                  done && !current && 'bg-emerald-500 text-white',
-                  current && 'bg-blue-600 text-white',
-                  !done && !current && 'bg-muted text-muted-foreground',
-                )}
-              >
-                {done && !current ? (
-                  <CheckCircle2 className="h-4 w-4" />
-                ) : (
-                  step.id
-                )}
+          return (
+            <li key={step.id} className="flex items-center">
+              <div className="flex flex-col items-center gap-1.5">
+                <div
+                  ref={(el) => registerStepIconRef?.(index, el)}
+                  className={cn(
+                    'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold',
+                    done &&
+                      !current &&
+                      'bg-emerald-500 text-white ring-1 ring-emerald-200/80',
+                    current &&
+                      'bg-blue-500 text-white ring-4 ring-blue-100 shadow-sm shadow-blue-500/20',
+                    !done && !current && 'bg-slate-200 text-slate-500',
+                  )}
+                >
+                  {done && !current ? (
+                    <CheckCircle2 className="h-4 w-4" />
+                  ) : (
+                    step.id
+                  )}
+                </div>
+                <span
+                  className={cn(
+                    'w-[7.5rem] text-center text-xs leading-snug',
+                    current
+                      ? 'font-medium text-slate-900'
+                      : done
+                        ? 'text-slate-600'
+                        : 'text-slate-500',
+                  )}
+                >
+                  {step.label}
+                </span>
               </div>
-              <span
-                className={cn(
-                  'max-w-28 text-center text-xs leading-tight',
-                  current ? 'font-semibold text-foreground' : 'text-muted-foreground',
-                )}
-              >
-                {step.label}
-              </span>
-            </div>
-            {!isLast && (
-              <div
-                className={cn(
-                  'mt-4 h-0.5 min-w-4 flex-1',
-                  step.id < activeStep ? 'bg-emerald-400' : 'bg-[#E5EAF2]',
-                )}
-                aria-hidden="true"
-              />
-            )}
-          </li>
-        );
-      })}
-    </ol>
+              {!isLast && (
+                <div
+                  className={cn(
+                    'mx-3 mb-[1.625rem] h-0.5 w-20 sm:w-28',
+                    step.id < activeStep ? 'bg-emerald-200' : 'bg-slate-200',
+                  )}
+                  aria-hidden="true"
+                />
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
   );
 }
