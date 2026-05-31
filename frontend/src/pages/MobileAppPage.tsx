@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { CheckCircle2, ChevronDown, Loader2, RotateCcw, Sparkles } from 'lucide-react';
+import { Check, CheckCircle2, Loader2, RotateCcw, Sparkles } from 'lucide-react';
 import type { HttpError } from '@/api/client';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
@@ -20,6 +20,8 @@ import { ApRecommendationCanvas } from '@/features/ap-recommendation/ApRecommend
 import {
   AP_DEFAULT_Z_M,
   buildApRecommendationPayload,
+  getRecommendationRankUi,
+  getRecommendationReason,
   isValidSelectionBBox,
   normalizeRecommendations,
   type MeterBBox,
@@ -35,7 +37,11 @@ const PROGRESS_STEPS = [
   { id: 3, label: '추천 위치 선택' },
 ] as const;
 
-const CARD_BORDER = 'border-slate-200';
+const CARD_BORDER = 'border-[#E5E7EB]';
+
+/** 추천 패널 스크롤 영역 — 연한 하늘/회색 scrollbar */
+const PANEL_SCROLL =
+  '[scrollbar-width:thin] [scrollbar-color:#BDE0FE_transparent] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[#CBD5E1] hover:[&::-webkit-scrollbar-thumb]:bg-[#A2D2FF]';
 
 export default function MobileAppPage() {
   const floorId = useAppStore((s) => s.selectedFloorId);
@@ -79,6 +85,7 @@ export default function MobileAppPage() {
   }, [apLayoutsQuery.data, latestRfRun?.request_json]);
 
   const [pageError, setPageError] = useState<string | null>(null);
+  const [hoveredRank, setHoveredRank] = useState<number | null>(null);
 
   const {
     selectionBBox,
@@ -92,6 +99,8 @@ export default function MobileAppPage() {
     persistSavedSession,
     resetSession,
   } = useApRecommendationSession(floorId, sceneVersionId);
+
+  const highlightedRank = selectedRank ?? hoveredRank;
 
   const recommendMutation = useApRecommendation();
   const createLayout = useCreateApLayout();
@@ -129,6 +138,7 @@ export default function MobileAppPage() {
     setRecommendations([]);
     setSelectedRank(null);
     setSavedRank(null);
+    setHoveredRank(null);
     setPageError(null);
     recommendMutation.reset();
   };
@@ -153,6 +163,7 @@ export default function MobileAppPage() {
 
     setPageError(null);
     setSavedRank(null);
+    setHoveredRank(null);
     recommendMutation.mutate(payload, {
       onSuccess: (data) => {
         const normalized = normalizeRecommendations(data);
@@ -171,6 +182,7 @@ export default function MobileAppPage() {
   const handleResetRecommendation = () => {
     resetSession();
     setPageError(null);
+    setHoveredRank(null);
     recommendMutation.reset();
   };
 
@@ -332,12 +344,20 @@ export default function MobileAppPage() {
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 px-6 pb-5 lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-5 lg:px-8">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 px-6 pb-5 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-5 lg:px-8">
         <div className="flex min-h-0 flex-col gap-3">
+          <div className="w-full shrink-0 rounded-lg border border-[#E5E7EB] bg-white px-8 py-3 sm:px-10">
+            <ProgressStepper
+              activeStep={activeStep}
+              pageStatus={pageStatus}
+              registerStepIconRef={registerStepIconRef}
+            />
+          </div>
+
           <div
             ref={canvasAreaRef}
             className={cn(
-              'relative flex min-h-[min(52vh,32rem)] flex-1 flex-col overflow-hidden rounded-xl border bg-white shadow-sm',
+              'relative flex min-h-[min(52vh,32rem)] flex-1 flex-col overflow-hidden rounded-xl border bg-white',
               CARD_BORDER,
             )}
           >
@@ -359,6 +379,8 @@ export default function MobileAppPage() {
                 onSelectionChange={handleSelectionChange}
                 recommendations={canvasRecommendations}
                 selectedRecommendationRank={selectedRank}
+                highlightedRank={highlightedRank}
+                onMarkerHover={setHoveredRank}
                 disabled={isRecommendPending || createLayout.isPending}
                 dragDisabled={isRecommendPending || hasRecommendation}
               />
@@ -368,59 +390,59 @@ export default function MobileAppPage() {
               <CanvasStatusBubble message={statusHint} leftPx={bubbleLeftPx} />
             )}
           </div>
-
-          <div
-            className={cn(
-              'shrink-0 rounded-lg border bg-white px-3 py-2.5',
-              CARD_BORDER,
-            )}
-          >
-            <ProgressStepper
-              activeStep={activeStep}
-              pageStatus={pageStatus}
-              registerStepIconRef={registerStepIconRef}
-            />
-          </div>
         </div>
 
         <aside
           className={cn(
-            'flex min-h-[260px] flex-col overflow-hidden rounded-xl border bg-white shadow-sm lg:min-h-0 lg:self-stretch',
+            'flex min-h-[260px] flex-col overflow-hidden rounded-xl border bg-white lg:min-h-0 lg:self-stretch',
             CARD_BORDER,
           )}
         >
-          <div className="border-b border-slate-200 px-5 py-4">
-            <h2 className="text-base font-semibold text-slate-900">최적 배치 추천</h2>
+          <div className="border-b border-[#E5E7EB] px-5 py-4">
+            <h2 className="text-base font-semibold text-[#0F172A]">최적 배치 추천</h2>
+            {recommendations.length > 0 && (
+              <p className="mt-1.5 text-xs leading-relaxed text-[#64748B]">
+                선택한 우선 개선 영역과 기존 AP 위치를 함께 고려해 추천했습니다.
+                {recommendations[0]?.candidates_evaluated > 0 && (
+                  <>
+                    {' '}
+                    (총 {recommendations[0].candidates_evaluated}개 후보 비교)
+                  </>
+                )}
+              </p>
+            )}
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <div className={cn('min-h-0 flex-1 overflow-y-auto bg-[#F8FAFC] p-4', PANEL_SCROLL)}>
             {recommendations.length === 0 ? (
               <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-2 px-4 text-center">
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100">
-                  <Sparkles className="h-5 w-5 text-slate-400" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-full border border-[#E2E8F0] bg-white">
+                  <Sparkles className="h-5 w-5 text-[#94A3B8]" />
                 </div>
-                <p className="text-sm font-medium text-slate-700">
+                <p className="text-sm font-medium text-[#0F172A]">
                   {pageStatus === 'loading'
                     ? '최적 위치를 계산하고 있습니다…'
                     : '추천 결과가 아직 없습니다'}
                 </p>
                 {pageStatus !== 'loading' && (
-                  <p className="text-xs leading-relaxed text-slate-500">
+                  <p className="text-xs leading-relaxed text-[#64748B]">
                     도면에서 개선이 필요한 영역을 드래그한 뒤, 최적 배치 추천을 실행하세요.
                   </p>
                 )}
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-4">
                 {recommendations.map((rec) => (
                   <RecommendationCard
                     key={rec.rank}
                     rec={rec}
+                    reason={getRecommendationReason(rec, recommendations, selectionBBox)}
+                    highlighted={highlightedRank === rec.rank}
                     saved={savedRank === rec.rank}
                     saving={createLayout.isPending && selectedRank === rec.rank}
                     saveDisabled={!latestRfRunId || createLayout.isPending}
-                    hasExistingAps={existingAps.length > 0}
                     onSelect={() => handleSelectRecommendation(rec)}
+                    onHover={(active) => setHoveredRank(active ? rec.rank : null)}
                   />
                 ))}
               </div>
@@ -441,18 +463,18 @@ function CanvasStatusBubble({
 }) {
   return (
     <div
-      className="pointer-events-none absolute bottom-3 z-10 -translate-x-1/2"
+      className="pointer-events-none absolute top-3 z-10 -translate-x-1/2"
       style={{ left: leftPx }}
     >
       <div
         key={message}
         className="relative w-max max-w-md animate-bubble-rise rounded-xl border border-sky-200 bg-sky-50/95 px-4 py-2.5 shadow-sm backdrop-blur-sm"
       >
-        <p className="text-center text-xs leading-relaxed text-sky-900/90">{message}</p>
         <span
-          className="absolute -bottom-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 border-b border-r border-sky-200 bg-sky-50/95"
+          className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 border-l border-t border-sky-200 bg-sky-50/95"
           aria-hidden="true"
         />
+        <p className="text-center text-xs leading-relaxed text-sky-900/90">{message}</p>
       </div>
     </div>
   );
@@ -499,102 +521,64 @@ function EmptyState({ message }: { message: string }) {
 
 function RecommendationCard({
   rec,
+  reason,
+  highlighted,
   saved,
   saving,
   saveDisabled,
-  hasExistingAps,
   onSelect,
+  onHover,
 }: {
   rec: ApRecommendationResult;
+  reason: string;
+  highlighted: boolean;
   saved: boolean;
   saving: boolean;
   saveDisabled: boolean;
-  hasExistingAps: boolean;
   onSelect: () => void;
+  onHover: (active: boolean) => void;
 }) {
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  const ui = getRecommendationRankUi(rec.rank);
+  const isPrimary = rec.rank === 1;
 
   return (
     <article
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
       className={cn(
-        'rounded-xl border bg-white p-4 transition-colors',
-        saved ? 'border-emerald-200 shadow-sm' : 'border-slate-200',
+        'flex flex-col gap-4 rounded-xl border border-l-4 bg-white p-5 transition-colors',
+        CARD_BORDER,
+        ui.cardAccentClass,
+        highlighted && isPrimary && !saved && ui.cardHighlightClass,
+        highlighted && !isPrimary && !saved && 'bg-[#EAF4FF]/30',
       )}
     >
       <div className="flex items-start gap-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-sm font-bold text-white">
-          AP
+        <div
+          className={cn(
+            'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs',
+            saved ? 'bg-[#3B82F6] text-white font-bold' : ui.badgeClass,
+          )}
+        >
+          {rec.rank}
         </div>
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold leading-snug text-slate-900">
-            이 위치에 AP를 설치하는 것을
-            <br />
-            추천합니다
-          </h3>
-          <p className="mt-1.5 text-xs leading-relaxed text-slate-500">
-            선택한 영역을 더 안정적으로 커버할 수 있는
-            <br />
-            위치입니다.
-          </p>
+          <h3 className="text-sm font-medium leading-snug text-[#0F172A]">{ui.title}</h3>
+          <p className="mt-1.5 text-xs font-normal leading-relaxed text-[#64748B]">{reason}</p>
         </div>
       </div>
 
-      <div className="mt-4 space-y-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs">
-        <div>
-          <p className="text-slate-500">도면 기준 위치</p>
-          <p className="mt-0.5 font-medium text-slate-900">
-            가로 {rec.recommended_x.toFixed(0)}m · 세로 {rec.recommended_y.toFixed(0)}m
-          </p>
-        </div>
-        {rec.candidates_evaluated > 0 && (
-          <p className="text-slate-500">
-            총 {rec.candidates_evaluated}개 후보 위치를 비교했습니다.
-          </p>
-        )}
-      </div>
-
-      <div className="mt-4">
-        <p className="text-xs font-semibold text-slate-900">추천 이유</p>
-        <ul className="mt-1.5 list-inside list-disc space-y-1 text-xs leading-relaxed text-slate-500">
-          <li>선택한 우선 개선 영역을 기준으로 계산했습니다.</li>
-          {hasExistingAps && <li>기존 AP 위치를 함께 고려했습니다.</li>}
-        </ul>
-      </div>
-
-      <div className="mt-3 border-t border-slate-200 pt-3">
-        <button
-          type="button"
-          onClick={() => setDetailsOpen((v) => !v)}
-          className="flex w-full items-center justify-between text-xs text-slate-500 hover:text-slate-700"
-          aria-expanded={detailsOpen}
-        >
-          <span>상세 정보</span>
-          <ChevronDown
-            className={cn('h-3.5 w-3.5 transition-transform', detailsOpen && 'rotate-180')}
-            aria-hidden="true"
-          />
-        </button>
-        {detailsOpen && (
-          <p className="mt-2 text-[11px] text-slate-500">
-            상세 점수: {rec.score.toFixed(1)}
-          </p>
-        )}
+      <div className="rounded-lg bg-[#F8FAFC] px-3 py-2.5 text-xs">
+        <p className="text-[#64748B]">도면 기준 위치</p>
+        <p className="mt-1 font-medium tabular-nums text-[#0F172A]">
+          가로 {rec.recommended_x.toFixed(1)}m · 세로 {rec.recommended_y.toFixed(1)}m
+        </p>
       </div>
 
       {saved ? (
-        <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
-          <div className="flex gap-2.5">
-            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" aria-hidden="true" />
-            <div className="min-w-0">
-              <p className="text-sm font-semibold text-emerald-900">AP 배치로 저장 완료</p>
-              <p className="mt-1 text-xs leading-relaxed text-emerald-800/90">
-                저장된 AP 배치 목록에 반영됩니다.
-              </p>
-              <p className="mt-1.5 text-xs leading-relaxed text-emerald-800/75">
-                다른 영역을 추천하려면 다시 생성하기를 눌러주세요.
-              </p>
-            </div>
-          </div>
+        <div className="flex items-center gap-2 rounded-lg bg-[#F8FAFC] px-3 py-2.5">
+          <CheckCircle2 className="h-4 w-4 shrink-0 text-[#3B82F6]" aria-hidden="true" />
+          <p className="text-sm font-normal text-[#0F172A]">AP 배치로 저장됨</p>
         </div>
       ) : (
         <button
@@ -602,8 +586,8 @@ function RecommendationCard({
           onClick={onSelect}
           disabled={saveDisabled}
           className={cn(
-            'mt-4 w-full rounded-lg border border-slate-200 bg-slate-50 py-2.5 text-sm font-medium text-slate-900 transition-colors',
-            'hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50',
+            'flex h-11 w-full items-center justify-center rounded-xl border border-[#CBD5E1] bg-white text-sm font-medium text-[#0F172A] transition-colors',
+            'hover:border-[#94A3B8] hover:bg-[#F8FAFC] disabled:cursor-not-allowed disabled:opacity-50',
           )}
         >
           {saving ? (
@@ -629,64 +613,67 @@ function ProgressStepper({
   pageStatus: PageStatus;
   registerStepIconRef?: (index: number, el: HTMLDivElement | null) => void;
 }) {
-  return (
-    <div className="flex justify-center">
-      <ol className="flex items-center">
-        {PROGRESS_STEPS.map((step, index) => {
-          const done =
-            step.id < activeStep ||
-            (step.id === 1 && pageStatus !== 'idle') ||
-            (step.id === 2 && (pageStatus === 'success' || pageStatus === 'loading'));
-          const current = step.id === activeStep && pageStatus !== 'error';
-          const isLast = index === PROGRESS_STEPS.length - 1;
+  const isStepDone = (stepId: number) =>
+    stepId < activeStep ||
+    (stepId === 1 && pageStatus !== 'idle') ||
+    (stepId === 2 && (pageStatus === 'success' || pageStatus === 'loading'));
 
-          return (
-            <li key={step.id} className="flex items-center">
-              <div className="flex flex-col items-center gap-1.5">
-                <div
-                  ref={(el) => registerStepIconRef?.(index, el)}
-                  className={cn(
-                    'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold',
-                    done &&
-                      !current &&
-                      'bg-emerald-500 text-white ring-1 ring-emerald-200/80',
-                    current &&
-                      'bg-blue-500 text-white ring-4 ring-blue-100 shadow-sm shadow-blue-500/20',
-                    !done && !current && 'bg-slate-200 text-slate-500',
-                  )}
-                >
-                  {done && !current ? (
-                    <CheckCircle2 className="h-4 w-4" />
-                  ) : (
-                    step.id
-                  )}
-                </div>
-                <span
-                  className={cn(
-                    'w-[7.5rem] text-center text-xs leading-snug',
-                    current
-                      ? 'font-medium text-slate-900'
-                      : done
-                        ? 'text-slate-600'
-                        : 'text-slate-500',
-                  )}
-                >
-                  {step.label}
-                </span>
+  return (
+    <ol className="grid w-full grid-cols-3 items-start">
+      {PROGRESS_STEPS.map((step, index) => {
+        const done = isStepDone(step.id);
+        const current = step.id === activeStep && pageStatus !== 'error';
+        const isFirst = index === 0;
+        const isLast = index === PROGRESS_STEPS.length - 1;
+        const lineBeforeDone = !isFirst && isStepDone(PROGRESS_STEPS[index - 1]!.id);
+        const lineAfterDone = !isLast && isStepDone(step.id);
+
+        return (
+          <li key={step.id} className="flex min-w-0 flex-col items-center">
+            <div className="flex w-full items-center">
+              <div
+                className={cn(
+                  'h-px flex-1',
+                  isFirst ? 'bg-transparent' : lineBeforeDone ? 'bg-primary/20' : 'bg-[#E5E7EB]',
+                )}
+                aria-hidden="true"
+              />
+              <div
+                ref={(el) => registerStepIconRef?.(index, el)}
+                className={cn(
+                  'mx-2 flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full text-[10px] font-medium',
+                  done &&
+                    !current &&
+                    'border border-primary/25 bg-primary/10 text-primary',
+                  current && 'bg-primary text-primary-foreground',
+                  !done && !current && 'border border-[#E5E7EB] bg-white text-[#64748B]',
+                )}
+              >
+                {done && !current ? (
+                  <Check className="h-2.5 w-2.5" strokeWidth={2.5} aria-hidden="true" />
+                ) : (
+                  step.id
+                )}
               </div>
-              {!isLast && (
-                <div
-                  className={cn(
-                    'mx-3 mb-[1.625rem] h-0.5 w-20 sm:w-28',
-                    step.id < activeStep ? 'bg-emerald-200' : 'bg-slate-200',
-                  )}
-                  aria-hidden="true"
-                />
+              <div
+                className={cn(
+                  'h-px flex-1',
+                  isLast ? 'bg-transparent' : lineAfterDone ? 'bg-primary/20' : 'bg-[#E5E7EB]',
+                )}
+                aria-hidden="true"
+              />
+            </div>
+            <span
+              className={cn(
+                'mt-1.5 w-full px-1 text-center text-xs leading-snug',
+                current ? 'font-normal text-primary' : 'font-normal text-[#64748B]',
               )}
-            </li>
-          );
-        })}
-      </ol>
-    </div>
+            >
+              {step.label}
+            </span>
+          </li>
+        );
+      })}
+    </ol>
   );
 }

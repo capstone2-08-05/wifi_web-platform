@@ -35,7 +35,9 @@ import {
   CANVAS_OBJECT_LABEL,
   CANVAS_OBJECT_STROKE,
   CANVAS_WALL,
-  CANVAS_WINDOW,
+  CANVAS_WINDOW_ACTIVE,
+  CANVAS_WINDOW_LABEL,
+  CANVAS_WINDOW_STROKE,
 } from '@/lib/canvas-scene-colors';
 import type { EditorTool } from '@/stores/editor-store';
 
@@ -229,7 +231,7 @@ const POLYGON_CLOSE_THRESHOLD_M = 0.4;
 /** 벽·문·창 실선/미리보기 점선 공통 stroke (OpeningShape·WallShape 와 동일). */
 const STROKE_WALL = CANVAS_WALL;
 const STROKE_DOOR = CANVAS_BLUE;
-const STROKE_WINDOW = CANVAS_WINDOW;
+const STROKE_WINDOW = CANVAS_WINDOW_STROKE;
 
 /** 끝점 스냅 반경 (미터). 이 안에 기존 끝점이 있으면 딱 붙음. */
 const SNAP_RADIUS_M = 0.25;
@@ -1956,7 +1958,12 @@ function OpeningShape({
   const [start, end] = coords;
   if (!start || !end) return null;
   const isDoor = opening.opening_type === 'door';
-  const baseColor = isDoor ? STROKE_DOOR : STROKE_WINDOW;
+  const strokeColor = isDoor
+    ? STROKE_DOOR
+    : selected
+      ? CANVAS_WINDOW_ACTIVE
+      : STROKE_WINDOW;
+  const labelColor = isDoor ? STROKE_DOOR : CANVAS_WINDOW_LABEL;
   const label = isDoor ? '문' : '창문';
   // 라벨은 선의 중점에서 수직 방향으로 살짝 떨어뜨려 배치.
   const midX = (start[0] + end[0]) / 2;
@@ -1988,7 +1995,7 @@ function OpeningShape({
         y1={start[1]}
         x2={end[0]}
         y2={end[1]}
-        stroke={baseColor}
+        stroke={strokeColor}
         strokeWidth={selected ? 8 : 5}
         strokeLinecap="butt"
         vectorEffect="non-scaling-stroke"
@@ -2001,7 +2008,7 @@ function OpeningShape({
         dominantBaseline="middle"
         fontSize={OPENING_LABEL_FONT_SIZE_M}
         fontWeight="500"
-        fill={baseColor}
+        fill={labelColor}
         pointerEvents="none"
         style={{ userSelect: 'none' }}
       >

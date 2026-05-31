@@ -17,7 +17,7 @@ import {
   CANVAS_OBJECT_FILL,
   CANVAS_OBJECT_LABEL,
   CANVAS_OBJECT_STROKE,
-  CANVAS_WINDOW,
+  CANVAS_WINDOW_STROKE,
 } from '@/lib/canvas-scene-colors';
 
 export type MeasurementPointQuality = 'good' | 'warning' | 'poor';
@@ -558,7 +558,7 @@ function OpeningShape({ opening }: { opening: DraftOpening }) {
   const end = g.coordinates[g.coordinates.length - 1];
   if (!start || !end) return null;
   const isDoor = opening.opening_type === 'door';
-  const color = isDoor ? CANVAS_BLUE : CANVAS_WINDOW;
+  const color = isDoor ? CANVAS_BLUE : CANVAS_WINDOW_STROKE;
   return (
     <line
       x1={start[0]}

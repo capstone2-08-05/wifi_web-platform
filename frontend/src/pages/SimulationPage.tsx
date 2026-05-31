@@ -293,7 +293,7 @@ export default function SimulationPage() {
           ctaTo="/editor"
         />
       ) : (
-        <div className="mt-4 grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[1fr_300px]">
+        <div className="mt-4 grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[1fr_340px]">
           <div className="relative min-h-0 overflow-hidden rounded-lg border border-slate-200 bg-white">
             {state === 'idle' ? (
               <>

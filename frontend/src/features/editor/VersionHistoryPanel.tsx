@@ -14,7 +14,7 @@ interface Props {
 }
 
 /**
- * §7.3 버전 히스토리 패널. PromotedCard 하단에 토글로 노출.
+ * §7.3 도면 버전 패널. PromotedCard 하단에 토글로 노출.
  * - 클릭 → PATCH /scene-versions/{id}/set-current
  * - 휴지통 → DELETE /scene-versions/{id} (children · rf_runs · patch_logs cascade)
  */
@@ -47,7 +47,7 @@ export function VersionHistoryPanel({ versions, onSwitched }: Props) {
       >
         <span className="inline-flex items-center gap-1.5">
           <History className="h-3.5 w-3.5 text-muted-foreground" />
-          버전 히스토리 ({versions.length}개)
+          도면 버전 ({versions.length}개)
         </span>
         {open ? (
           <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" />

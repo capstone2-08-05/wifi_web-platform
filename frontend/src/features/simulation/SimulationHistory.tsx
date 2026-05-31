@@ -29,12 +29,12 @@ export function SimulationHistory({ items, isLoading, showCompareButton, onSelec
 
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-3">
-      <header className={cn(expanded && 'mb-2.5')}>
+      <header className={cn('py-[3px]', expanded && 'mb-3')}>
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
-          className="flex w-full items-start justify-between gap-2 text-left"
+          className="flex w-full items-start justify-between gap-2 py-[3px] text-left"
         >
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
@@ -45,7 +45,7 @@ export function SimulationHistory({ items, isLoading, showCompareButton, onSelec
               )}
             </div>
             {expanded && (
-              <p className="mt-0.5 pl-5 text-[11px] leading-relaxed text-slate-500">
+              <p className="mt-1 pl-5 text-[11px] leading-relaxed text-slate-500">
                 최근 실행 결과를 비교해볼 수 있습니다.
               </p>
             )}
@@ -124,7 +124,7 @@ function HistoryCard({
       )}
     >
       <div className="flex items-start justify-between gap-2">
-        <span className="text-xs font-medium text-slate-800">{title}</span>
+        <span className="text-[13px] font-medium text-slate-800">{title}</span>
         {isBest ? (
           <span className="shrink-0 rounded border border-blue-100 bg-blue-50 px-2 py-0.5 text-xs text-blue-600">
             최고
@@ -143,7 +143,7 @@ function HistoryCard({
         )}
       </div>
 
-      <div className="mt-2 space-y-1">
+      <div className="mt-1 space-y-1">
         <p className="text-[11px] text-slate-500">
           평균 신호 세기
           <span className="ml-2 font-medium tabular-nums text-slate-700">
@@ -182,7 +182,7 @@ function HistoryCardSkeleton() {
         <div className="h-3.5 w-24 rounded bg-slate-100" />
         <div className="h-5 w-10 rounded bg-slate-100" />
       </div>
-      <div className="mt-2 space-y-1">
+      <div className="mt-1 space-y-1">
         <div className="h-2.5 w-36 rounded bg-slate-100" />
         <div className="flex items-center justify-between gap-2">
           <div className="h-2.5 w-32 rounded bg-slate-100" />
