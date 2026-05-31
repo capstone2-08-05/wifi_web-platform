@@ -586,11 +586,8 @@ function RecommendationCard({
           onClick={onSelect}
           disabled={saveDisabled}
           className={cn(
-            'flex h-11 w-full items-center justify-center rounded-xl text-sm font-medium transition-colors',
-            'disabled:cursor-not-allowed disabled:opacity-50',
-            isPrimary
-              ? 'border border-[#3B82F6] bg-[#3B82F6] text-white hover:bg-[#2563EB] hover:border-[#2563EB]'
-              : 'border border-[#CBD5E1] bg-white text-[#0F172A] hover:border-[#94A3B8] hover:bg-[#F8FAFC]',
+            'flex h-11 w-full items-center justify-center rounded-xl border border-[#CBD5E1] bg-white text-sm font-medium text-[#0F172A] transition-colors',
+            'hover:border-[#94A3B8] hover:bg-[#F8FAFC] disabled:cursor-not-allowed disabled:opacity-50',
           )}
         >
           {saving ? (
