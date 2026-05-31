@@ -59,19 +59,17 @@ export function buildApRecommendationPayload(params: {
   };
 }
 
-/** 단일 응답 → rank 배열. 추후 복수 추천 API 대응용. */
+/** 응답 → UI 표시용 배열로 normalize. */
 export function normalizeRecommendations(
-  response: ApRecommendationResponse | ApRecommendationResponse[] | null | undefined,
+  response: ApRecommendationResponse | null | undefined,
 ): ApRecommendationResult[] {
   if (!response) return [];
-  const list = Array.isArray(response) ? response : [response];
-  return list.map((item, i) => ({
-    rank: i + 1,
+  return response.recommendations.map((item) => ({
+    rank: item.rank,
     recommended_x: item.recommended_x,
     recommended_y: item.recommended_y,
     score: item.score,
-    status: item.status,
-    candidates_evaluated: item.candidates_evaluated,
+    candidates_evaluated: response.candidates_evaluated,
   }));
 }
 

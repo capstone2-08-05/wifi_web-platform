@@ -22,21 +22,26 @@ export interface ApRecommendationRequest {
   shadow_penalty?: number;
 }
 
-/** POST /ap-recommendation 응답 (backend ApRecommendationResponse). */
-export interface ApRecommendationResponse {
+/** POST /ap-recommendation 응답 내 단일 추천 항목. */
+export interface ApRecommendationItem {
+  rank: number;
   recommended_x: number;
   recommended_y: number;
   score: number;
+}
+
+/** POST /ap-recommendation 응답 (backend ApRecommendationResponse). */
+export interface ApRecommendationResponse {
+  recommendations: ApRecommendationItem[];
   status: string;
   candidates_evaluated: number;
 }
 
-/** UI 표시용 — 단일/복수 응답 모두 배열로 normalize. */
+/** UI 표시용. */
 export interface ApRecommendationResult {
   rank: number;
   recommended_x: number;
   recommended_y: number;
   score: number;
-  status: string;
   candidates_evaluated: number;
 }
