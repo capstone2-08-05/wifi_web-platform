@@ -12,6 +12,13 @@ import type {
   SceneVersion,
 } from '@/types/scene';
 import { cn } from '@/lib/utils';
+import {
+  CANVAS_BLUE,
+  CANVAS_OBJECT_FILL,
+  CANVAS_OBJECT_LABEL,
+  CANVAS_OBJECT_STROKE,
+  CANVAS_WINDOW,
+} from '@/lib/canvas-scene-colors';
 
 export type MeasurementPointQuality = 'good' | 'warning' | 'poor';
 
@@ -419,7 +426,7 @@ export function MeasurementCanvas({
           <polyline
             points={sortedPoints.map((p) => `${p.x_m},${p.y_m}`).join(' ')}
             fill="none"
-            stroke="oklch(0.6 0.18 255)"
+            stroke={CANVAS_BLUE}
             strokeWidth="2"
             strokeDasharray="6 4"
             vectorEffect="non-scaling-stroke"
@@ -551,7 +558,7 @@ function OpeningShape({ opening }: { opening: DraftOpening }) {
   const end = g.coordinates[g.coordinates.length - 1];
   if (!start || !end) return null;
   const isDoor = opening.opening_type === 'door';
-  const color = isDoor ? 'oklch(0.55 0.22 264)' : 'oklch(0.7 0.18 200)';
+  const color = isDoor ? CANVAS_BLUE : CANVAS_WINDOW;
   return (
     <line
       x1={start[0]}
@@ -585,8 +592,8 @@ function ObjectShape({ object }: { object: DraftObject }) {
         width={w}
         height={h}
         rx="0.15"
-        fill="oklch(0.95 0.03 240)"
-        stroke="oklch(0.74 0.08 240)"
+        fill={CANVAS_OBJECT_FILL}
+        stroke={CANVAS_OBJECT_STROKE}
         strokeWidth="1.5"
         vectorEffect="non-scaling-stroke"
       />
@@ -598,7 +605,7 @@ function ObjectShape({ object }: { object: DraftObject }) {
           dominantBaseline="middle"
           fontSize={Math.min(w, h) * 0.22}
           fontWeight="500"
-          fill="oklch(0.4 0.04 240)"
+          fill={CANVAS_OBJECT_LABEL}
         >
           {label}
         </text>
@@ -623,7 +630,7 @@ function objectTypeLabel(t: string | null | undefined): string | null {
 }
 
 function ApMarker({ ap }: { ap: PlacedApSimple }) {
-  const fill = 'oklch(0.55 0.22 254)';
+  const fill = CANVAS_BLUE;
   const r = AP_MARKER_RADIUS_M;
   const iconSize = r * 1.1;
   const iconScale = iconSize / 24;
@@ -651,7 +658,7 @@ function ApMarker({ ap }: { ap: PlacedApSimple }) {
           dominantBaseline="middle"
           fontSize={AP_LABEL_FONT_SIZE_M}
           fontWeight="600"
-          fill="oklch(0.4 0.1 254)"
+          fill={fill}
         >
           {ap.label}
         </text>

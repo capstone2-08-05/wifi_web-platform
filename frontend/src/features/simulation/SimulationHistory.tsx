@@ -1,11 +1,11 @@
-import { ArrowLeftRight, Clock } from 'lucide-react';
+import { useState } from 'react';
+import { ArrowLeftRight, ChevronDown, History } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export interface SimulationHistoryItem {
   id: string;
-  label: string;
-  timeLabel: string;
-  /** 메트릭이 RfMap 에 있어서 history list 에선 비어있을 수 있음. null → "—" 표시. */
+  /** RF Run.created_at (ISO) — 카드 제목·실행 시점 표시용. */
+  createdAt: string;
   avgRssiDbm: number | null;
   coveragePercent: number | null;
   active?: boolean;
@@ -13,75 +13,248 @@ export interface SimulationHistoryItem {
 
 interface Props {
   items: SimulationHistoryItem[];
+  isLoading?: boolean;
   showCompareButton?: boolean;
   onSelect?: (id: string) => void;
-  emptyMessage?: string;
 }
 
-export function SimulationHistory({ items, showCompareButton, onSelect, emptyMessage }: Props) {
+type CoverageStatus = {
+  label: string;
+  badgeClass: string;
+};
+
+export function SimulationHistory({ items, isLoading, showCompareButton, onSelect }: Props) {
+  const [expanded, setExpanded] = useState(true);
+  const bestId = findBestResultId(items);
+
   return (
-    <section className="rounded-2xl border bg-background p-5 shadow-sm">
-      <header className="mb-4 flex items-center gap-2">
-        <Clock className="h-4 w-4 text-foreground/70" strokeWidth={2} />
-        <h3 className="text-sm font-bold">시뮬레이션 기록</h3>
-      </header>
-
-      {items.length === 0 ? (
-        <p className="py-2 text-xs text-muted-foreground">
-          {emptyMessage ?? '아직 시뮬레이션 기록이 없습니다.'}
-        </p>
-      ) : (
-        <ul className="space-y-3">
-          {items.map((item) => (
-            <li key={item.id}>
-              <button
-                type="button"
-                onClick={() => onSelect?.(item.id)}
-                disabled={!onSelect}
-                className={cn(
-                  'w-full rounded-lg border p-3 text-left transition-colors hover:border-primary/40 disabled:cursor-default',
-                  item.active && 'border-primary/40 bg-primary/5',
-                )}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <span className="text-sm font-semibold">{item.label}</span>
-                  <span className="shrink-0 rounded-full bg-muted/60 px-2 py-0.5 text-[11px] text-muted-foreground">
-                    {item.timeLabel}
-                  </span>
-                </div>
-                <div className="mt-2 flex items-center gap-3 text-[12px] text-muted-foreground">
-                  <span>
-                    평균:{' '}
-                    <span className="font-semibold text-foreground">
-                      {item.avgRssiDbm == null ? '—' : `${formatNum(item.avgRssiDbm)}dBm`}
-                    </span>
-                  </span>
-                  <span>
-                    커버리지:{' '}
-                    <span className="font-semibold text-foreground">
-                      {item.coveragePercent == null ? '—' : `${formatNum(item.coveragePercent)}%`}
-                    </span>
-                  </span>
-                </div>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {showCompareButton && (
+    <section className="rounded-lg border border-slate-200 bg-white p-3">
+      <header className={cn(expanded && 'mb-2.5')}>
         <button
           type="button"
-          className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-primary/40 bg-background py-2.5 text-sm font-semibold text-primary hover:bg-primary/5"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="flex w-full items-start justify-between gap-2 text-left"
         >
-          <ArrowLeftRight className="h-4 w-4" />두 시뮬레이션 결과 비교하기
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <History className="h-3.5 w-3.5 shrink-0 text-slate-400" strokeWidth={2} />
+              <h3 className="text-sm font-semibold text-slate-900">시뮬레이션 기록</h3>
+              {!isLoading && items.length > 0 && (
+                <span className="text-[10px] text-slate-400">({items.length})</span>
+              )}
+            </div>
+            {expanded && (
+              <p className="mt-0.5 pl-5 text-[11px] leading-relaxed text-slate-500">
+                최근 실행 결과를 비교해볼 수 있습니다.
+              </p>
+            )}
+          </div>
+          <ChevronDown
+            className={cn(
+              'mt-0.5 h-4 w-4 shrink-0 text-slate-400 transition-transform',
+              expanded && 'rotate-180',
+            )}
+            aria-hidden
+          />
+        </button>
+      </header>
+
+      {expanded &&
+        (isLoading ? (
+          <ul className="space-y-1.5" aria-busy="true" aria-label="기록 불러오는 중">
+            {Array.from({ length: 3 }, (_, i) => (
+              <li key={i}>
+                <HistoryCardSkeleton />
+              </li>
+            ))}
+          </ul>
+        ) : items.length === 0 ? (
+          <EmptyHistoryState />
+        ) : (
+          <ul className="space-y-1.5">
+            {items.map((item) => (
+              <li key={item.id}>
+                <HistoryCard
+                  item={item}
+                  isBest={item.id === bestId}
+                  onSelect={onSelect}
+                />
+              </li>
+            ))}
+          </ul>
+        ))}
+
+      {expanded && showCompareButton && (
+        <button
+          type="button"
+          className="mt-2.5 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-white py-1.5 text-xs font-medium text-blue-600 transition-colors hover:bg-slate-50"
+        >
+          <ArrowLeftRight className="h-3.5 w-3.5" />
+          두 시뮬레이션 결과 비교하기
         </button>
       )}
     </section>
   );
 }
 
-/** 소수 셋째자리에서 반올림 → 둘째자리까지 표시. 정수면 trailing 0 안 붙음. */
-function formatNum(n: number): string {
-  return Number(n.toFixed(2)).toString();
+function HistoryCard({
+  item,
+  isBest,
+  onSelect,
+}: {
+  item: SimulationHistoryItem;
+  isBest: boolean;
+  onSelect?: (id: string) => void;
+}) {
+  const status = getCoverageStatus(item.coveragePercent);
+  const title = formatExecutionLabel(item.createdAt);
+  const shortId = item.id.slice(0, 6);
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect?.(item.id)}
+      disabled={!onSelect}
+      className={cn(
+        'relative w-full rounded-md border border-slate-200 bg-white p-2.5 text-left transition-colors disabled:cursor-default',
+        isBest && 'border-l-4 border-l-blue-500 pl-2',
+        item.active && 'border-blue-300 bg-blue-50/60',
+        !item.active && 'hover:border-slate-300',
+      )}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <span className="text-xs font-medium text-slate-800">{title}</span>
+        {isBest ? (
+          <span className="shrink-0 rounded border border-blue-100 bg-blue-50 px-2 py-0.5 text-xs text-blue-600">
+            최고
+          </span>
+        ) : (
+          status && (
+            <span
+              className={cn(
+                'shrink-0 rounded border px-1.5 py-0.5 text-xs',
+                status.badgeClass,
+              )}
+            >
+              {status.label}
+            </span>
+          )
+        )}
+      </div>
+
+      <div className="mt-2 space-y-1">
+        <p className="text-[11px] text-slate-500">
+          평균 신호 세기
+          <span className="ml-2 font-medium tabular-nums text-slate-700">
+            {item.avgRssiDbm == null ? '—' : formatRssi(item.avgRssiDbm)}
+          </span>
+        </p>
+        <p className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+          <span>
+            안정 커버리지
+            <span className="ml-2 font-medium tabular-nums text-slate-700">
+              {item.coveragePercent == null ? '—' : formatCoverage(item.coveragePercent)}
+            </span>
+          </span>
+          <span className="shrink-0 tabular-nums text-[10px] text-slate-400/80">#{shortId}</span>
+        </p>
+      </div>
+    </button>
+  );
+}
+
+function EmptyHistoryState() {
+  return (
+    <div className="rounded-md border border-dashed border-slate-200 px-3 py-5 text-center">
+      <p className="text-xs font-medium text-slate-700">아직 실행된 시뮬레이션이 없습니다.</p>
+      <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
+        AP를 배치한 뒤 시뮬레이션을 실행하면 결과가 여기에 표시됩니다.
+      </p>
+    </div>
+  );
+}
+
+function HistoryCardSkeleton() {
+  return (
+    <div className="animate-pulse rounded-md border border-slate-200 bg-white p-2.5">
+      <div className="flex items-start justify-between gap-2">
+        <div className="h-3.5 w-24 rounded bg-slate-100" />
+        <div className="h-5 w-10 rounded bg-slate-100" />
+      </div>
+      <div className="mt-2 space-y-1">
+        <div className="h-2.5 w-36 rounded bg-slate-100" />
+        <div className="flex items-center justify-between gap-2">
+          <div className="h-2.5 w-32 rounded bg-slate-100" />
+          <div className="h-2.5 w-10 rounded bg-slate-100" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 커버리지 ≥70% 양호 · ≥40% 일부 개선 필요 · 그 미만 개선 필요 */
+function getCoverageStatus(coverage: number | null): CoverageStatus | null {
+  if (coverage == null) return null;
+  if (coverage >= 70) {
+    return {
+      label: '양호',
+      badgeClass: 'border-slate-100 bg-slate-50 text-slate-600',
+    };
+  }
+  if (coverage >= 40) {
+    return {
+      label: '일부 개선 필요',
+      badgeClass: 'border-amber-100/80 bg-amber-50 text-amber-600',
+    };
+  }
+  return {
+    label: '개선 필요',
+    badgeClass: 'border-slate-100 bg-slate-50 text-slate-500',
+  };
+}
+
+/** 커버리지 최대 → 동률이면 평균 신호 세기(dBm)가 더 높은(덜 음수) 항목. */
+function findBestResultId(items: SimulationHistoryItem[]): string | null {
+  const ranked = items.filter((item) => item.coveragePercent != null);
+  if (ranked.length === 0) return null;
+
+  let best = ranked[0];
+  for (let i = 1; i < ranked.length; i += 1) {
+    const candidate = ranked[i];
+    const cmp = compareResults(candidate, best);
+    if (cmp > 0) best = candidate;
+  }
+  return best.id;
+}
+
+function compareResults(a: SimulationHistoryItem, b: SimulationHistoryItem): number {
+  const ac = a.coveragePercent ?? -Infinity;
+  const bc = b.coveragePercent ?? -Infinity;
+  if (ac !== bc) return ac - bc;
+
+  const ar = a.avgRssiDbm;
+  const br = b.avgRssiDbm;
+  if (ar == null && br == null) return 0;
+  if (ar == null) return -1;
+  if (br == null) return 1;
+  return ar - br;
+}
+
+function formatExecutionLabel(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '실행 기록';
+  const month = d.getMonth() + 1;
+  const day = d.getDate();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${month}월 ${day}일 ${hh}:${mm} 실행`;
+}
+
+function formatRssi(n: number): string {
+  return `${n.toFixed(1)} dBm`;
+}
+
+function formatCoverage(n: number): string {
+  return `${n.toFixed(1)}%`;
 }

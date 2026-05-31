@@ -8,6 +8,7 @@ import {
 import type { ApRecommendationResult } from '@/types/ap-recommendation';
 import type { DraftOpening, DraftWall, SceneVersion } from '@/types/scene';
 import { cn } from '@/lib/utils';
+import { CANVAS_BLUE, CANVAS_WINDOW } from '@/lib/canvas-scene-colors';
 import {
   clampCoord,
   clampMeterBBox,
@@ -31,6 +32,29 @@ const DRAG_THRESHOLD_M = 0.15;
 /** viewBox 너비 비율 — 도면 스케일과 무관하게 화면에서 읽기 쉬운 라벨 크기 */
 const CANVAS_LABEL_VB_RATIO = 0.018;
 
+const SELECTION_BADGE_LABEL = '우선 개선 영역';
+/** 우선 개선 영역 — bright lemon yellow (문·창문·primary blue 와 구분) */
+const SELECTION_FILL = 'rgba(254, 240, 138, 0.35)';
+const SELECTION_FILL_PREVIEW = 'rgba(254, 240, 138, 0.28)';
+const SELECTION_STROKE = '#FACC15';
+const SELECTION_LABEL_BG = '#FACC15';
+const SELECTION_LABEL_TEXT = '#111827';
+/** 선택 rect 모서리 — 도면 미터 좌표 기준 */
+const SELECTION_CORNER_R = 0.14;
+
+function selectionBadgeMetrics(labelFontM: number) {
+  const font = labelFontM * 0.92;
+  const padX = labelFontM * 0.24;
+  let textWidth = 0;
+  for (const ch of SELECTION_BADGE_LABEL) {
+    textWidth += ch === ' ' ? font * 0.28 : font * 0.88;
+  }
+  const width = padX * 2 + textWidth;
+  const height = labelFontM * 1.45;
+  const cornerR = labelFontM * 0.22;
+  return { font, padX, width, height, cornerR };
+}
+
 function canvasLabelFontM(viewBoxW: number): number {
   return viewBoxW * CANVAS_LABEL_VB_RATIO;
 }
@@ -44,6 +68,8 @@ interface Props {
   recommendations: ApRecommendationResult[];
   selectedRecommendationRank: number | null;
   disabled?: boolean;
+  /** true면 새 우선 개선 영역 드래그 불가 (추천 완료·계산 중) */
+  dragDisabled?: boolean;
 }
 
 interface Bounds {
@@ -96,7 +122,9 @@ export function ApRecommendationCanvas({
   recommendations,
   selectedRecommendationRank,
   disabled = false,
+  dragDisabled = false,
 }: Props) {
+  const interactionBlocked = disabled || dragDisabled;
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<{ start: Coord; current: Coord } | null>(null);
 
@@ -137,7 +165,7 @@ export function ApRecommendationCanvas({
   };
 
   const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (disabled) return;
+    if (interactionBlocked) return;
     const pt = getSvgPoint(e);
     if (!pt) return;
     svgRef.current?.setPointerCapture(e.pointerId);
@@ -145,6 +173,7 @@ export function ApRecommendationCanvas({
   };
 
   const handlePointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (interactionBlocked) return;
     if (!drag) return;
     const pt = getSvgPoint(e);
     if (!pt) return;
@@ -152,6 +181,7 @@ export function ApRecommendationCanvas({
   };
 
   const finishDrag = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (interactionBlocked) return;
     if (!drag) return;
     try {
       svgRef.current?.releasePointerCapture(e.pointerId);
@@ -179,8 +209,10 @@ export function ApRecommendationCanvas({
   const showDragPreview =
     dragRect && (dragRect.w >= DRAG_THRESHOLD_M || dragRect.h >= DRAG_THRESHOLD_M);
   const labelFontM = canvasLabelFontM(vb.w);
-  const selectionBadgeH = labelFontM * 1.55;
-  const selectionBadgeW = labelFontM * 8.2;
+  const selectionBadge = selectionBadgeMetrics(labelFontM);
+  const selectionBadgeY = clampedSelectionBBox
+    ? Math.max(sceneBounds.yMin, clampedSelectionBBox.y_min - selectionBadge.height)
+    : 0;
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-[#f8fafc] [background-image:radial-gradient(circle,oklch(0.92_0_0)_1px,transparent_1px)] bg-size-[18px_18px] bg-position-[0_0]">
@@ -191,7 +223,9 @@ export function ApRecommendationCanvas({
         overflow="hidden"
         className={cn(
           'h-full w-full select-none touch-none',
-          disabled ? 'cursor-not-allowed opacity-60' : 'cursor-crosshair',
+          disabled && 'cursor-not-allowed opacity-60',
+          !disabled && dragDisabled && 'cursor-default',
+          !disabled && !dragDisabled && 'cursor-crosshair',
         )}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
@@ -230,15 +264,6 @@ export function ApRecommendationCanvas({
           {(sceneVersion?.openings ?? []).map((o) => (
             <OpeningShape key={o.id} opening={o} />
           ))}
-
-          {recommendations.map((rec) => (
-            <RecommendationMarker
-              key={rec.rank}
-              rec={rec}
-              selected={selectedRecommendationRank === rec.rank}
-              labelFontM={labelFontM}
-            />
-          ))}
         </g>
 
         {/* 선택 영역 — clamp된 좌표, clipPath 밖(배지가 상단에서 잘리지 않도록) */}
@@ -250,24 +275,28 @@ export function ApRecommendationCanvas({
                 y={clampedSelectionBBox.y_min}
                 width={clampedSelectionBBox.x_max - clampedSelectionBBox.x_min}
                 height={clampedSelectionBBox.y_max - clampedSelectionBBox.y_min}
-                fill="rgb(37 99 235 / 0.22)"
-                stroke="rgb(37 99 235)"
+                rx={SELECTION_CORNER_R}
+                ry={SELECTION_CORNER_R}
+                fill={SELECTION_FILL}
+                stroke={SELECTION_STROKE}
                 strokeWidth="1.5"
                 vectorEffect="non-scaling-stroke"
               />
               <rect
                 x={clampedSelectionBBox.x_min}
-                y={clampedSelectionBBox.y_min - selectionBadgeH}
-                width={selectionBadgeW}
-                height={selectionBadgeH}
-                fill="oklch(0.55 0.22 254)"
+                y={selectionBadgeY}
+                width={selectionBadge.width}
+                height={selectionBadge.height}
+                rx={selectionBadge.cornerR}
+                ry={selectionBadge.cornerR}
+                fill={SELECTION_LABEL_BG}
               />
               <text
-                x={clampedSelectionBBox.x_min + labelFontM * 0.45}
-                y={clampedSelectionBBox.y_min - selectionBadgeH * 0.38}
-                fontSize={labelFontM * 0.92}
-                fontWeight="600"
-                fill="white"
+                x={clampedSelectionBBox.x_min + selectionBadge.padX}
+                y={selectionBadgeY + selectionBadge.height * 0.62}
+                fontSize={selectionBadge.font}
+                fontWeight="500"
+                fill={SELECTION_LABEL_TEXT}
                 style={{ userSelect: 'none' }}
               >
                 우선 개선 영역
@@ -281,13 +310,27 @@ export function ApRecommendationCanvas({
               y={dragRect.y}
               width={dragRect.w}
               height={dragRect.h}
-              fill="rgb(37 99 235 / 0.18)"
-              stroke="rgb(37 99 235)"
+              rx={SELECTION_CORNER_R}
+              ry={SELECTION_CORNER_R}
+              fill={SELECTION_FILL_PREVIEW}
+              stroke={SELECTION_STROKE}
               strokeWidth="1.5"
               strokeDasharray="4 3"
               vectorEffect="non-scaling-stroke"
             />
           )}
+        </g>
+
+        {/* 추천 AP 마커 — 선택 영역 위에 표시 */}
+        <g pointerEvents="none">
+          {recommendations.map((rec) => (
+            <RecommendationMarker
+              key={rec.rank}
+              rec={rec}
+              selected={selectedRecommendationRank === rec.rank}
+              labelFontM={labelFontM}
+            />
+          ))}
         </g>
       </svg>
     </div>
@@ -322,7 +365,7 @@ function OpeningShape({ opening }: { opening: DraftOpening }) {
   const end = g.coordinates[g.coordinates.length - 1];
   if (!start || !end) return null;
   const isDoor = opening.opening_type === 'door';
-  const color = isDoor ? 'oklch(0.55 0.22 264)' : 'oklch(0.7 0.18 200)';
+  const color = isDoor ? CANVAS_BLUE : CANVAS_WINDOW;
   return (
     <line
       x1={start[0]}
@@ -344,7 +387,7 @@ function ExistingApMarker({ ap }: { ap: CanvasExistingAp }) {
   const label = ap.label ?? ap.id.toUpperCase();
   return (
     <g pointerEvents="none">
-      <circle cx={ap.x_m} cy={ap.y_m} r={r} fill="oklch(0.55 0.22 254)" />
+      <circle cx={ap.x_m} cy={ap.y_m} r={r} fill={CANVAS_BLUE} />
       <g
         transform={`translate(${ap.x_m - r * 0.55}, ${ap.y_m - r * 0.55}) scale(${r / 12})`}
         fill="none"
@@ -396,7 +439,7 @@ function RecommendationMarker({
   labelFontM: number;
 }) {
   const r = RECOMMEND_RADIUS_M;
-  const fill = selected ? 'oklch(0.62 0.19 145)' : 'oklch(0.72 0.19 145)';
+  const fill = selected ? '#059669' : '#10b981';
   return (
     <g pointerEvents="none">
       <circle
@@ -405,7 +448,7 @@ function RecommendationMarker({
         r={r}
         fill={fill}
         stroke="white"
-        strokeWidth="2"
+        strokeWidth="1.5"
         vectorEffect="non-scaling-stroke"
       />
       <text
@@ -413,12 +456,12 @@ function RecommendationMarker({
         y={rec.recommended_y}
         textAnchor="middle"
         dominantBaseline="middle"
-        fontSize={Math.max(r * 0.75, labelFontM * 0.85)}
-        fontWeight="700"
+        fontSize={Math.max(r * 0.55, labelFontM * 0.65)}
+        fontWeight="600"
         fill="white"
         style={{ userSelect: 'none' }}
       >
-        {rec.rank}
+        AP
       </text>
       <text
         x={rec.recommended_x}
@@ -426,14 +469,14 @@ function RecommendationMarker({
         textAnchor="middle"
         dominantBaseline="middle"
         fontSize={labelFontM}
-        fontWeight="700"
-        fill="oklch(0.28 0.1 145)"
+        fontWeight="600"
+        fill={fill}
         stroke="white"
-        strokeWidth={labelFontM * 0.12}
+        strokeWidth={labelFontM * 0.1}
         paintOrder="stroke fill"
         style={{ userSelect: 'none' }}
       >
-        추천 {rec.rank}
+        추천 위치
       </text>
     </g>
   );

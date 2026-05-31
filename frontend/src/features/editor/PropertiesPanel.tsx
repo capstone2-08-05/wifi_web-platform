@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, ChevronDown, Ruler, RotateCcw, ScanLine, Sparkles, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, Ruler, RotateCcw, Sparkles, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   materialLabel,
@@ -96,7 +96,9 @@ export function PropertiesPanel({
         <EmptyBody />
       )}
 
+      {/* [미구현] 모바일 AR 가구 스캔 — 백엔드/모바일 연동 없음. 구현 시 MobileScanCard 복구.
       <MobileScanCard />
+      */}
     </aside>
   );
 }
@@ -687,24 +689,6 @@ function EmptyBody() {
       </p>
       <p className="mt-1 text-[11px] text-muted-foreground/80">
         캔버스의 도형을 클릭하면 속성이 표시됩니다.
-      </p>
-    </div>
-  );
-}
-
-function MobileScanCard() {
-  return (
-    <div className="mt-auto rounded-xl bg-primary p-4 text-primary-foreground shadow-sm">
-      <div className="flex items-center gap-2">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/15">
-          <ScanLine className="h-4 w-4" />
-        </div>
-        <span className="text-sm font-semibold">모바일 가구 스캔</span>
-      </div>
-      <p className="mt-3 text-xs leading-relaxed text-primary-foreground/90">
-        카메라로 공간을 비추기만 하세요.
-        <br />
-        가구 크기와 위치를 자동으로 측정합니다.
       </p>
     </div>
   );

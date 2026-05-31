@@ -1,5 +1,17 @@
 import { useEffect, useState } from 'react';
-import { Loader2, Maximize2, Sliders, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import {
+  AlertCircle,
+  CheckCircle2,
+  ChevronDown,
+  ClipboardList,
+  Loader2,
+  Maximize2,
+  Sliders,
+  Sparkles,
+  X,
+} from 'lucide-react';
+import { cn } from '@/lib/utils';
 import type {
   CalibrationEvaluationResponse,
   CalibrationRun,
@@ -17,6 +29,15 @@ const SPACE_TYPE_OPTIONS: { value: SpaceType; label: string }[] = [
   { value: 'residential', label: '원룸/주거' },
 ];
 
+/** UI 전용 — 보정 실행 전 선행 조건 (API/로직 변경 없음). */
+export type CalibrationGate =
+  | 'no_measurement'
+  | 'insufficient_points'
+  | 'no_simulation'
+  | 'ready';
+
+type CalibrationUiStatus = 'needs_data' | 'ready' | 'running' | 'complete' | 'failed';
+
 interface Props {
   run: CalibrationRun | null;
   isPolling: boolean;
@@ -24,11 +45,17 @@ interface Props {
   canCalibrate: boolean;
   /** 비활성 시 사용자에게 보여줄 사유 (측정 부족 / 시뮬 부족 등). */
   disabledReason?: string | null;
-  /** 사용자가 선택한 공간 유형 — calibration 의 soft prior 로 backend 에 전달. */
+  /** 선행 조건 — 안내 박스 문구 분기용. */
+  calibrationGate?: CalibrationGate;
+  /** false 면 select 대신 현재 값만 표시 (상단 FloorSpaceTypeSelector 와 중복 방지). */
+  showSpaceTypeField?: boolean;
+  /** 사용자가 선택한 공간 유형 — Floor.space_type 과 동기화 권장. */
   spaceType: SpaceType;
-  onSpaceTypeChange: (next: SpaceType) => void;
+  onSpaceTypeChange?: (next: SpaceType) => void;
   onCalibrate: () => void;
   showCalibrateButton?: boolean;
+  /** false 면 "실측/진단으로 이동" 링크 숨김 (이미 해당 페이지일 때). */
+  showMeasurementLink?: boolean;
   onAddReferenceMeasurement?: () => void;
   parameterUpdates: ParameterUpdate[];
   evaluation?: CalibrationEvaluationResponse | null;
@@ -36,8 +63,7 @@ interface Props {
 }
 
 /**
- * 시뮬레이션 보정 카드 — 측정 vs 시뮬 비교로 시뮬 파라미터(벽 흡수율 등) 자동 보정.
- * 시뮬레이션 페이지의 우측 사이드바에 노출. 보정 결과는 다음 시뮬 실행 시 자동 반영.
+ * 시뮬레이션 보정 카드 — 실측과 시뮬 비교로 예측 정확도를 높이는 보정 UI.
  */
 export function CalibrationCard({
   run,
@@ -45,10 +71,13 @@ export function CalibrationCard({
   isStarting,
   canCalibrate,
   disabledReason,
+  calibrationGate,
   spaceType,
   onSpaceTypeChange,
   onCalibrate,
   showCalibrateButton = true,
+  showSpaceTypeField = true,
+  showMeasurementLink = true,
   onAddReferenceMeasurement,
   parameterUpdates,
   evaluation,
@@ -57,52 +86,102 @@ export function CalibrationCard({
   const succeeded = run?.status === 'succeeded';
   const failed = run?.status === 'failed';
   const showProgress = isStarting || isPolling;
+  const isComplete = succeeded || !!evaluation;
+
+  const uiStatus: CalibrationUiStatus = showProgress
+    ? 'running'
+    : failed
+      ? 'failed'
+      : isComplete
+        ? 'complete'
+        : canCalibrate
+          ? 'ready'
+          : 'needs_data';
+
+  const gate: CalibrationGate =
+    calibrationGate ??
+    (canCalibrate
+      ? 'ready'
+      : disabledReason?.includes('시뮬레이션')
+        ? 'no_simulation'
+        : disabledReason?.includes('측정점')
+          ? 'insufficient_points'
+          : 'no_measurement');
 
   return (
-    <div className="rounded-2xl border bg-background p-5 shadow-sm">
-      <header className="mb-3 flex items-center gap-2">
-        <Sliders className="h-4 w-4 text-primary" />
-        <h3 className="text-sm font-bold">시뮬레이션 보정</h3>
-      </header>
-      <p className="text-[11px] leading-relaxed text-muted-foreground">
-        실측과 시뮬레이션 결과를 비교해서 벽 흡수율 등 시뮬 파라미터를 자동 보정합니다.
-        보정 후 시뮬레이션을 다시 실행하면 더 정확한 예측을 얻을 수 있습니다.
-      </p>
-
-      {/* 공간 유형 select — calibration BO 의 soft prior. 잘못 골라도 BO 가 어느 정도 보정. */}
-      <label className="mt-3 block">
-        <span className="text-[11px] font-medium text-muted-foreground">공간 유형</span>
-        <select
-          value={spaceType}
-          onChange={(e) => onSpaceTypeChange(e.target.value as SpaceType)}
-          disabled={showProgress}
-          className="mt-1 block w-full rounded-md border bg-background px-2.5 py-1.5 text-xs font-medium shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
-        >
-          {SPACE_TYPE_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-        <span className="mt-1 block text-[10px] leading-relaxed text-muted-foreground">
-          공간 유형은 보정의 초기 가정만 좁혀줍니다. 실제 결과는 측정 RSSI 기반으로 결정됩니다.
-        </span>
-      </label>
-
-      {showProgress ? (
-        <div className="mt-3 flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2.5 text-xs">
-          <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-          <span className="font-medium">
-            {isStarting ? '보정 요청 중…' : '보정 진행 중…'}
+    <div className="rounded-xl border border-slate-200/80 bg-white p-4 shadow-sm">
+      <header className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+            <Sliders className="h-4 w-4" />
           </span>
+          <h3 className="text-sm font-semibold leading-tight text-foreground">시뮬레이션 보정</h3>
         </div>
-      ) : succeeded && run ? (
-        <CalibrationResult run={run} parameterUpdates={parameterUpdates} evaluation={evaluation} />
-      ) : failed ? (
-        <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-[11px] text-destructive">
-          보정에 실패했습니다. 측정 데이터가 충분한지 확인해주세요.
+        <CalibrationStatusBadge status={uiStatus} />
+      </header>
+
+      <div className="mt-3 space-y-1">
+        <p className="text-xs leading-snug text-foreground/90">
+          실측값을 기준으로 시뮬레이션 오차를 줄입니다.
         </p>
-      ) : null}
+        <p className="text-[11px] leading-snug text-muted-foreground">
+          {uiStatus === 'needs_data'
+            ? '측정 데이터를 먼저 수집하면 보정값을 계산할 수 있습니다.'
+            : '보정 후 시뮬레이션을 다시 실행하면 더 정확한 예측을 확인할 수 있습니다.'}
+        </p>
+      </div>
+
+      {showSpaceTypeField ? (
+        <SpaceTypeField
+          spaceType={spaceType}
+          onSpaceTypeChange={onSpaceTypeChange ?? (() => {})}
+          disabled={showProgress}
+        />
+      ) : (
+        <SpaceTypeReadonly spaceType={spaceType} />
+      )}
+
+      {uiStatus === 'needs_data' && (
+        <CalibrationGateNotice
+          gate={gate}
+          disabledReason={disabledReason}
+          showMeasurementLink={showMeasurementLink}
+        />
+      )}
+
+      {uiStatus === 'running' && (
+        <div className="mt-3 flex items-center gap-2.5 rounded-xl border border-primary/15 bg-primary/5 px-3 py-2.5">
+          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
+          <div>
+            <p className="text-xs font-medium text-foreground">
+              {isStarting ? '보정을 시작하는 중…' : '보정 중…'}
+            </p>
+            <p className="text-[11px] text-muted-foreground">잠시만 기다려주세요.</p>
+          </div>
+        </div>
+      )}
+
+      {uiStatus === 'complete' && run && (
+        <CalibrationResult run={run} parameterUpdates={parameterUpdates} evaluation={evaluation} />
+      )}
+
+      {uiStatus === 'failed' && (
+        <div className="mt-3 flex gap-2.5 rounded-xl border border-destructive/20 bg-destructive/5 px-3 py-2.5">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+          <p className="text-[11px] leading-relaxed text-destructive">
+            보정에 실패했습니다. 측정 데이터가 충분한지 확인해주세요.
+          </p>
+        </div>
+      )}
+
+      {uiStatus === 'complete' && !run && evaluation && (
+        <div className="mt-3 flex gap-2.5 rounded-xl border border-emerald-200/80 bg-emerald-50/80 px-3 py-2.5">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+          <p className="text-[11px] leading-relaxed text-emerald-900">
+            보정된 값으로 시뮬레이션을 다시 실행해보세요.
+          </p>
+        </div>
+      )}
 
       <CalibrationEvaluationPanel
         evaluation={evaluation ?? extractEvaluationResponse(run)}
@@ -111,19 +190,208 @@ export function CalibrationCard({
       />
 
       {showCalibrateButton && (
-      <button
-        type="button"
-        onClick={onCalibrate}
-        disabled={!canCalibrate || showProgress}
-        className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+        <div className="mt-3 space-y-2">
+          {uiStatus === 'complete' && (
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              보정 결과는 다음 시뮬레이션 실행에 반영됩니다.
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={onCalibrate}
+            disabled={!canCalibrate || showProgress}
+            className={cn(
+              'inline-flex w-full items-center justify-center gap-1.5 rounded-xl px-3 py-2.5 text-xs font-semibold transition-colors',
+              uiStatus === 'complete'
+                ? 'border border-slate-200 bg-white text-foreground hover:bg-slate-50 disabled:opacity-60'
+                : 'bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50',
+            )}
+          >
+            {showProgress ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                보정 중…
+              </>
+            ) : uiStatus === 'complete' ? (
+              <>
+                <Sparkles className="h-3.5 w-3.5" />
+                다시 보정하기
+              </>
+            ) : (
+              <>
+                <Sliders className="h-3.5 w-3.5" />
+                보정 실행하기
+              </>
+            )}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CalibrationStatusBadge({ status }: { status: CalibrationUiStatus }) {
+  const config: Record<
+    CalibrationUiStatus,
+    { label: string; className: string }
+  > = {
+    needs_data: {
+      label: '측정 필요',
+      className: 'border-sky-300 bg-sky-100 text-sky-700',
+    },
+    ready: {
+      label: '보정 가능',
+      className: 'border-primary/20 bg-primary/5 text-primary',
+    },
+    running: {
+      label: '보정 중',
+      className: 'border-primary/20 bg-primary/5 text-primary',
+    },
+    complete: {
+      label: '보정 완료',
+      className: 'border-emerald-200/80 bg-emerald-50 text-emerald-800',
+    },
+    failed: {
+      label: '보정 실패',
+      className: 'border-destructive/20 bg-destructive/5 text-destructive',
+    },
+  };
+  const { label, className } = config[status];
+  return (
+    <span
+      className={cn(
+        'shrink-0 rounded-full border px-2 py-1 text-[10px] font-semibold leading-snug',
+        className,
+      )}
+    >
+      {label}
+    </span>
+  );
+}
+
+function SpaceTypeReadonly({ spaceType }: { spaceType: SpaceType }) {
+  const label =
+    SPACE_TYPE_OPTIONS.find((o) => o.value === spaceType)?.label ?? '미지정';
+  return (
+    <div className="mt-3">
+      <span className="text-[11px] font-medium text-foreground/80">공간 유형</span>
+      <div
+        className={cn(
+          'mt-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2',
+          'text-xs font-medium text-foreground shadow-sm',
+        )}
       >
-        <Sliders className="h-3.5 w-3.5" />
-        {succeeded ? '다시 보정 실행' : '보정 실행'}
-      </button>
-      )}
-      {!canCalibrate && disabledReason && (
-        <p className="mt-2 text-[11px] text-muted-foreground">{disabledReason}</p>
-      )}
+        {label}
+      </div>
+    </div>
+  );
+}
+
+function SpaceTypeField({
+  spaceType,
+  onSpaceTypeChange,
+  disabled,
+}: {
+  spaceType: SpaceType;
+  onSpaceTypeChange: (next: SpaceType) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="mt-3">
+      <label className="block">
+        <span className="text-[11px] font-medium text-foreground/80">공간 유형</span>
+        <span className="mt-0.5 block text-[10px] text-muted-foreground">
+          초기 보정값을 정하는 기준입니다.
+        </span>
+        <div className="relative mt-1.5">
+          <select
+            value={spaceType}
+            onChange={(e) => onSpaceTypeChange(e.target.value as SpaceType)}
+            disabled={disabled}
+            className={cn(
+              'h-9 w-full appearance-none rounded-xl border border-slate-200 bg-white',
+              'px-3 pr-9 text-xs font-medium text-foreground shadow-sm',
+              'focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20',
+              'disabled:cursor-not-allowed disabled:opacity-50',
+            )}
+          >
+            {SPACE_TYPE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <ChevronDown
+            className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden
+          />
+        </div>
+      </label>
+    </div>
+  );
+}
+
+function CalibrationGateNotice({
+  gate,
+  disabledReason,
+  showMeasurementLink,
+}: {
+  gate: CalibrationGate;
+  disabledReason?: string | null;
+  showMeasurementLink: boolean;
+}) {
+  if (gate === 'no_simulation') {
+    return (
+      <div className="mt-3 flex gap-2.5 rounded-xl border border-slate-200/80 bg-slate-50 px-3 py-2.5">
+        <ClipboardList className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />
+        <div className="min-w-0 space-y-1">
+          <p className="text-xs font-medium text-foreground">시뮬레이션 결과가 필요합니다</p>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            시뮬레이션 페이지에서 한 번 실행한 뒤, 다시 보정을 시도해주세요.
+          </p>
+          <Link
+            to="/simulation"
+            className="inline-flex items-center text-[11px] font-semibold text-primary hover:underline"
+          >
+            시뮬레이션으로 이동
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  if (gate === 'insufficient_points') {
+    return (
+      <div className="mt-3 flex gap-2.5 rounded-xl border border-slate-200/80 bg-slate-50 px-3 py-2.5">
+        <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />
+        <div className="min-w-0 space-y-1">
+          <p className="text-xs font-medium text-foreground">측정점이 더 필요합니다</p>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            {disabledReason ??
+              '도면 전반에 골고루 측정하면 더 안정적인 보정값을 얻을 수 있습니다.'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 flex gap-2.5 rounded-xl border border-slate-200/80 bg-slate-50 px-3 py-2.5">
+      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />
+      <div className="min-w-0 space-y-1">
+        <p className="text-xs font-medium text-foreground">측정 데이터가 필요합니다</p>
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          실측/진단에서 측정을 완료하면 보정을 실행할 수 있습니다.
+        </p>
+        {showMeasurementLink && (
+          <Link
+            to="/measurement"
+            className="inline-flex items-center text-[11px] font-semibold text-primary hover:underline"
+          >
+            실측/진단으로 이동
+          </Link>
+        )}
+      </div>
     </div>
   );
 }

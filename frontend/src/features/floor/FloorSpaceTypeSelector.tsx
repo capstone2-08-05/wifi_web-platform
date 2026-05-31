@@ -11,6 +11,7 @@ import { useEffect, useState } from 'react';
 import { Building2 } from 'lucide-react';
 import { useFloors, useUpdateFloor } from '@/hooks/use-floors';
 import type { SpaceType } from '@/types/calibration-run';
+import { cn } from '@/lib/utils';
 
 const SPACE_TYPE_OPTIONS: { value: SpaceType; label: string }[] = [
   { value: 'unknown', label: '미지정' },
@@ -26,6 +27,8 @@ interface Props {
   projectId: string | null;
   /** 추가 클래스 (배치 보조). */
   className?: string;
+  /** select 요소 전용 클래스. */
+  selectClassName?: string;
   /** 라벨 표시 여부 — compact 모드면 false. */
   showLabel?: boolean;
 }
@@ -34,6 +37,7 @@ export function FloorSpaceTypeSelector({
   floorId,
   projectId,
   className,
+  selectClassName,
   showLabel = true,
 }: Props) {
   const floorsQuery = useFloors(projectId);
@@ -66,7 +70,10 @@ export function FloorSpaceTypeSelector({
         onChange={(e) => handleChange(e.target.value as SpaceType)}
         disabled={disabled}
         title="이 도면(층) 의 공간 유형 — calibration 보정의 초기 가정에 사용. 변경시 즉시 저장."
-        className="rounded-md border bg-background px-2.5 py-1.5 text-xs font-medium shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+        className={cn(
+          selectClassName ??
+            'rounded-md border bg-background px-2.5 py-1.5 text-xs font-medium shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50',
+        )}
       >
         {SPACE_TYPE_OPTIONS.map((opt) => (
           <option key={opt.value} value={opt.value}>

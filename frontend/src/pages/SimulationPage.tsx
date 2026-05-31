@@ -15,8 +15,9 @@ import { useMemo, useEffect } from 'react';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
 import { useCreateRfRun, useFloorRfRuns, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
+import { useRfMapImageUrl } from '@/hooks/use-rf-map-image-url';
 import { useFloorAssets, useAssetDownloadUrl } from '@/hooks/use-assets';
-import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
+import { useLocalFloorplanImage, linkFloorImageToAsset } from '@/hooks/use-local-floorplan-image';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
 import {
   useApCandidates,
@@ -39,9 +40,11 @@ import { extractColorScale } from '@/features/simulation/HeatmapColorLegend';
 import { DbmColorBar } from '@/features/simulation/DbmColorBar';
 import { FloorSpaceTypeSelector } from '@/features/floor/FloorSpaceTypeSelector';
 import { toast } from '@/stores/toast-store';
-import type { ApCandidate, ApLayout } from '@/types/ap-layout';
+import type { SceneVersion } from '@/types/scene';
+import type { UUID } from '@/types/common';
 import type { RfBackend } from '@/types/rf';
 import { cn } from '@/lib/utils';
+import { nextApSequentialName } from '@/lib/ap-layout-naming';
 
 type SimulationState = 'idle' | 'running' | 'complete';
 type FrequencyBand = '2.4' | '5';
@@ -74,38 +77,11 @@ export default function SimulationPage() {
   const [frequencyBand, setFrequencyBand] = useState<FrequencyBand>('5');
   const [txPowerDbm, setTxPowerDbm] = useState(20);
 
-  // 캔버스 배경으로 보여줄 확정 버전 상세 (rooms/walls/openings/objects 포함).
-  const versionDetailQuery = useSceneVersion(currentVersion?.id ?? null);
-
-  // 배경 도면 이미지 — 공간편집/대시보드와 동일한 방식.
-  // (a) version 의 source_asset_id 가 있으면 presigned URL, (b) 없으면 floor 의
-  // 가장 최근 floorplan_image asset, (c) 백엔드 자산 없으면 localStorage 캐시.
-  const versionAsDraft = versionDetailQuery.data
-    ? versionToDraftShape(versionDetailQuery.data)
-    : null;
-  const sourceAssetId = versionAsDraft?.source_asset_id ?? null;
-  const floorAssetsQuery = useFloorAssets(floorId, 'floorplan_image');
-  const fallbackAsset = (floorAssetsQuery.data ?? [])
-    .slice()
-    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
-  const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
-  const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
-  // sourceAssetId 우선 — 히스토리 버전 클릭 시 그 자산 이미지로 정확히 복원.
-  const localImage = useLocalFloorplanImage({ floorId, sourceAssetId });
-  const assetUrl = assetUrlQuery.data?.url ?? null;
-  const usableAssetUrl =
-    assetUrl && /^https?:\/\//i.test(assetUrl) ? assetUrl : null;
-  const backgroundImageUrl = usableAssetUrl ?? localImage ?? null;
-
   // 층의 과거 RF Run 목록 (이력 카드 + 자동 복원용).
   const pastRunsQuery = useFloorRfRuns(floorId, { page_size: 20 });
   const pastRuns = useMemo(() => pastRunsQuery.data?.items ?? [], [pastRunsQuery.data]);
 
   // 활성 run = 사용자가 명시 선택한 것 ?? 현재 scene_version 으로 돌린 최근 succeeded.
-  // → 새로고침/재진입 시에도 자동 활성, 단 **현재 버전과 일치하는 run** 만 대상.
-  //   공간편집으로 새 버전 만든 직후 시뮬 페이지로 오면 옛 run 은 자동복원 안 됨 → idle.
-  // 단 사용자가 명시적으로 "다시 실행" 누른 직후엔 idle 유지.
-  // 명시 선택(pickedRunId) 은 버전 일치 무관 — 사용자가 기록에서 직접 골랐으니 존중.
   const activeRunId = useMemo(() => {
     if (resetCleared) return null;
     if (pickedRunId) return pickedRunId;
@@ -121,24 +97,43 @@ export default function SimulationPage() {
     setPickedRunId(id);
   };
 
-  // 시뮬레이션 페이지는 배경 도면 이미지를 안 깔음 — 도형만 + 히트맵 오버레이.
-  // (배경 이미지는 공간편집/대시보드 한정.)
-
   const createRfRun = useCreateRfRun();
   const rfRunPoll = useRfRun(activeRunId);
   const rfMapsQuery = useRfMaps(activeRunId, rfRunPoll.isSucceeded);
-  // 활성 RfRun 이 현재 버전이 아닌 옛 버전에서 돌린 것이면 → 도면이 바뀌어서 히트맵이 도면과 안 맞음.
-  // 사용자 혼란 방지로 그런 경우엔 히트맵 숨김 (메트릭은 그대로 표시).
   const activeRunSceneVersionId = rfRunPoll.rfRun?.scene_version_id ?? null;
-  const isRunForCurrentVersion =
-    !activeRunSceneVersionId ||
-    !currentVersion ||
-    activeRunSceneVersionId === currentVersion.id;
+
+  const state: SimulationState = (() => {
+    if (!activeRunId) return 'idle';
+    if (rfRunPoll.isSucceeded) return 'complete';
+    if (rfRunPoll.isFailed) return 'idle';
+    return 'running';
+  })();
+
+  /** complete 상태에선 run 당시 scene_version, idle/running 은 현재 도면. */
+  const canvasSceneVersionId = useMemo(() => {
+    if (state === 'complete' && activeRunSceneVersionId) {
+      return activeRunSceneVersionId;
+    }
+    return currentVersion?.id ?? null;
+  }, [state, activeRunSceneVersionId, currentVersion?.id]);
+
+  const canvasVersionQuery = useSceneVersion(canvasSceneVersionId);
+  const backgroundImageUrl = useSceneFloorplanBackground(
+    floorId,
+    canvasVersionQuery.data,
+  );
+
+  const isViewingHistoricalRun =
+    state === 'complete' &&
+    !!currentVersion &&
+    !!activeRunSceneVersionId &&
+    activeRunSceneVersionId !== currentVersion.id;
 
   // 활성 run(과거/자동복원 포함)의 AP 를 캔버스에 복원 — 결과 화면에 AP 마커가 보이도록.
   // (aps state 는 사용자가 직접 찍은 것만 담기는데, 과거 run 을 불러올 땐 비어 있어 마커가 안 떴음)
   useEffect(() => {
-    const aps_raw = (rfRunPoll.rfRun?.request_json?.['access_points'] ?? []) as Array<
+    if (!activeRunId || !rfRunPoll.rfRun) return;
+    const aps_raw = (rfRunPoll.rfRun.request_json?.['access_points'] ?? []) as Array<
       Record<string, unknown>
     >;
     if (!Array.isArray(aps_raw) || aps_raw.length === 0) return;
@@ -149,17 +144,20 @@ export default function SimulationPage() {
       z_m: Number(a['z_m'] ?? a['z'] ?? 2.5),
     }));
     setAps(restored);
-  }, [rfRunPoll.rfRun]);
-  // 백엔드가 RfMapResponse 에 presigned `url` 을 자동 채워주므로 (PR #70)
-  // /rf-jobs 별도 호출 없이 /maps 응답 하나로 heatmap URL + bounds 둘 다 처리.
+  }, [activeRunId, rfRunPoll.rfRun]);
+
   const heatmapMap = useMemo(() => {
-    if (!isRunForCurrentVersion) return null;
     const maps = rfMapsQuery.data ?? [];
     return maps.find((m) => m.map_type === 'heatmap') ?? maps[0] ?? null;
-  }, [rfMapsQuery.data, isRunForCurrentVersion]);
-  const heatmapUrl = heatmapMap?.url ?? null;
-  // 히트맵 색 스케일 (vmin/vmax dBm) — color legend 가 같은 inferno 그라데이션 +
-  // 동일 범위로 표시. local backend / 최신 sagemaker container 가 응답에 채워넣음.
+  }, [rfMapsQuery.data]);
+  const heatmapSourceUrl = useMemo(() => {
+    if (!heatmapMap) return null;
+    if (heatmapMap.url) return heatmapMap.url;
+    const raw = heatmapMap.storage_url;
+    if (raw && /^https?:\/\//i.test(raw)) return raw;
+    return null;
+  }, [heatmapMap]);
+  const heatmapUrl = useRfMapImageUrl(heatmapSourceUrl);
   const heatmapColorScale = useMemo(
     () =>
       extractColorScale(
@@ -171,14 +169,6 @@ export default function SimulationPage() {
     () => parseHeatmapBounds(heatmapMap?.bounds_json),
     [heatmapMap],
   );
-
-  // 백엔드 상태 → UI 상태 매핑
-  const state: SimulationState = (() => {
-    if (!activeRunId) return 'idle';
-    if (rfRunPoll.isSucceeded) return 'complete';
-    if (rfRunPoll.isFailed) return 'idle'; // 토스트로 알림 + 다시 시작 가능
-    return 'running';
-  })();
 
   const handleStart = () => {
     if (!currentVersion) return;
@@ -218,10 +208,13 @@ export default function SimulationPage() {
   };
 
   const handleReset = () => {
+    const wasHistorical =
+      state === 'complete' &&
+      !!activeRunSceneVersionId &&
+      activeRunSceneVersionId !== currentVersion?.id;
     setPickedRunId(null);
     setResetCleared(true);
-    // AP 위치는 유지 — 보정 후 동일 배치로 재시뮬하는 케이스가 많음.
-    // 새로 찍고 싶으면 캔버스에서 개별 삭제하면 됨.
+    if (wasHistorical) setAps([]);
   };
 
   const handleAddAp = (ap: PlacedAp) => setAps((prev) => [...prev, ap]);
@@ -257,8 +250,7 @@ export default function SimulationPage() {
           const m = parseMetrics(...sources);
           return {
             id: r.id,
-            label: `시뮬레이션 결과 #${r.id.slice(0, 6)}`,
-            timeLabel: formatRunTime(r.created_at),
+            createdAt: r.created_at,
             avgRssiDbm: m.avgRssiDbm,
             coveragePercent: m.coveragePercent,
             active: r.id === activeRunId,
@@ -268,7 +260,7 @@ export default function SimulationPage() {
   );
 
   return (
-    <div className="relative flex h-full flex-col p-6">
+    <div className="relative flex h-full flex-col p-5 lg:p-6">
       <PageHeader
         state={state}
         hasVersion={!!currentVersion}
@@ -301,13 +293,13 @@ export default function SimulationPage() {
           ctaTo="/editor"
         />
       ) : (
-        <div className="mt-5 grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
-          <div className="relative min-h-0 overflow-hidden rounded-2xl border bg-background shadow-sm">
+        <div className="mt-4 grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[1fr_300px]">
+          <div className="relative min-h-0 overflow-hidden rounded-lg border border-slate-200 bg-white">
             {state === 'idle' ? (
               <>
                 <CanvasModeBar apsCount={aps.length} />
                 <SimulationCanvas
-                  sceneVersion={versionDetailQuery.data}
+                  sceneVersion={canvasVersionQuery.data}
                   backgroundImageUrl={backgroundImageUrl}
                   aps={aps}
                   onAdd={handleAddAp}
@@ -323,20 +315,15 @@ export default function SimulationPage() {
                 />
               </>
             ) : state === 'running' ? (
-              <div className="h-full p-6">
+              <div className="h-full p-4">
                 <SimulationVisualization state={state} />
               </div>
             ) : (
               // 'complete' — 도형/AP + 히트맵 오버레이를 한 SVG 안에 겹쳐 표시 (read-only).
               <>
-                {!isRunForCurrentVersion && (
-                  <div className="absolute left-3 right-3 top-3 z-10 rounded-md border border-amber-300 bg-amber-50/95 px-3 py-2 text-[11px] leading-relaxed text-amber-900 shadow-sm backdrop-blur">
-                    이 시뮬레이션은 이전 버전 도면 기준이라 현재 도면과 다를 수 있어
-                    히트맵을 표시하지 않습니다. 새 버전으로 다시 실행해주세요.
-                  </div>
-                )}
+                {isViewingHistoricalRun && <HistoricalRunBubble />}
                 <SimulationCanvas
-                  sceneVersion={versionDetailQuery.data}
+                  sceneVersion={canvasVersionQuery.data}
                   backgroundImageUrl={backgroundImageUrl}
                   aps={aps}
                   onAdd={handleAddAp}
@@ -348,9 +335,7 @@ export default function SimulationPage() {
                   heatmapBounds={heatmapBounds}
                   readOnly
                 />
-                {heatmapUrl && isRunForCurrentVersion && (
-                  // 좌상단 — gradient + tick 값이 수직 정렬돼 "이 색 = 이 dBm" 직관적.
-                  // MeasurementPage 와 동일 위치/크기로 통일.
+                {heatmapUrl && (
                   <div className="pointer-events-none absolute left-3 top-3 z-10 w-70">
                     <DbmColorBar
                       vmin={heatmapColorScale?.vminDbm ?? -85}
@@ -363,16 +348,12 @@ export default function SimulationPage() {
             )}
           </div>
 
-          <aside className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1">
+          <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto">
             {state === 'complete' && (
               <SimulationResultCard
-                avgRssiDbm={isRunForCurrentVersion ? metrics.avgRssiDbm : null}
-                coveragePercent={isRunForCurrentVersion ? metrics.coveragePercent : null}
-                staleReason={
-                  isRunForCurrentVersion
-                    ? null
-                    : '이전 버전 도면에서 돌린 시뮬레이션이라 현재 도면과 비교 가치가 없어 결과를 숨겼습니다.'
-                }
+                avgRssiDbm={metrics.avgRssiDbm}
+                coveragePercent={metrics.coveragePercent}
+                staleReason={null}
               />
             )}
             {/* AP 배치 (§14) 카드 — 백엔드 ap-candidates 미구현 상태라 임시로 숨김.
@@ -383,9 +364,9 @@ export default function SimulationPage() {
             */}
             <SimulationHistory
               items={history}
+              isLoading={pastRunsQuery.isLoading}
               showCompareButton={false}
               onSelect={(id) => setActiveRunId(id)}
-              emptyMessage="아직 시뮬레이션 기록이 없습니다. AP 를 배치하고 시뮬레이션을 실행해보세요."
             />
           </aside>
         </div>
@@ -396,16 +377,42 @@ export default function SimulationPage() {
   );
 }
 
+/** 설정 바 segmented control 공통 스타일. */
+function simSegmentBtn(active: boolean, disabled?: boolean) {
+  return cn(
+    'inline-flex h-7 items-center rounded-md px-2.5 text-xs transition-colors',
+    disabled && 'cursor-not-allowed opacity-50',
+    active
+      ? 'bg-blue-50 font-medium text-blue-700'
+      : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900',
+  );
+}
+
+/** 캔버스 상단 — 과거 run 도면/히트맵 열람 안내 말풍선. */
+function HistoricalRunBubble() {
+  return (
+    <div className="pointer-events-none absolute right-3 top-3 z-10 max-w-[calc(100%-1.5rem)]">
+      <div className="relative w-max max-w-none animate-bubble-rise rounded-xl border border-sky-200 bg-sky-50/95 px-3.5 py-2.5 shadow-sm backdrop-blur-sm">
+        <p className="text-xs leading-relaxed text-sky-900/90 sm:whitespace-nowrap">
+          시뮬레이션 당시 도면과 히트맵을 보고 있습니다. 「다시 실행」을 누르면 현재 공간 편집 도면으로 돌아갑니다.
+        </p>
+        <span
+          className="absolute -bottom-1 right-5 h-2 w-2 rotate-45 border-b border-r border-sky-200 bg-sky-50/95"
+          aria-hidden="true"
+        />
+      </div>
+    </div>
+  );
+}
+
 /** 캔버스 좌상단 모드 안내. */
 function CanvasModeBar({ apsCount }: { apsCount: number }) {
   return (
-    <div className="pointer-events-none absolute left-4 top-4 z-10 flex items-center gap-2 rounded-full border bg-card/95 px-3 py-1.5 text-xs shadow-sm backdrop-blur">
-      <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-primary/10 text-primary">
-        <Play className="h-2.5 w-2.5 fill-current" />
-      </span>
-      <span className="font-semibold">AP 배치 모드</span>
-      <span className="text-muted-foreground">
-        — 우측 "AP 추가" 누르고 도면을 클릭하세요 ({apsCount}/8)
+    <div className="pointer-events-none absolute left-3 top-3 z-10 flex items-center gap-1.5 rounded-md border border-slate-200/80 bg-white/90 px-2.5 py-1 text-[11px] text-slate-600 backdrop-blur-sm">
+      <span className="font-medium text-slate-700">AP 배치 모드</span>
+      <span className="text-slate-400">·</span>
+      <span className="text-slate-500">
+        AP 추가 후 도면 클릭 ({apsCount}/8)
       </span>
     </div>
   );
@@ -429,45 +436,40 @@ function ApAddPanel({
         type="button"
         onClick={onToggle}
         title="클릭하여 배치 모드 취소"
-        className="absolute right-4 top-4 z-10 inline-flex items-center gap-1.5 rounded-full border border-primary bg-primary/10 px-3 py-1.5 text-[11px] font-medium text-primary shadow-sm backdrop-blur hover:bg-primary/20"
+        className="absolute right-3 top-3 z-10 inline-flex items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50/80 px-2.5 py-1 text-[11px] font-medium text-blue-700 backdrop-blur-sm hover:bg-blue-50"
       >
-        <span
-          className="flex h-4 w-4 items-center justify-center rounded-full text-white"
-          style={{ backgroundColor: 'oklch(0.55 0.22 254)' }}
-        >
-          <Wifi className="h-2.5 w-2.5" />
-        </span>
-        도면 클릭으로 배치 · 취소
+        <Wifi className="h-3.5 w-3.5" />
+        배치 중 · 취소
       </button>
     );
   }
 
   return (
-    <div className="absolute right-4 top-4 z-10 w-32 rounded-xl border bg-card p-3 shadow-md">
-      <p className="mb-2 text-center text-xs font-semibold text-muted-foreground">
-        AP 추가하기
-      </p>
-      <button
-        type="button"
-        onClick={onToggle}
-        disabled={disabled}
-        className={cn(
-          'flex w-full flex-col items-center gap-1.5 rounded-lg border bg-background p-2 text-[11px] font-medium transition-colors hover:bg-accent',
-          disabled && 'cursor-not-allowed opacity-50',
-        )}
-      >
-        <span
-          className="flex h-9 w-9 items-center justify-center rounded-full text-white"
-          style={{ backgroundColor: 'oklch(0.55 0.22 254)' }}
-        >
-          <Wifi className="h-4 w-4" />
-        </span>
-        AP 추가
-      </button>
-      {disabled && (
-        <p className="mt-2 text-center text-[10px] text-destructive">최대 8개</p>
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={disabled}
+      title={disabled ? 'AP는 최대 8개까지 배치할 수 있습니다' : 'AP 추가 모드 시작'}
+      aria-label="AP 추가"
+      className={cn(
+        'absolute right-3 top-3 z-10 flex w-[5.5rem] flex-col items-center gap-2 rounded-lg border border-slate-200 bg-white/95 p-2 backdrop-blur-sm transition-colors',
+        !disabled && 'cursor-pointer hover:border-slate-300 hover:bg-slate-50/95',
+        disabled && 'cursor-not-allowed opacity-50',
       )}
-    </div>
+    >
+      <span className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-700">
+        AP 추가
+      </span>
+      <span
+        className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-500 text-white shadow-sm shadow-blue-500/20"
+        aria-hidden
+      >
+        <Wifi className="h-4 w-4" strokeWidth={2.5} />
+      </span>
+      {disabled && (
+        <span className="text-center text-[10px] leading-tight text-slate-400">최대 8개</span>
+      )}
+    </button>
   );
 }
 
@@ -503,56 +505,64 @@ function PageHeader({
   onReset: () => void;
 }) {
   return (
-    <header className="flex items-start justify-between gap-4">
-      <div className="space-y-1.5">
-        <h1 className="text-2xl font-semibold tracking-tight">시뮬레이션</h1>
-        <p className="text-sm text-muted-foreground">
+    <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+      <div className="min-w-0">
+        <h1 className="text-2xl font-semibold tracking-tight text-slate-900">시뮬레이션</h1>
+        <p className="mt-0.5 text-sm text-slate-500">
           저장된 도면을 불러와 가구와 AP를 자유롭게 배치하고 예상 품질을 비교합니다.
         </p>
       </div>
 
-      <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
-        {state === 'idle' && (
-          <>
-            {/* 공간 유형 — Floor.space_type 직접 수정. 변경 시 즉시 저장 (다음 calibration 에 자동 반영).
-                현재 sim 동작에는 영향 없지만 사용자는 "이 공간을 시뮬한다" 라는 멘탈모델로 여기서 정함. */}
-            <FloorSpaceTypeSelector
-              floorId={floorId}
-              projectId={projectId}
-              showLabel={false}
-            />
-            <RfPhysicalControls
-              frequencyBand={frequencyBand}
-              onFrequencyBandChange={onFrequencyBandChange}
-              txPowerDbm={txPowerDbm}
-              onTxPowerDbmChange={onTxPowerDbmChange}
-              disabled={isStarting}
-            />
-            <BackendToggle value={backend} onChange={onBackendChange} disabled={isStarting} />
-          </>
-        )}
+      <div className="flex shrink-0 flex-wrap items-center justify-end">
         {state === 'idle' ? (
-          <button
-            type="button"
-            onClick={onStart}
-            disabled={!hasVersion || isStarting || apsCount === 0}
-            title={
-              apsCount === 0
-                ? 'AP 를 1개 이상 배치해주세요'
-                : '시뮬레이션 실행'
-            }
-            className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Play className="h-4 w-4 fill-current" />
-            {isStarting ? '요청 중...' : '시뮬레이션 실행'}
-          </button>
+          <div className="inline-flex flex-wrap items-center rounded-lg border border-slate-200 bg-white p-1">
+            <div className="border-b border-slate-100 px-1.5 py-0.5 sm:border-b-0 sm:border-r">
+              <div className="inline-flex h-8 items-center rounded-md bg-slate-50 p-0.5">
+                <FloorSpaceTypeSelector
+                  floorId={floorId}
+                  projectId={projectId}
+                  showLabel={false}
+                  className="h-8"
+                  selectClassName="inline-flex h-7 min-w-[6.5rem] cursor-pointer appearance-none rounded-md border-0 bg-blue-50 py-0 pl-2.5 pr-6 text-xs font-medium text-blue-700 shadow-none focus:outline-none focus:ring-0 disabled:opacity-50"
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-1 border-b border-slate-100 px-1.5 py-0.5 sm:border-b-0 sm:border-r">
+              <RfPhysicalControls
+                frequencyBand={frequencyBand}
+                onFrequencyBandChange={onFrequencyBandChange}
+                txPowerDbm={txPowerDbm}
+                onTxPowerDbmChange={onTxPowerDbmChange}
+                disabled={isStarting}
+              />
+            </div>
+            <div className="border-b border-slate-100 px-1.5 py-0.5 sm:border-b-0 sm:border-r">
+              <BackendToggle value={backend} onChange={onBackendChange} disabled={isStarting} />
+            </div>
+            <div className="px-1.5 py-0.5">
+              <button
+                type="button"
+                onClick={onStart}
+                disabled={!hasVersion || isStarting || apsCount === 0}
+                title={
+                  apsCount === 0
+                    ? 'AP 를 1개 이상 배치해주세요'
+                    : '시뮬레이션 실행'
+                }
+                className="inline-flex h-8 items-center gap-1.5 rounded-md bg-blue-500 px-3 text-xs font-medium text-white shadow-sm shadow-blue-500/20 transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Play className="h-3 w-3 fill-current" />
+                {isStarting ? '요청 중...' : '시뮬레이션 실행'}
+              </button>
+            </div>
+          </div>
         ) : (
           <button
             type="button"
             onClick={onReset}
-            className="inline-flex items-center gap-2 rounded-lg border bg-background px-3.5 py-2 text-sm font-medium text-foreground/80 shadow-sm hover:bg-accent"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50"
           >
-            <RotateCcw className="h-4 w-4" />
+            <RotateCcw className="h-3.5 w-3.5" />
             다시 실행
           </button>
         )}
@@ -561,7 +571,7 @@ function PageHeader({
   );
 }
 
-/** SageMaker | Local 백엔드 토글 (idle 일 때만 노출). */
+/** Wi-Fi 대역 · AP 출력 — idle 시 설정 바에 노출. */
 function RfPhysicalControls({
   frequencyBand,
   onFrequencyBandChange,
@@ -586,8 +596,12 @@ function RfPhysicalControls({
   };
 
   return (
-    <div className="inline-flex items-center gap-2 rounded-lg border bg-background p-1 shadow-sm">
-      <div className="inline-flex items-center gap-0.5 rounded-md bg-muted/50 p-0.5">
+    <div className="flex flex-wrap items-center gap-2">
+      <div
+        role="group"
+        aria-label="Wi-Fi 대역"
+        className="inline-flex h-8 items-center rounded-md bg-slate-50 p-0.5"
+      >
         {bands.map((band) => {
           const active = frequencyBand === band.key;
           return (
@@ -597,20 +611,15 @@ function RfPhysicalControls({
               onClick={() => onFrequencyBandChange(band.key)}
               disabled={disabled}
               title={band.hint}
-              className={cn(
-                'rounded px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                active
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground',
-              )}
+              className={simSegmentBtn(active, disabled)}
             >
               {band.label}
             </button>
           );
         })}
       </div>
-      <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-        Tx
+      <label className="inline-flex h-8 items-center gap-1.5 px-1 text-xs">
+        <span className="text-slate-500">출력</span>
         <input
           type="number"
           min={0}
@@ -619,9 +628,10 @@ function RfPhysicalControls({
           value={txPowerDbm}
           onChange={(event) => handleTxPowerChange(event.target.value)}
           disabled={disabled}
-          className="h-7 w-14 rounded-md border bg-background px-2 text-right text-xs font-medium text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          aria-label="AP 출력 (dBm)"
+          className="h-6 min-w-11 w-11 rounded border border-slate-200 bg-white px-1.5 text-center text-xs font-medium tabular-nums text-slate-800 [appearance:textfield] focus:border-blue-300 focus:outline-none focus:ring-1 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-50 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
         />
-        dBm
+        <span className="text-[10px] text-slate-400">dBm</span>
       </label>
     </div>
   );
@@ -644,7 +654,7 @@ function BackendToggle({
     <div
       role="radiogroup"
       aria-label="시뮬 실행 백엔드"
-      className="inline-flex items-center gap-0.5 rounded-lg border bg-background p-0.5 shadow-sm"
+      className="inline-flex h-8 items-center rounded-md bg-slate-50 p-0.5"
     >
       {options.map((opt) => {
         const active = value === opt.key;
@@ -657,12 +667,7 @@ function BackendToggle({
             onClick={() => onChange(opt.key)}
             disabled={disabled}
             title={opt.hint}
-            className={cn(
-              'rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-              active
-                ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
+            className={simSegmentBtn(active, disabled)}
           >
             {opt.label}
           </button>
@@ -676,22 +681,22 @@ function BackendToggle({
 function SimulationVisualization({ state }: { state: SimulationState }) {
   if (state === 'running') {
     return (
-      <div className="flex h-full min-h-80 flex-col items-center justify-center gap-2 text-center">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-        <p className="text-sm font-medium">RF 시뮬레이션 진행 중</p>
-        <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
+      <div className="flex h-full min-h-80 flex-col items-center justify-center gap-2 p-4 text-center">
+        <Loader2 className="h-7 w-7 animate-spin text-blue-600" />
+        <p className="text-sm font-medium text-slate-800">RF 시뮬레이션 진행 중</p>
+        <p className="max-w-sm text-xs leading-relaxed text-slate-500">
           서버에서 결과를 계산하는 동안 잠시만 기다려주세요. 최대 약 15분이 소요될 수 있습니다.
         </p>
       </div>
     );
   }
   return (
-    <div className="flex h-full min-h-80 flex-col items-center justify-center gap-2 text-center">
-      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
-        <Play className="h-5 w-5 text-primary" />
+    <div className="flex h-full min-h-80 flex-col items-center justify-center gap-2 p-4 text-center">
+      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50">
+        <Play className="h-4 w-4 text-blue-600" />
       </div>
-      <p className="text-sm font-medium">시뮬레이션 실행 대기 중</p>
-      <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
+      <p className="text-sm font-medium text-slate-800">시뮬레이션 실행 대기 중</p>
+      <p className="max-w-sm text-xs leading-relaxed text-slate-500">
         상단의 시뮬레이션 실행 버튼을 누르면 확정된 도면 기준으로 RF 시뮬레이션이 시작됩니다.
       </p>
     </div>
@@ -753,10 +758,9 @@ function ApPlacementPanel({ rfRunId }: { rfRunId: string }) {
 
   const handleConfirmCandidate = (c: ApCandidate) => {
     if (!c.point_geom) return;
-    const seq = layouts.length + 1;
     createLayout.mutate({
       rf_run_id: rfRunId,
-      ap_name: `AP-${String(seq).padStart(2, '0')}`,
+      ap_name: nextApSequentialName(layouts.map((l) => l.ap_name)),
       point_geom: c.point_geom,
       z_m: c.z_m ?? 2.5,
     });
@@ -891,25 +895,28 @@ function ApLayoutRow({
  * 백엔드 응답 예: { z: 1, min_x, min_y, max_x, max_y }.
  * 4개 좌표 중 하나라도 유효하지 않으면 null → 히트맵 오버레이 생략.
  */
-/** RF Run.created_at → "방금 전" / "오늘 14:32" / "어제 09:10" / "5/18 14:32". */
-function formatRunTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const now = new Date();
-  const diffMs = now.getTime() - d.getTime();
-  if (diffMs < 60_000) return '방금 전';
-  if (diffMs < 3600_000) return `${Math.floor(diffMs / 60_000)}분 전`;
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  const sameDay = (a: Date, b: Date) =>
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate();
-  if (sameDay(d, now)) return `오늘 ${hh}:${mm}`;
-  if (sameDay(d, yesterday)) return `어제 ${hh}:${mm}`;
-  return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
+function useSceneFloorplanBackground(
+  floorId: string | null,
+  sceneVersion: SceneVersion | null | undefined,
+): string | null {
+  const versionAsDraft = sceneVersion ? versionToDraftShape(sceneVersion) : null;
+  const sourceAssetId = versionAsDraft?.source_asset_id ?? null;
+  const floorAssetsQuery = useFloorAssets(floorId, 'floorplan_image');
+  const fallbackAsset = useMemo(() => {
+    const list = floorAssetsQuery.data ?? [];
+    if (list.length === 0) return null;
+    return [...list].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+  }, [floorAssetsQuery.data]);
+  const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
+  const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
+  const localImage = useLocalFloorplanImage({ floorId, sourceAssetId });
+  useEffect(() => {
+    if (floorId && sourceAssetId) linkFloorImageToAsset(floorId, sourceAssetId);
+  }, [floorId, sourceAssetId]);
+  const assetUrl = assetUrlQuery.data?.url ?? null;
+  const usableAssetUrl =
+    assetUrl && /^https?:\/\//i.test(assetUrl) ? assetUrl : null;
+  return usableAssetUrl ?? localImage ?? null;
 }
 
 function parseHeatmapBounds(

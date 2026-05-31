@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { rfJobApi, rfRunApi, type ListRfRunsParams } from '@/api/rf-run';
 import type { HttpError } from '@/api/client';
@@ -8,6 +8,9 @@ import type { RfJob, RfRun, RfRunCreate } from '@/types/rf';
 import { isJobFailed, isJobSucceeded, isJobTerminal } from '@/types/job';
 
 const POLL_INTERVAL_MS = 3_000;
+
+/** run id 별 완료/실패 토스트 1회만 (Strict Mode·리마운트 중복 방지). */
+const notifiedRfRunIds = new Set<string>();
 
 /** POST /rf-runs — 시뮬레이션 큐 등록. */
 export function useCreateRfRun() {
@@ -31,8 +34,6 @@ export function useCreateRfRun() {
  * succeeded/failed 시 자동 중지 + 토스트 (중복 발화 방지).
  */
 export function useRfRun(rfRunId: UUID | null) {
-  const settledRef = useRef<string | null>(null);
-
   const query = useQuery({
     queryKey: ['rf-run', rfRunId] as const,
     queryFn: () => rfRunApi.get(rfRunId as UUID),
@@ -48,20 +49,16 @@ export function useRfRun(rfRunId: UUID | null) {
   useEffect(() => {
     const data = query.data;
     if (!data || !rfRunId) return;
-    if (settledRef.current === rfRunId) return;
+    if (notifiedRfRunIds.has(rfRunId)) return;
     if (isJobSucceeded(data.status)) {
-      settledRef.current = rfRunId;
+      notifiedRfRunIds.add(rfRunId);
       toast.success('RF 시뮬레이션 완료', '결과를 확인해주세요.');
     } else if (isJobFailed(data.status)) {
-      settledRef.current = rfRunId;
+      notifiedRfRunIds.add(rfRunId);
       const err = (data.metrics_json?.['error_message'] as string | undefined) ?? undefined;
       toast.error('RF 시뮬레이션 실패', err ?? '잠시 후 다시 시도해주세요.');
     }
   }, [query.data, rfRunId]);
-
-  useEffect(() => {
-    settledRef.current = null;
-  }, [rfRunId]);
 
   const rfRun: RfRun | null = query.data ?? null;
   const status = rfRun?.status;
