@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { CheckCircle2, Loader2, RotateCcw, Sparkles } from 'lucide-react';
+import { Check, CheckCircle2, Loader2, RotateCcw, Sparkles } from 'lucide-react';
 import type { HttpError } from '@/api/client';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
@@ -37,7 +37,11 @@ const PROGRESS_STEPS = [
   { id: 3, label: '추천 위치 선택' },
 ] as const;
 
-const CARD_BORDER = 'border-slate-200';
+const CARD_BORDER = 'border-[#E5E7EB]';
+
+/** 추천 패널 스크롤 영역 — 연한 하늘/회색 scrollbar */
+const PANEL_SCROLL =
+  '[scrollbar-width:thin] [scrollbar-color:#BDE0FE_transparent] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[#CBD5E1] hover:[&::-webkit-scrollbar-thumb]:bg-[#A2D2FF]';
 
 export default function MobileAppPage() {
   const floorId = useAppStore((s) => s.selectedFloorId);
@@ -340,12 +344,20 @@ export default function MobileAppPage() {
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 px-6 pb-5 lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-5 lg:px-8">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 px-6 pb-5 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-5 lg:px-8">
         <div className="flex min-h-0 flex-col gap-3">
+          <div className="w-full shrink-0 rounded-lg border border-[#E5E7EB] bg-white px-8 py-3 sm:px-10">
+            <ProgressStepper
+              activeStep={activeStep}
+              pageStatus={pageStatus}
+              registerStepIconRef={registerStepIconRef}
+            />
+          </div>
+
           <div
             ref={canvasAreaRef}
             className={cn(
-              'relative flex min-h-[min(52vh,32rem)] flex-1 flex-col overflow-hidden rounded-xl border bg-white shadow-sm',
+              'relative flex min-h-[min(52vh,32rem)] flex-1 flex-col overflow-hidden rounded-xl border bg-white',
               CARD_BORDER,
             )}
           >
@@ -378,31 +390,18 @@ export default function MobileAppPage() {
               <CanvasStatusBubble message={statusHint} leftPx={bubbleLeftPx} />
             )}
           </div>
-
-          <div
-            className={cn(
-              'shrink-0 rounded-lg border bg-white px-3 py-2.5',
-              CARD_BORDER,
-            )}
-          >
-            <ProgressStepper
-              activeStep={activeStep}
-              pageStatus={pageStatus}
-              registerStepIconRef={registerStepIconRef}
-            />
-          </div>
         </div>
 
         <aside
           className={cn(
-            'flex min-h-[260px] flex-col overflow-hidden rounded-xl border bg-white shadow-sm lg:min-h-0 lg:self-stretch',
+            'flex min-h-[260px] flex-col overflow-hidden rounded-xl border bg-white lg:min-h-0 lg:self-stretch',
             CARD_BORDER,
           )}
         >
-          <div className="border-b border-slate-200 px-5 py-4">
-            <h2 className="text-base font-semibold text-slate-900">최적 배치 추천</h2>
+          <div className="border-b border-[#E5E7EB] px-5 py-4">
+            <h2 className="text-base font-semibold text-[#0F172A]">최적 배치 추천</h2>
             {recommendations.length > 0 && (
-              <p className="mt-1.5 text-xs leading-relaxed text-slate-500">
+              <p className="mt-1.5 text-xs leading-relaxed text-[#64748B]">
                 선택한 우선 개선 영역과 기존 AP 위치를 함께 고려해 추천했습니다.
                 {recommendations[0]?.candidates_evaluated > 0 && (
                   <>
@@ -414,25 +413,25 @@ export default function MobileAppPage() {
             )}
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <div className={cn('min-h-0 flex-1 overflow-y-auto bg-[#F8FAFC] p-4', PANEL_SCROLL)}>
             {recommendations.length === 0 ? (
               <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-2 px-4 text-center">
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100">
-                  <Sparkles className="h-5 w-5 text-slate-400" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-full border border-[#E2E8F0] bg-white">
+                  <Sparkles className="h-5 w-5 text-[#94A3B8]" />
                 </div>
-                <p className="text-sm font-medium text-slate-700">
+                <p className="text-sm font-medium text-[#0F172A]">
                   {pageStatus === 'loading'
                     ? '최적 위치를 계산하고 있습니다…'
                     : '추천 결과가 아직 없습니다'}
                 </p>
                 {pageStatus !== 'loading' && (
-                  <p className="text-xs leading-relaxed text-slate-500">
+                  <p className="text-xs leading-relaxed text-[#64748B]">
                     도면에서 개선이 필요한 영역을 드래그한 뒤, 최적 배치 추천을 실행하세요.
                   </p>
                 )}
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-4">
                 {recommendations.map((rec) => (
                   <RecommendationCard
                     key={rec.rank}
@@ -464,18 +463,18 @@ function CanvasStatusBubble({
 }) {
   return (
     <div
-      className="pointer-events-none absolute bottom-3 z-10 -translate-x-1/2"
+      className="pointer-events-none absolute top-3 z-10 -translate-x-1/2"
       style={{ left: leftPx }}
     >
       <div
         key={message}
         className="relative w-max max-w-md animate-bubble-rise rounded-xl border border-sky-200 bg-sky-50/95 px-4 py-2.5 shadow-sm backdrop-blur-sm"
       >
-        <p className="text-center text-xs leading-relaxed text-sky-900/90">{message}</p>
         <span
-          className="absolute -bottom-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 border-b border-r border-sky-200 bg-sky-50/95"
+          className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 border-l border-t border-sky-200 bg-sky-50/95"
           aria-hidden="true"
         />
+        <p className="text-center text-xs leading-relaxed text-sky-900/90">{message}</p>
       </div>
     </div>
   );
@@ -547,39 +546,39 @@ function RecommendationCard({
       onMouseEnter={() => onHover(true)}
       onMouseLeave={() => onHover(false)}
       className={cn(
-        'rounded-xl border border-l-4 border-slate-200 bg-white p-4 transition-colors',
+        'flex flex-col gap-4 rounded-xl border border-l-4 bg-white p-5 transition-colors',
+        CARD_BORDER,
         ui.cardAccentClass,
-        isPrimary && !saved && ui.cardEmphasisClass,
-        highlighted && !saved && 'shadow-sm',
-        saved && 'border-l-emerald-500 ring-1 ring-emerald-100',
+        highlighted && isPrimary && !saved && ui.cardHighlightClass,
+        highlighted && !isPrimary && !saved && 'bg-[#EAF4FF]/30',
       )}
     >
       <div className="flex items-start gap-3">
         <div
           className={cn(
-            'flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-bold',
-            saved ? 'bg-emerald-500 text-white' : ui.badgeClass,
+            'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs',
+            saved ? 'bg-[#3B82F6] text-white font-bold' : ui.badgeClass,
           )}
         >
           {rec.rank}
         </div>
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold leading-snug text-slate-900">{ui.title}</h3>
-          <p className="mt-1 text-xs leading-relaxed text-slate-600">{reason}</p>
+          <h3 className="text-sm font-medium leading-snug text-[#0F172A]">{ui.title}</h3>
+          <p className="mt-1.5 text-xs font-normal leading-relaxed text-[#64748B]">{reason}</p>
         </div>
       </div>
 
-      <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-xs">
-        <p className="text-slate-500">도면 기준 위치</p>
-        <p className="mt-0.5 font-medium tabular-nums text-slate-900">
+      <div className="rounded-lg bg-[#F8FAFC] px-3 py-2.5 text-xs">
+        <p className="text-[#64748B]">도면 기준 위치</p>
+        <p className="mt-1 font-medium tabular-nums text-[#0F172A]">
           가로 {rec.recommended_x.toFixed(1)}m · 세로 {rec.recommended_y.toFixed(1)}m
         </p>
       </div>
 
       {saved ? (
-        <div className="mt-3 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5">
-          <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
-          <p className="text-sm font-medium text-emerald-900">AP 배치로 저장됨</p>
+        <div className="flex items-center gap-2 rounded-lg bg-[#F8FAFC] px-3 py-2.5">
+          <CheckCircle2 className="h-4 w-4 shrink-0 text-[#3B82F6]" aria-hidden="true" />
+          <p className="text-sm font-normal text-[#0F172A]">AP 배치로 저장됨</p>
         </div>
       ) : (
         <button
@@ -587,8 +586,11 @@ function RecommendationCard({
           onClick={onSelect}
           disabled={saveDisabled}
           className={cn(
-            'mt-3 w-full rounded-lg border border-slate-200 bg-white py-2.5 text-sm font-medium text-slate-900 transition-colors',
-            'hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50',
+            'flex h-11 w-full items-center justify-center rounded-xl text-sm font-medium transition-colors',
+            'disabled:cursor-not-allowed disabled:opacity-50',
+            isPrimary
+              ? 'border border-[#3B82F6] bg-[#3B82F6] text-white hover:bg-[#2563EB] hover:border-[#2563EB]'
+              : 'border border-[#CBD5E1] bg-white text-[#0F172A] hover:border-[#94A3B8] hover:bg-[#F8FAFC]',
           )}
         >
           {saving ? (
@@ -614,64 +616,67 @@ function ProgressStepper({
   pageStatus: PageStatus;
   registerStepIconRef?: (index: number, el: HTMLDivElement | null) => void;
 }) {
-  return (
-    <div className="flex justify-center">
-      <ol className="flex items-center">
-        {PROGRESS_STEPS.map((step, index) => {
-          const done =
-            step.id < activeStep ||
-            (step.id === 1 && pageStatus !== 'idle') ||
-            (step.id === 2 && (pageStatus === 'success' || pageStatus === 'loading'));
-          const current = step.id === activeStep && pageStatus !== 'error';
-          const isLast = index === PROGRESS_STEPS.length - 1;
+  const isStepDone = (stepId: number) =>
+    stepId < activeStep ||
+    (stepId === 1 && pageStatus !== 'idle') ||
+    (stepId === 2 && (pageStatus === 'success' || pageStatus === 'loading'));
 
-          return (
-            <li key={step.id} className="flex items-center">
-              <div className="flex flex-col items-center gap-1.5">
-                <div
-                  ref={(el) => registerStepIconRef?.(index, el)}
-                  className={cn(
-                    'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold',
-                    done &&
-                      !current &&
-                      'bg-emerald-500 text-white ring-1 ring-emerald-200/80',
-                    current &&
-                      'bg-blue-500 text-white ring-4 ring-blue-100 shadow-sm shadow-blue-500/20',
-                    !done && !current && 'bg-slate-200 text-slate-500',
-                  )}
-                >
-                  {done && !current ? (
-                    <CheckCircle2 className="h-4 w-4" />
-                  ) : (
-                    step.id
-                  )}
-                </div>
-                <span
-                  className={cn(
-                    'w-[7.5rem] text-center text-xs leading-snug',
-                    current
-                      ? 'font-medium text-slate-900'
-                      : done
-                        ? 'text-slate-600'
-                        : 'text-slate-500',
-                  )}
-                >
-                  {step.label}
-                </span>
+  return (
+    <ol className="grid w-full grid-cols-3 items-start">
+      {PROGRESS_STEPS.map((step, index) => {
+        const done = isStepDone(step.id);
+        const current = step.id === activeStep && pageStatus !== 'error';
+        const isFirst = index === 0;
+        const isLast = index === PROGRESS_STEPS.length - 1;
+        const lineBeforeDone = !isFirst && isStepDone(PROGRESS_STEPS[index - 1]!.id);
+        const lineAfterDone = !isLast && isStepDone(step.id);
+
+        return (
+          <li key={step.id} className="flex min-w-0 flex-col items-center">
+            <div className="flex w-full items-center">
+              <div
+                className={cn(
+                  'h-px flex-1',
+                  isFirst ? 'bg-transparent' : lineBeforeDone ? 'bg-primary/20' : 'bg-[#E5E7EB]',
+                )}
+                aria-hidden="true"
+              />
+              <div
+                ref={(el) => registerStepIconRef?.(index, el)}
+                className={cn(
+                  'mx-2 flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full text-[10px] font-medium',
+                  done &&
+                    !current &&
+                    'border border-primary/25 bg-primary/10 text-primary',
+                  current && 'bg-primary text-primary-foreground',
+                  !done && !current && 'border border-[#E5E7EB] bg-white text-[#64748B]',
+                )}
+              >
+                {done && !current ? (
+                  <Check className="h-2.5 w-2.5" strokeWidth={2.5} aria-hidden="true" />
+                ) : (
+                  step.id
+                )}
               </div>
-              {!isLast && (
-                <div
-                  className={cn(
-                    'mx-3 mb-[1.625rem] h-0.5 w-20 sm:w-28',
-                    step.id < activeStep ? 'bg-emerald-200' : 'bg-slate-200',
-                  )}
-                  aria-hidden="true"
-                />
+              <div
+                className={cn(
+                  'h-px flex-1',
+                  isLast ? 'bg-transparent' : lineAfterDone ? 'bg-primary/20' : 'bg-[#E5E7EB]',
+                )}
+                aria-hidden="true"
+              />
+            </div>
+            <span
+              className={cn(
+                'mt-1.5 w-full px-1 text-center text-xs leading-snug',
+                current ? 'font-normal text-primary' : 'font-normal text-[#64748B]',
               )}
-            </li>
-          );
-        })}
-      </ol>
-    </div>
+            >
+              {step.label}
+            </span>
+          </li>
+        );
+      })}
+    </ol>
   );
 }

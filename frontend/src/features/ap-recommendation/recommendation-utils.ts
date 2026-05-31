@@ -6,6 +6,18 @@ import type {
 } from '@/types/ap-recommendation';
 import type { UUID } from '@/types/common';
 import { parseGeometry } from '@/features/editor/geometry-utils';
+import { CANVAS_BLUE } from '@/lib/canvas-scene-colors';
+
+/** AP 추천 순위 — 하늘색 단일 계열 (진→옅, 명도 차이 확대) */
+const RANK1_SKY = '#3B82F6';
+const RANK2_SKY = '#60A5FA';
+const RANK3_SKY = '#BFDBFE';
+const RANK_SKY_MUTED = '#EAF4FF';
+const RANK2_SKY_HOVER = '#3B82F6';
+const RANK3_SKY_HOVER = '#93C5FD';
+
+/** primary hover — blue-600, 1위 캔버스 마커 강조용 */
+const CANVAS_BLUE_HOVER = 'oklch(0.546 0.245 262.881)';
 
 /** AP 설치 높이 기본값 — SimulationCanvas DEFAULT_AP_Z_M 과 동일. */
 export const AP_DEFAULT_Z_M = 2.5;
@@ -187,16 +199,16 @@ export function computeSceneBounds(
   return { xMin: b.minX, yMin: b.minY, xMax: b.maxX, yMax: b.maxY };
 }
 
-/** AP 추천 순위 — 패널·캔버스 공통 색 (emerald / orange / violet). */
+/** AP 추천 순위 — 패널 accent/badge·캔버스 마커 (하늘색 계열). */
 export interface RecommendationRankUi {
-  /** 캔버스 마커 fill */
+  accent: string;
+  accentMuted: string;
   fill: string;
-  /** 캔버스 마커 hover·라벨 accent */
   fillHighlighted: string;
+  markerLabelFill: string;
   badgeClass: string;
   cardAccentClass: string;
-  /** 1순위 카드만 — 과하지 않은 강조 */
-  cardEmphasisClass: string;
+  cardHighlightClass: string;
   title: string;
 }
 
@@ -204,29 +216,38 @@ export function getRecommendationRankUi(rank: number): RecommendationRankUi {
   switch (rank) {
     case 1:
       return {
-        fill: '#10B981',
-        fillHighlighted: '#059669',
-        badgeClass: 'bg-emerald-500 text-white',
-        cardAccentClass: 'border-l-emerald-500',
-        cardEmphasisClass: 'ring-1 ring-emerald-100',
+        accent: RANK1_SKY,
+        accentMuted: RANK_SKY_MUTED,
+        fill: CANVAS_BLUE,
+        fillHighlighted: CANVAS_BLUE_HOVER,
+        markerLabelFill: '#FFFFFF',
+        badgeClass: 'bg-[#3B82F6] text-white font-bold',
+        cardAccentClass: 'border-l-[#3B82F6]',
+        cardHighlightClass: 'bg-[#EAF4FF]/70',
         title: '1위 추천 위치',
       };
     case 2:
       return {
-        fill: '#F97316',
-        fillHighlighted: '#EA580C',
-        badgeClass: 'bg-orange-500 text-white',
-        cardAccentClass: 'border-l-orange-500',
-        cardEmphasisClass: '',
+        accent: RANK2_SKY,
+        accentMuted: RANK_SKY_MUTED,
+        fill: RANK2_SKY,
+        fillHighlighted: RANK2_SKY_HOVER,
+        markerLabelFill: '#1E3A8A',
+        badgeClass: 'bg-[#60A5FA] text-[#1E3A8A] font-semibold',
+        cardAccentClass: 'border-l-[#60A5FA]',
+        cardHighlightClass: 'bg-white',
         title: '2위 추천 위치',
       };
     default:
       return {
-        fill: '#8B5CF6',
-        fillHighlighted: '#7C3AED',
-        badgeClass: 'bg-violet-500 text-white',
-        cardAccentClass: 'border-l-violet-500',
-        cardEmphasisClass: '',
+        accent: RANK3_SKY,
+        accentMuted: RANK_SKY_MUTED,
+        fill: RANK3_SKY,
+        fillHighlighted: RANK3_SKY_HOVER,
+        markerLabelFill: '#2563EB',
+        badgeClass: 'bg-[#BFDBFE] text-[#2563EB] font-semibold',
+        cardAccentClass: 'border-l-[#BFDBFE]',
+        cardHighlightClass: 'bg-white',
         title: `${rank}위 추천 위치`,
       };
   }
