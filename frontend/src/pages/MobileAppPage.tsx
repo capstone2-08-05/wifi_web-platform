@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { CheckCircle2, ChevronDown, Loader2, RotateCcw, Sparkles } from 'lucide-react';
+import { CheckCircle2, Loader2, RotateCcw, Sparkles } from 'lucide-react';
 import type { HttpError } from '@/api/client';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
@@ -20,6 +20,8 @@ import { ApRecommendationCanvas } from '@/features/ap-recommendation/ApRecommend
 import {
   AP_DEFAULT_Z_M,
   buildApRecommendationPayload,
+  getRecommendationRankUi,
+  getRecommendationReason,
   isValidSelectionBBox,
   normalizeRecommendations,
   type MeterBBox,
@@ -79,6 +81,7 @@ export default function MobileAppPage() {
   }, [apLayoutsQuery.data, latestRfRun?.request_json]);
 
   const [pageError, setPageError] = useState<string | null>(null);
+  const [hoveredRank, setHoveredRank] = useState<number | null>(null);
 
   const {
     selectionBBox,
@@ -92,6 +95,8 @@ export default function MobileAppPage() {
     persistSavedSession,
     resetSession,
   } = useApRecommendationSession(floorId, sceneVersionId);
+
+  const highlightedRank = selectedRank ?? hoveredRank;
 
   const recommendMutation = useApRecommendation();
   const createLayout = useCreateApLayout();
@@ -129,6 +134,7 @@ export default function MobileAppPage() {
     setRecommendations([]);
     setSelectedRank(null);
     setSavedRank(null);
+    setHoveredRank(null);
     setPageError(null);
     recommendMutation.reset();
   };
@@ -153,6 +159,7 @@ export default function MobileAppPage() {
 
     setPageError(null);
     setSavedRank(null);
+    setHoveredRank(null);
     recommendMutation.mutate(payload, {
       onSuccess: (data) => {
         const normalized = normalizeRecommendations(data);
@@ -171,6 +178,7 @@ export default function MobileAppPage() {
   const handleResetRecommendation = () => {
     resetSession();
     setPageError(null);
+    setHoveredRank(null);
     recommendMutation.reset();
   };
 
@@ -359,6 +367,8 @@ export default function MobileAppPage() {
                 onSelectionChange={handleSelectionChange}
                 recommendations={canvasRecommendations}
                 selectedRecommendationRank={selectedRank}
+                highlightedRank={highlightedRank}
+                onMarkerHover={setHoveredRank}
                 disabled={isRecommendPending || createLayout.isPending}
                 dragDisabled={isRecommendPending || hasRecommendation}
               />
@@ -391,6 +401,17 @@ export default function MobileAppPage() {
         >
           <div className="border-b border-slate-200 px-5 py-4">
             <h2 className="text-base font-semibold text-slate-900">최적 배치 추천</h2>
+            {recommendations.length > 0 && (
+              <p className="mt-1.5 text-xs leading-relaxed text-slate-500">
+                선택한 우선 개선 영역과 기존 AP 위치를 함께 고려해 추천했습니다.
+                {recommendations[0]?.candidates_evaluated > 0 && (
+                  <>
+                    {' '}
+                    (총 {recommendations[0].candidates_evaluated}개 후보 비교)
+                  </>
+                )}
+              </p>
+            )}
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
@@ -416,11 +437,13 @@ export default function MobileAppPage() {
                   <RecommendationCard
                     key={rec.rank}
                     rec={rec}
+                    reason={getRecommendationReason(rec, recommendations, selectionBBox)}
+                    highlighted={highlightedRank === rec.rank}
                     saved={savedRank === rec.rank}
                     saving={createLayout.isPending && selectedRank === rec.rank}
                     saveDisabled={!latestRfRunId || createLayout.isPending}
-                    hasExistingAps={existingAps.length > 0}
                     onSelect={() => handleSelectRecommendation(rec)}
+                    onHover={(active) => setHoveredRank(active ? rec.rank : null)}
                   />
                 ))}
               </div>
@@ -499,102 +522,64 @@ function EmptyState({ message }: { message: string }) {
 
 function RecommendationCard({
   rec,
+  reason,
+  highlighted,
   saved,
   saving,
   saveDisabled,
-  hasExistingAps,
   onSelect,
+  onHover,
 }: {
   rec: ApRecommendationResult;
+  reason: string;
+  highlighted: boolean;
   saved: boolean;
   saving: boolean;
   saveDisabled: boolean;
-  hasExistingAps: boolean;
   onSelect: () => void;
+  onHover: (active: boolean) => void;
 }) {
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  const ui = getRecommendationRankUi(rec.rank);
+  const isPrimary = rec.rank === 1;
 
   return (
     <article
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
       className={cn(
-        'rounded-xl border bg-white p-4 transition-colors',
-        saved ? 'border-emerald-200 shadow-sm' : 'border-slate-200',
+        'rounded-xl border border-l-4 border-slate-200 bg-white p-4 transition-colors',
+        ui.cardAccentClass,
+        isPrimary && !saved && ui.cardEmphasisClass,
+        highlighted && !saved && 'shadow-sm',
+        saved && 'border-l-emerald-500 ring-1 ring-emerald-100',
       )}
     >
       <div className="flex items-start gap-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-sm font-bold text-white">
-          AP
+        <div
+          className={cn(
+            'flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-bold',
+            saved ? 'bg-emerald-500 text-white' : ui.badgeClass,
+          )}
+        >
+          {rec.rank}
         </div>
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold leading-snug text-slate-900">
-            이 위치에 AP를 설치하는 것을
-            <br />
-            추천합니다
-          </h3>
-          <p className="mt-1.5 text-xs leading-relaxed text-slate-500">
-            선택한 영역을 더 안정적으로 커버할 수 있는
-            <br />
-            위치입니다.
-          </p>
+          <h3 className="text-sm font-semibold leading-snug text-slate-900">{ui.title}</h3>
+          <p className="mt-1 text-xs leading-relaxed text-slate-600">{reason}</p>
         </div>
       </div>
 
-      <div className="mt-4 space-y-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs">
-        <div>
-          <p className="text-slate-500">도면 기준 위치</p>
-          <p className="mt-0.5 font-medium text-slate-900">
-            가로 {rec.recommended_x.toFixed(0)}m · 세로 {rec.recommended_y.toFixed(0)}m
-          </p>
-        </div>
-        {rec.candidates_evaluated > 0 && (
-          <p className="text-slate-500">
-            총 {rec.candidates_evaluated}개 후보 위치를 비교했습니다.
-          </p>
-        )}
-      </div>
-
-      <div className="mt-4">
-        <p className="text-xs font-semibold text-slate-900">추천 이유</p>
-        <ul className="mt-1.5 list-inside list-disc space-y-1 text-xs leading-relaxed text-slate-500">
-          <li>선택한 우선 개선 영역을 기준으로 계산했습니다.</li>
-          {hasExistingAps && <li>기존 AP 위치를 함께 고려했습니다.</li>}
-        </ul>
-      </div>
-
-      <div className="mt-3 border-t border-slate-200 pt-3">
-        <button
-          type="button"
-          onClick={() => setDetailsOpen((v) => !v)}
-          className="flex w-full items-center justify-between text-xs text-slate-500 hover:text-slate-700"
-          aria-expanded={detailsOpen}
-        >
-          <span>상세 정보</span>
-          <ChevronDown
-            className={cn('h-3.5 w-3.5 transition-transform', detailsOpen && 'rotate-180')}
-            aria-hidden="true"
-          />
-        </button>
-        {detailsOpen && (
-          <p className="mt-2 text-[11px] text-slate-500">
-            상세 점수: {rec.score.toFixed(1)}
-          </p>
-        )}
+      <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-xs">
+        <p className="text-slate-500">도면 기준 위치</p>
+        <p className="mt-0.5 font-medium tabular-nums text-slate-900">
+          가로 {rec.recommended_x.toFixed(1)}m · 세로 {rec.recommended_y.toFixed(1)}m
+        </p>
       </div>
 
       {saved ? (
-        <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
-          <div className="flex gap-2.5">
-            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" aria-hidden="true" />
-            <div className="min-w-0">
-              <p className="text-sm font-semibold text-emerald-900">AP 배치로 저장 완료</p>
-              <p className="mt-1 text-xs leading-relaxed text-emerald-800/90">
-                저장된 AP 배치 목록에 반영됩니다.
-              </p>
-              <p className="mt-1.5 text-xs leading-relaxed text-emerald-800/75">
-                다른 영역을 추천하려면 다시 생성하기를 눌러주세요.
-              </p>
-            </div>
-          </div>
+        <div className="mt-3 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5">
+          <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+          <p className="text-sm font-medium text-emerald-900">AP 배치로 저장됨</p>
         </div>
       ) : (
         <button
@@ -602,8 +587,8 @@ function RecommendationCard({
           onClick={onSelect}
           disabled={saveDisabled}
           className={cn(
-            'mt-4 w-full rounded-lg border border-slate-200 bg-slate-50 py-2.5 text-sm font-medium text-slate-900 transition-colors',
-            'hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50',
+            'mt-3 w-full rounded-lg border border-slate-200 bg-white py-2.5 text-sm font-medium text-slate-900 transition-colors',
+            'hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50',
           )}
         >
           {saving ? (

@@ -14,6 +14,7 @@ import {
   clampMeterBBox,
   clampRectToBounds,
   computeSceneBounds,
+  getRecommendationRankUi,
   isValidSelectionBBox,
   meterBBoxFromRect,
   normalizeRect,
@@ -67,6 +68,9 @@ interface Props {
   onSelectionChange: (bbox: MeterBBox | null) => void;
   recommendations: ApRecommendationResult[];
   selectedRecommendationRank: number | null;
+  /** 패널 hover·선택과 연동 — 라벨 강조용 */
+  highlightedRank?: number | null;
+  onMarkerHover?: (rank: number | null) => void;
   disabled?: boolean;
   /** true면 새 우선 개선 영역 드래그 불가 (추천 완료·계산 중) */
   dragDisabled?: boolean;
@@ -121,6 +125,8 @@ export function ApRecommendationCanvas({
   onSelectionChange,
   recommendations,
   selectedRecommendationRank,
+  highlightedRank = null,
+  onMarkerHover,
   disabled = false,
   dragDisabled = false,
 }: Props) {
@@ -322,13 +328,16 @@ export function ApRecommendationCanvas({
         </g>
 
         {/* 추천 AP 마커 — 선택 영역 위에 표시 */}
-        <g pointerEvents="none">
+        <g>
           {recommendations.map((rec) => (
             <RecommendationMarker
               key={rec.rank}
               rec={rec}
-              selected={selectedRecommendationRank === rec.rank}
+              highlighted={
+                highlightedRank === rec.rank || selectedRecommendationRank === rec.rank
+              }
               labelFontM={labelFontM}
+              onHover={(active) => onMarkerHover?.(active ? rec.rank : null)}
             />
           ))}
         </g>
@@ -431,25 +440,40 @@ function ExistingApMarker({ ap }: { ap: CanvasExistingAp }) {
 
 function RecommendationMarker({
   rec,
-  selected,
+  highlighted,
   labelFontM,
+  onHover,
 }: {
   rec: ApRecommendationResult;
-  selected: boolean;
+  highlighted: boolean;
   labelFontM: number;
+  onHover?: (active: boolean) => void;
 }) {
   const r = RECOMMEND_RADIUS_M;
-  const fill = selected ? '#059669' : '#10b981';
+  const ui = getRecommendationRankUi(rec.rank);
+  const fill = highlighted ? ui.fillHighlighted : ui.fill;
   return (
-    <g pointerEvents="none">
+    <g
+      onPointerEnter={() => onHover?.(true)}
+      onPointerLeave={() => onHover?.(false)}
+      className="cursor-default"
+    >
       <circle
         cx={rec.recommended_x}
         cy={rec.recommended_y}
-        r={r}
+        r={r + 0.06}
+        fill="transparent"
+        pointerEvents="all"
+      />
+      <circle
+        cx={rec.recommended_x}
+        cy={rec.recommended_y}
+        r={highlighted ? r * 1.08 : r}
         fill={fill}
         stroke="white"
-        strokeWidth="1.5"
+        strokeWidth={highlighted ? 2 : 1.5}
         vectorEffect="non-scaling-stroke"
+        pointerEvents="none"
       />
       <text
         x={rec.recommended_x}
@@ -459,25 +483,29 @@ function RecommendationMarker({
         fontSize={Math.max(r * 0.55, labelFontM * 0.65)}
         fontWeight="600"
         fill="white"
+        pointerEvents="none"
         style={{ userSelect: 'none' }}
       >
-        AP
+        {rec.rank}
       </text>
-      <text
-        x={rec.recommended_x}
-        y={rec.recommended_y + r + labelFontM * 1.05}
-        textAnchor="middle"
-        dominantBaseline="middle"
-        fontSize={labelFontM}
-        fontWeight="600"
-        fill={fill}
-        stroke="white"
-        strokeWidth={labelFontM * 0.1}
-        paintOrder="stroke fill"
-        style={{ userSelect: 'none' }}
-      >
-        추천 위치
-      </text>
+      {highlighted && (
+        <text
+          x={rec.recommended_x}
+          y={rec.recommended_y + r + labelFontM * 1.05}
+          textAnchor="middle"
+          dominantBaseline="middle"
+          fontSize={labelFontM * 0.92}
+          fontWeight="600"
+          fill={ui.fillHighlighted}
+          stroke="white"
+          strokeWidth={labelFontM * 0.1}
+          paintOrder="stroke fill"
+          pointerEvents="none"
+          style={{ userSelect: 'none' }}
+        >
+          {rec.rank}순위
+        </text>
+      )}
     </g>
   );
 }
