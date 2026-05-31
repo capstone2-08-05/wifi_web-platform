@@ -19,7 +19,8 @@ import {
   CANVAS_OBJECT_FILL,
   CANVAS_OBJECT_LABEL,
   CANVAS_OBJECT_STROKE,
-  CANVAS_WINDOW,
+  CANVAS_WINDOW_LABEL,
+  CANVAS_WINDOW_STROKE,
 } from '@/lib/canvas-scene-colors';
 
 export interface PlacedAp {
@@ -423,7 +424,8 @@ function OpeningShape({ opening }: { opening: DraftOpening }) {
   const end = g.coordinates[g.coordinates.length - 1];
   if (!start || !end) return null;
   const isDoor = opening.opening_type === 'door';
-  const color = isDoor ? CANVAS_BLUE : CANVAS_WINDOW;
+  const strokeColor = isDoor ? CANVAS_BLUE : CANVAS_WINDOW_STROKE;
+  const labelColor = isDoor ? CANVAS_BLUE : CANVAS_WINDOW_LABEL;
   const label = isDoor ? '문' : '창문';
   const midX = (start[0] + end[0]) / 2;
   const midY = (start[1] + end[1]) / 2;
@@ -442,7 +444,7 @@ function OpeningShape({ opening }: { opening: DraftOpening }) {
         y1={start[1]}
         x2={end[0]}
         y2={end[1]}
-        stroke={color}
+        stroke={strokeColor}
         strokeWidth="5"
         strokeLinecap="butt"
         vectorEffect="non-scaling-stroke"
@@ -454,7 +456,7 @@ function OpeningShape({ opening }: { opening: DraftOpening }) {
         dominantBaseline="middle"
         fontSize={OPENING_LABEL_FONT_SIZE_M}
         fontWeight="500"
-        fill={color}
+        fill={labelColor}
         style={{ userSelect: 'none' }}
       >
         {label}

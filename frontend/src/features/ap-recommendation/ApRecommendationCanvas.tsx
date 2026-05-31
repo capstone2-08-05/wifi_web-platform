@@ -8,7 +8,7 @@ import {
 import type { ApRecommendationResult } from '@/types/ap-recommendation';
 import type { DraftOpening, DraftWall, SceneVersion } from '@/types/scene';
 import { cn } from '@/lib/utils';
-import { CANVAS_BLUE, CANVAS_WINDOW } from '@/lib/canvas-scene-colors';
+import { CANVAS_BLUE, CANVAS_WINDOW_STROKE } from '@/lib/canvas-scene-colors';
 import {
   clampCoord,
   clampMeterBBox,
@@ -365,7 +365,7 @@ function OpeningShape({ opening }: { opening: DraftOpening }) {
   const end = g.coordinates[g.coordinates.length - 1];
   if (!start || !end) return null;
   const isDoor = opening.opening_type === 'door';
-  const color = isDoor ? CANVAS_BLUE : CANVAS_WINDOW;
+  const color = isDoor ? CANVAS_BLUE : CANVAS_WINDOW_STROKE;
   return (
     <line
       x1={start[0]}

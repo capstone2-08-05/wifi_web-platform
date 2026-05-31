@@ -325,7 +325,7 @@ export default function MeasurementPage() {
           subtitle="공간 편집에서 도면을 분석·확정한 후 모바일 앱으로 실측을 진행할 수 있습니다."
         />
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[1fr_350px]">
           <section className="flex min-h-0 flex-col gap-3">
             <TabBar mode={mode} onChange={setMode} />
             <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border bg-background shadow-sm">
@@ -836,8 +836,9 @@ function DiagnosticCard({
           예측·실측 통합 진단
         </h2>
         <p className="mt-3 text-xs text-muted-foreground">
-          측정 데이터가 없습니다. 모바일 앱으로 측정을 진행하면 가장 신호가 약한 지점의
-          진단이 자동으로 표시됩니다.
+          측정 데이터가 없습니다. 모바일 앱으로 측정을 진행하면 가장
+          <br />
+          신호가 약한 지점의 진단이 자동으로 표시됩니다.
         </p>
       </div>
     );
