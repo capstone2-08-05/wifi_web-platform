@@ -79,7 +79,13 @@ export default function SimulationPage() {
 
   // 층의 과거 RF Run 목록 (이력 카드 + 자동 복원용).
   const pastRunsQuery = useFloorRfRuns(floorId, { page_size: 20 });
-  const pastRuns = useMemo(() => pastRunsQuery.data?.items ?? [], [pastRunsQuery.data]);
+  const pastRuns = useMemo(
+    () =>
+      (pastRunsQuery.data?.items ?? []).filter(
+        (run) => run.run_type !== 'ap_recommendation_verify',
+      ),
+    [pastRunsQuery.data],
+  );
 
   // 활성 run = 사용자가 명시 선택한 것 ?? 현재 scene_version 으로 돌린 최근 succeeded.
   const activeRunId = useMemo(() => {

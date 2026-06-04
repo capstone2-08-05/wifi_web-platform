@@ -145,8 +145,9 @@ async def submit_via_local_ai_api(
         db.add(job)
         # rf_run.request_json.access_points 와 동일 좌표로 ApLayout row 자동 생성 —
         # 측정/진단 페이지가 ApLayout 만 보던 기존 코드도 즉시 호환.
-        from app.services.rf.rf_job_service import create_ap_layouts_from_request
-        create_ap_layouts_from_request(db, rf_run, access_points)
+        if run_type != "ap_recommendation_verify":
+            from app.services.rf.rf_job_service import create_ap_layouts_from_request
+            create_ap_layouts_from_request(db, rf_run, access_points)
         db.commit()
         db.refresh(rf_run)
         db.refresh(job)

@@ -30,7 +30,10 @@ export const measurementSessionApi = {
     api.get<MeasurementSession>(`/measurement-sessions/${sessionId}`).then((r) => r.data),
 
   // GET /measurement-sessions/{session_id}/points (페이지네이션, default page_size=100, max 500)
-  listPoints: (sessionId: UUID, params?: { page?: number; page_size?: number }) =>
+  listPoints: (
+    sessionId: UUID,
+    params?: { page?: number; page_size?: number; ap_bssid?: string | null },
+  ) =>
     api
       .get<Paginated<MeasurementPoint>>(`/measurement-sessions/${sessionId}/points`, {
         params,
@@ -48,7 +51,11 @@ export const measurementSessionApi = {
   // 'auto' (생략 시) = sim 있으면 residual, 없으면 gp_only.
   getEstimatedCoverage: (
     sessionId: UUID,
-    params?: { resolution_m?: number; method?: CoverageEstimationMethod | 'auto' },
+    params?: {
+      resolution_m?: number;
+      method?: CoverageEstimationMethod | 'auto';
+      ap_bssid?: string | null;
+    },
   ) =>
     api
       .get<EstimatedCoverage>(

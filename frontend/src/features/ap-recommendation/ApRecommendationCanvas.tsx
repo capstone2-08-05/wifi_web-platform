@@ -38,19 +38,19 @@ const AREA_STYLE: Record<
   { label: string; fill: string; stroke: string; badge: string }
 > = {
   candidate: {
-    label: '설치 가능한 곳',
+    label: '설치 가능 영역',
     fill: 'rgb(37 99 235 / 0.18)',
     stroke: 'rgb(37 99 235)',
     badge: 'oklch(0.55 0.22 254)',
   },
   priority: {
-    label: '집중구간',
+    label: '우선 평가 영역',
     fill: 'rgb(22 163 74 / 0.18)',
     stroke: 'rgb(22 163 74)',
     badge: 'oklch(0.62 0.18 145)',
   },
   excluded: {
-    label: '계산에서 제외',
+    label: '제외 영역',
     fill: 'rgb(239 68 68 / 0.16)',
     stroke: 'rgb(220 38 38)',
     badge: 'oklch(0.62 0.21 25)',
@@ -73,6 +73,7 @@ interface Props {
   heatmapMode?: 'prediction' | 'measurement';
   measurementHeatmap?: {
     url?: string | null;
+    valuesDbm?: number[][];
     bounds: { min_x: number; min_y: number; max_x: number; max_y: number };
     rssiRange?: { min: number; max: number };
     source?: 'measurement' | 'simulation';
@@ -298,7 +299,30 @@ export function ApRecommendationCanvas({
             </g>
           )}
 
-          {heatmapMode === 'measurement' && measurementHeatmap?.url && (
+          {heatmapMode === 'measurement' && measurementHeatmap?.valuesDbm ? (
+            <g opacity={0.65} pointerEvents="none">
+              {measurementHeatmap.valuesDbm.map((row, rowIdx) =>
+                row.map((value, colIdx) => {
+                  const rows = measurementHeatmap.valuesDbm?.length ?? 1;
+                  const cols = row.length || 1;
+                  const bounds = measurementHeatmap.bounds;
+                  const cellW = (bounds.max_x - bounds.min_x) / cols;
+                  const cellH = (bounds.max_y - bounds.min_y) / rows;
+                  const range = measurementHeatmap.rssiRange ?? { min: -90, max: -30 };
+                  return (
+                    <rect
+                      key={`ap-rec-measured-${rowIdx}-${colIdx}`}
+                      x={bounds.min_x + colIdx * cellW}
+                      y={bounds.min_y + rowIdx * cellH}
+                      width={cellW}
+                      height={cellH}
+                      fill={dbmToHeatmapColor(value, range.min, range.max)}
+                    />
+                  );
+                }),
+              )}
+            </g>
+          ) : heatmapMode === 'measurement' && measurementHeatmap?.url && (
             <image
               href={measurementHeatmap.url}
               xlinkHref={measurementHeatmap.url}

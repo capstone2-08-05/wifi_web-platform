@@ -105,7 +105,7 @@ export function buildApRecommendationPayload(params: {
     .filter((area) => area.type === 'priority')
     .map((area) => ({
       ...area.bbox,
-      label: '집중구간',
+      label: '우선 평가 영역',
       weight: 1.0,
     }));
   const excludedZones = areas
@@ -440,7 +440,7 @@ export function getRecommendationReason(
 
   if (rec.rank === 1) {
     parts.push(
-      '집중구간과 도면 평가 지점에서 음영 구역을 줄이고 예측 신호가 가장 잘 닿는 위치입니다.',
+      '우선 평가 영역과 도면 평가 지점에서 음영 구역을 줄이고 예측 신호가 가장 잘 닿는 위치입니다.',
     );
     if (bbox && isNearBboxEdge(rec, bbox)) {
       parts.push('선택 영역 가장자리 근처입니다.');

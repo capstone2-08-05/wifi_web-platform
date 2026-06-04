@@ -39,6 +39,7 @@ export interface CalibrationEvaluationRequest {
   scene_version_id: UUID;
   rf_run_id: UUID;
   measurement_session_ids: UUID[];
+  ap_bssid?: string | null;
   method?: 'affine_rssi_transfer' | 'global_offset';
   split?: {
     strategy: 'purpose_or_random' | 'random';

@@ -18,11 +18,13 @@ from app.core.settings import (
 )
 from app.core.geom import wkb_to_geojson
 from app.models.asset import Asset
+from app.models.ap_layout import ApLayout
 from app.models.floor import Floor
 from app.models.measurement_link import MeasurementLink
 from app.models.measurement_point import MeasurementPoint
 from app.models.measurement_session import MeasurementSession
 from app.models.project import Project
+from app.models.rf_run import RfRun
 from app.models.scene_version import SceneVersion
 from app.models.user import User
 from app.schemas.rf.measurement import (
@@ -279,6 +281,118 @@ def _bounds_from_floorplan(floorplan: FloorplanInfoDTO) -> FloorBoundsDTO:
     )
 
 
+def _valid_bounds(bounds: FloorBoundsDTO | None) -> bool:
+    return bool(bounds and bounds.max_x > bounds.min_x and bounds.max_y > bounds.min_y)
+
+
+def _latest_rf_run_for_scene(
+    db: Session, floor_id: str, scene_version_id: str | None
+) -> RfRun | None:
+    filters = [
+        RfRun.floor_id == floor_id,
+        RfRun.status.in_(["done", "completed", "succeeded"]),
+        RfRun.run_type != "ap_recommendation_verify",
+    ]
+    if scene_version_id:
+        filters.append(RfRun.scene_version_id == scene_version_id)
+    return db.execute(
+        select(RfRun).where(*filters).order_by(RfRun.created_at.desc()).limit(1)
+    ).scalar_one_or_none()
+
+
+def _point_xy(point_geom: object) -> tuple[float, float] | None:
+    gj = wkb_to_geojson(point_geom)
+    coords = (gj or {}).get("coordinates")
+    if not isinstance(coords, list) or len(coords) < 2:
+        return None
+    try:
+        return float(coords[0]), float(coords[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def _existing_ap_layouts_for_context(
+    db: Session, floor_id: str, scene_version_id: str | None
+) -> list[dict[str, object]]:
+    """Return AP positions with the measurement context so mobile can draw them.
+
+    Prefer saved ap_layouts for the latest RF run. If no layout rows exist, fall
+    back to the access_points embedded in the run request, which is how older
+    simulation runs exposed AP positions.
+    """
+    layout_filters = [
+        RfRun.floor_id == floor_id,
+        RfRun.run_type != "ap_recommendation_verify",
+    ]
+    if scene_version_id:
+        layout_filters.append(RfRun.scene_version_id == scene_version_id)
+    rf_runs = db.execute(
+        select(RfRun)
+        .where(*layout_filters)
+        .order_by(RfRun.created_at.desc())
+    ).scalars().all()
+
+    for candidate_run in rf_runs:
+        rows = db.execute(
+            select(ApLayout)
+            .where(ApLayout.rf_run_id == candidate_run.id)
+            .order_by(ApLayout.created_at.asc())
+        ).scalars().all()
+        layouts: list[dict[str, object]] = []
+        for row in rows:
+            xy = _point_xy(row.point_geom)
+            if xy is None:
+                continue
+            x, y = xy
+            layouts.append(
+                {
+                    "id": row.id,
+                    "rf_run_id": row.rf_run_id,
+                    "ap_name": row.ap_name,
+                    "x_m": x,
+                    "y_m": y,
+                    "z_m": float(row.z_m) if row.z_m is not None else None,
+                    "power_dbm": float(row.power_dbm) if row.power_dbm is not None else None,
+                    "channel_info_json": row.channel_info_json or {},
+                    "point_geom": {"type": "Point", "coordinates": [x, y]},
+                }
+            )
+        if layouts:
+            return layouts
+
+    rf_run = rf_runs[0] if rf_runs else _latest_rf_run_for_scene(db, floor_id, scene_version_id)
+    if rf_run is None:
+        return []
+
+    raw = (rf_run.request_json or {}).get("access_points")
+    if not isinstance(raw, list):
+        return []
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            continue
+        try:
+            x = float(entry.get("x_m", entry.get("x")))
+            y = float(entry.get("y_m", entry.get("y")))
+        except (TypeError, ValueError):
+            continue
+        ap_id = entry.get("id")
+        label = str(ap_id) if ap_id else f"AP-{index + 1}"
+        layouts.append(
+            {
+                "id": label,
+                "rf_run_id": rf_run.id,
+                "ap_name": label,
+                "x_m": x,
+                "y_m": y,
+                "z_m": entry.get("z_m"),
+                "power_dbm": entry.get("power_dbm"),
+                "channel_info_json": entry.get("channel_info_json") or {},
+                "point_geom": {"type": "Point", "coordinates": [x, y]},
+            }
+        )
+    return layouts
+
+
 def create_measurement_link(
     db: Session,
     floor_id: str,
@@ -401,7 +515,9 @@ def get_measurement_link_context(
     floorplan = _floorplan_info_from_asset(
         db, link.asset_id, link_token=token, base_url=base_url,
     )
-    bounds = _bounds_from_scene_walls(db, link.scene_version_id) or _bounds_from_floorplan(floorplan)
+    floorplan_bounds = _bounds_from_floorplan(floorplan)
+    scene_bounds = _bounds_from_scene_walls(db, link.scene_version_id)
+    bounds = floorplan_bounds if _valid_bounds(floorplan_bounds) else (scene_bounds or floorplan_bounds)
 
     return MeasurementLinkContextResponseDTO(
         token=link.token,
@@ -414,7 +530,9 @@ def get_measurement_link_context(
         coordinate_system=CoordinateSystemDTO(),
         bounds=bounds,
         anchor_points=[],
-        existing_ap_layouts=[],
+        existing_ap_layouts=_existing_ap_layouts_for_context(
+            db, link.floor_id, link.scene_version_id
+        ),
         recommended_measurement_purpose=link.purpose
         if link.purpose in {"calibration", "reference", "validation", "unknown"}
         else "calibration",

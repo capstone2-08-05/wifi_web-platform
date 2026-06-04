@@ -32,7 +32,7 @@ export interface PlacedApSimple {
   label?: string;
 }
 
-export type MeasurementViewMode = 'route' | 'heatmap' | 'both';
+export type MeasurementViewMode = 'route' | 'prediction' | 'heatmap' | 'both';
 
 /** 측정점 색 모드 — heatmap 배경과 시각 통일하려면 'dbm', 신호 품질 한눈에 보려면 'quality'. */
 export type PointColorMode = 'quality' | 'dbm';
@@ -185,9 +185,9 @@ export function MeasurementCanvas({
   const heatmapRadius = Math.max(0.8, Math.min(vb.w, vb.h) * 0.15);
 
   const showLine = mode === 'route' || mode === 'both';
-  const showHeatmap = mode === 'heatmap' || mode === 'both';
+  const showHeatmap = mode === 'prediction' || mode === 'heatmap' || mode === 'both';
   // dots 는 모든 모드에서 표시 — 측정 데이터의 본체. heatmap 탭에서도 점 보여야 어디서 측정했는지 알 수 있음.
-  const showDots = sortedPoints.length > 0;
+  const showDots = mode !== 'prediction' && sortedPoints.length > 0;
   // 색 모드: 사용자 지정 > heatmap/both 면 dbm, 그 외 quality (route 또는 dots 만).
   const effectiveColorMode: PointColorMode =
     pointColorMode ?? (showHeatmap ? 'dbm' : 'quality');
