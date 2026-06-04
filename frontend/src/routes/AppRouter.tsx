@@ -3,6 +3,7 @@ import { lazy, Suspense } from 'react';
 import { ProtectedRoute } from './ProtectedRoute';
 import { AppLayout } from '@/layouts/AppLayout';
 
+const LandingPage = lazy(() => import('@/pages/LandingPage'));
 const LoginPage = lazy(() => import('@/pages/auth/LoginPage'));
 const SignupPage = lazy(() => import('@/pages/auth/SignupPage'));
 const DashboardPage = lazy(() => import('@/pages/DashboardPage'));
@@ -19,6 +20,14 @@ const Loading = () => (
 );
 
 const router = createBrowserRouter([
+  {
+    path: '/',
+    element: (
+      <Suspense fallback={<Loading />}>
+        <LandingPage />
+      </Suspense>
+    ),
+  },
   {
     path: '/auth/login',
     element: (
@@ -41,7 +50,6 @@ const router = createBrowserRouter([
       {
         element: <AppLayout />,
         children: [
-          { index: true, element: <Navigate to="/dashboard" replace /> },
           {
             path: 'dashboard',
             element: (

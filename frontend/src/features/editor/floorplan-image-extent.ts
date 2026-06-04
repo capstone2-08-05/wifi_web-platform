@@ -157,3 +157,22 @@ function resolveRealWidth(src: ImageExtentSource): number | null {
   }
   return null;
 }
+
+/** 벽 bounds + 이미지 픽셀 크기로 scale_ratio 를 역추정 (캐시 miss 시 fallback). */
+export function inferImageExtentFromWallBounds(
+  imageDims: { w: number; h: number } | null,
+  bounds: { minX: number; maxX: number; minY: number; maxY: number } | null,
+): { w: number; h: number } | null {
+  if (!imageDims || imageDims.w <= 0 || imageDims.h <= 0 || !bounds) return null;
+  const { minX, minY, maxX, maxY } = bounds;
+  if (!Number.isFinite(maxX) || !Number.isFinite(maxY) || maxX <= 0 || maxY <= 0) {
+    return null;
+  }
+  // 도면 분석 결과는 보통 (0,0) 근처에서 시작. 여백이 크면 추정 불가.
+  if (minX > 2 || minY > 2) return null;
+  const scaleX = maxX / imageDims.w;
+  const scaleY = maxY / imageDims.h;
+  const scale = Math.max(scaleX, scaleY);
+  if (!Number.isFinite(scale) || scale <= 0) return null;
+  return { w: imageDims.w * scale, h: imageDims.h * scale };
+}

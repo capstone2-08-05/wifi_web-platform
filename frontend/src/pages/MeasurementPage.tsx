@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   Activity,
   AlertTriangle,
@@ -12,6 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { RSSI_HEATMAP_GRADIENT_CSS } from '@/lib/rssi-colormap';
 import { HelpFab } from '@/components/HelpFab';
 import { MobileConnectModal } from '@/features/mobile/MobileConnectModal';
 import { Popover } from '@/components/ui/Popover';
@@ -54,6 +56,7 @@ const EMPTY_MEASUREMENT_SESSIONS: MeasurementSession[] = [];
 const EMPTY_MEASUREMENT_POINTS: ApiPoint[] = [];
 
 export default function MeasurementPage() {
+  const queryClient = useQueryClient();
   const floorId = useAppStore((s) => s.selectedFloorId);
 
   // 확정된 도면 (캔버스 배경).
@@ -86,8 +89,15 @@ export default function MeasurementPage() {
   const spaceType: SpaceType = currentFloor?.space_type ?? 'unknown';
 
   // 측정 세션. 기본은 최근 세션 자동 선택, 사용자가 '이력 보기' 로 다른 세션 선택 가능.
-  const sessionsQuery = useFloorMeasurementSessions(floorId);
-  const sessions = sessionsQuery.data?.items ?? EMPTY_MEASUREMENT_SESSIONS;
+  // 모바일 측정 완료 후 웹에 세션이 늦게 반영되는 경우가 있어 주기적으로 목록 갱신.
+  const sessionsQuery = useFloorMeasurementSessions(floorId, { refetchInterval: 5_000 });
+  const allSessions = sessionsQuery.data?.items ?? EMPTY_MEASUREMENT_SESSIONS;
+  // 현재 도면 버전이 생성된 이후에 측정된 세션만 표시.
+  // 도면을 수정하고 재시뮬레이션하면 이전 버전의 측정 기록은 자동으로 숨겨진다.
+  const sessions = useMemo(() => {
+    if (!currentVersion?.created_at) return allSessions;
+    return allSessions.filter((s) => s.created_at >= currentVersion.created_at);
+  }, [allSessions, currentVersion?.created_at]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const activeSession =
     sessions.find((s) => s.id === selectedSessionId) ?? sessions[0] ?? null;
@@ -164,6 +174,16 @@ export default function MeasurementPage() {
 
   const hasVersion = versions.length > 0;
   const hasMeasurement = points.length > 0;
+  const isLoadingMeasurement =
+    sessionsQuery.isFetching || (!!activeSession && pointsQuery.isFetching);
+
+  const prevMobileOpen = useRef(false);
+  useEffect(() => {
+    if (prevMobileOpen.current && !mobileOpen && floorId) {
+      void queryClient.invalidateQueries({ queryKey: ['measurement-sessions', floorId] });
+    }
+    prevMobileOpen.current = mobileOpen;
+  }, [mobileOpen, floorId, queryClient]);
 
   // §11 캘리브레이션 — 현재 측정 세션 + 최근 RF Run + 현재 버전을 입력으로 사용.
   // 측정 페이지에 둠: 진단 카드에서 차이를 발견한 직후 보정 가능.
@@ -175,11 +195,21 @@ export default function MeasurementPage() {
   // 백엔드 평가는 기존 데이터 호환을 위해 최소 5점 guard를 별도로 유지한다.
   const MIN_MEASUREMENTS_FOR_CALIBRATION = 8;
   const hasEnoughMeasurements = points.length >= MIN_MEASUREMENTS_FOR_CALIBRATION;
+  const radioMapBounds = useMemo(
+    () => extractRadioMapBounds(latestRfRun?.metrics_json),
+    [latestRfRun?.metrics_json],
+  );
+  const pointsInsideSim = useMemo(
+    () => countPointsInsideBounds(points, radioMapBounds),
+    [points, radioMapBounds],
+  );
+  const hasEnoughPointsInSim = pointsInsideSim >= MIN_MEASUREMENTS_FOR_CALIBRATION;
   const canCalibrate =
     !!activeSession?.id &&
     !!latestRfRunId &&
     !!currentVersion?.id &&
-    hasEnoughMeasurements;
+    hasEnoughMeasurements &&
+    hasEnoughPointsInSim;
   const evaluationSessionIds = useMemo(() => {
     const ids = new Set<string>();
     for (const session of sessions) {
@@ -200,14 +230,18 @@ export default function MeasurementPage() {
       ? 'insufficient_points'
       : !latestRfRunId
         ? 'no_simulation'
-        : 'ready';
+        : !hasEnoughPointsInSim
+          ? 'outside_sim_area'
+          : 'ready';
   const calibrationDisabledReason = !hasMeasurement
     ? null
     : !hasEnoughMeasurements
       ? `보정을 위해 측정점 ${MIN_MEASUREMENTS_FOR_CALIBRATION}개 이상이 필요합니다 (현재 ${points.length}개). 도면 곳곳을 더 측정해주세요.`
       : !latestRfRunId
         ? null
-        : null;
+        : !hasEnoughPointsInSim
+          ? `측정점 ${points.length}개 중 ${pointsInsideSim}개만 시뮬레이션 영역 안에 있습니다. 모바일 앱에서 도면 벽 안쪽의 시작 위치를 지정하고 건물 안을 따라 다시 측정해주세요.`
+          : null;
   const handleCalibrate = () => {
     if (!canCalibrate || !activeSession || !latestRfRunId || !currentVersion) return;
     evaluateCalibration.mutate(
@@ -354,7 +388,7 @@ export default function MeasurementPage() {
                   mode={mode}
                   estimatedHeatmap={displayedHeatmap}
                 />
-                {!hasMeasurement && <CanvasEmptyOverlay loading={pointsQuery.isFetching} />}
+                {!hasMeasurement && <CanvasEmptyOverlay loading={isLoadingMeasurement} />}
                 {/* dbm 모드 colorbar — 도면 좌상단. gradient + tick 값 수직 정렬로 "이 색=이 dBm" 직관. */}
                 {mode !== 'route' && displayedRange && (
                   <div className="pointer-events-none absolute left-3 top-3 z-10 w-70">
@@ -468,6 +502,40 @@ function apsFromRfRunRequest(requestJson: Record<string, unknown> | undefined): 
     out.push({ id, x_m: x, y_m: y, label: id.toUpperCase() });
   });
   return out;
+}
+
+/** RfRun.metrics_json.radio_map.bounds_m 추출. */
+function extractRadioMapBounds(
+  metrics: Record<string, unknown> | undefined,
+): { min_x: number; min_y: number; max_x: number; max_y: number } | null {
+  const radioMap = metrics?.['radio_map'];
+  if (!radioMap || typeof radioMap !== 'object') return null;
+  const bounds = (radioMap as Record<string, unknown>)['bounds_m'];
+  if (!bounds || typeof bounds !== 'object') return null;
+  const b = bounds as Record<string, unknown>;
+  const min_x = Number(b['min_x']);
+  const min_y = Number(b['min_y']);
+  const max_x = Number(b['max_x']);
+  const max_y = Number(b['max_y']);
+  if (![min_x, min_y, max_x, max_y].every(Number.isFinite)) return null;
+  if (max_x <= min_x || max_y <= min_y) return null;
+  return { min_x, min_y, max_x, max_y };
+}
+
+function countPointsInsideBounds(
+  points: ApiPoint[],
+  bounds: { min_x: number; min_y: number; max_x: number; max_y: number } | null,
+): number {
+  if (!bounds) return points.length;
+  return points.filter((p) => {
+    const { x, y } = p.floor_position;
+    return (
+      x >= bounds.min_x &&
+      x <= bounds.max_x &&
+      y >= bounds.min_y &&
+      y <= bounds.max_y
+    );
+  }).length;
 }
 
 /** RfMap.metrics_json.rss_dbm.mean 추출 (없으면 옛 avg_rssi_dbm fallback). */
@@ -673,7 +741,7 @@ function TabBar({
   );
 }
 
-/** dbm 모드일 땐 inferno 그라데이션 + 양 끝/중간 dBm 표시. quality 모드면 기존 3-tier. */
+/** dbm 모드일 땐 jet 그라데이션 + 양 끝/중간 dBm 표시. quality 모드면 기존 3-tier. */
 function Legend({
   colorMode,
   range,
@@ -690,10 +758,7 @@ function Legend({
         <span className="font-semibold text-foreground">실측 RSSI</span>
         <div
           className="h-2 w-32 rounded-sm border border-border/60"
-          style={{
-            backgroundImage:
-              'linear-gradient(to right, rgb(0,0,4), rgb(66,10,104), rgb(147,38,103), rgb(221,81,58), rgb(252,165,10), rgb(252,255,164))',
-          }}
+          style={{ backgroundImage: RSSI_HEATMAP_GRADIENT_CSS }}
         />
         <span className="font-mono tabular-nums text-[10px] text-foreground/70">
           {min.toFixed(0)} · {mid.toFixed(0)} · {max.toFixed(0)} dBm

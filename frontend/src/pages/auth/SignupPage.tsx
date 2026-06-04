@@ -31,8 +31,8 @@ export default function SignupPage() {
   const apiError = signup.error as HttpError | null;
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
-      <div className="w-full max-w-sm rounded-xl border bg-card p-8 shadow-sm">
+    <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4" style={{ animation: 'page-enter 0.4s cubic-bezier(0.16, 1, 0.3, 1) both' }}>
+      <div className="w-full max-w-sm rounded-xl border bg-card p-8 shadow-sm" style={{ animation: 'panel-rise 0.7s cubic-bezier(0.16, 1, 0.3, 1) both' }}>
         <div className="mb-6 flex flex-col items-center gap-2 text-center">
           <div className="flex items-center gap-2">
             <Wifi className="h-6 w-6 text-primary" />

@@ -164,7 +164,7 @@ function ReadyState({
       </p>
 
       <div className="rounded-lg border bg-muted/20 px-3 py-2 text-center text-xs font-medium">
-        Recommended mode: {recommendedPurpose === 'reference' ? 'Reference comparison' : 'Calibration'}
+        권장 모드: {recommendedPurpose === 'reference' ? '참조 비교' : '보정용'}
       </div>
 
       <div className="flex justify-center rounded-xl border bg-white p-4">

@@ -1,9 +1,9 @@
 import { useEffect } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { rfJobApi, rfRunApi, type ListRfRunsParams } from '@/api/rf-run';
 import type { HttpError } from '@/api/client';
 import { toast } from '@/stores/toast-store';
-import type { UUID } from '@/types/common';
+import type { Paginated, UUID } from '@/types/common';
 import type { RfJob, RfRun, RfRunCreate } from '@/types/rf';
 import { isJobFailed, isJobSucceeded, isJobTerminal } from '@/types/job';
 
@@ -12,11 +12,50 @@ const POLL_INTERVAL_MS = 3_000;
 /** run id 별 완료/실패 토스트 1회만 (Strict Mode·리마운트 중복 방지). */
 const notifiedRfRunIds = new Set<string>();
 
+function rfRunsQueryKey(floorId: UUID, params?: ListRfRunsParams) {
+  return ['rf-runs', floorId, params ?? null] as const;
+}
+
+function prependRfRunToCache(
+  queryClient: ReturnType<typeof useQueryClient>,
+  floorId: UUID,
+  run: RfRun,
+  listParams?: ListRfRunsParams,
+) {
+  queryClient.setQueriesData<Paginated<RfRun>>(
+    { queryKey: ['rf-runs', floorId] },
+    (old) => {
+      if (!old) {
+        return {
+          items: [run],
+          total: 1,
+          page: 1,
+          page_size: listParams?.page_size ?? 20,
+        };
+      }
+      const items = [run, ...old.items.filter((r) => r.id !== run.id)];
+      return { ...old, items, total: Math.max(old.total, items.length) };
+    },
+  );
+}
+
+function invalidateFloorRfRuns(
+  queryClient: ReturnType<typeof useQueryClient>,
+  floorId: UUID,
+) {
+  void queryClient.invalidateQueries({ queryKey: ['rf-runs', floorId] });
+}
+
 /** POST /rf-runs — 시뮬레이션 큐 등록. */
-export function useCreateRfRun() {
+export function useCreateRfRun(floorId: UUID | null, listParams?: ListRfRunsParams) {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: RfRunCreate) => rfRunApi.create(body),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      if (floorId) {
+        prependRfRunToCache(queryClient, floorId, data, listParams);
+        invalidateFloorRfRuns(queryClient, floorId);
+      }
       toast.info('RF 시뮬레이션 시작', '분석이 완료되면 결과를 알려드릴게요.');
     },
     onError: (err) => {
@@ -34,6 +73,7 @@ export function useCreateRfRun() {
  * succeeded/failed 시 자동 중지 + 토스트 (중복 발화 방지).
  */
 export function useRfRun(rfRunId: UUID | null) {
+  const queryClient = useQueryClient();
   const query = useQuery({
     queryKey: ['rf-run', rfRunId] as const,
     queryFn: () => rfRunApi.get(rfRunId as UUID),
@@ -49,16 +89,32 @@ export function useRfRun(rfRunId: UUID | null) {
   useEffect(() => {
     const data = query.data;
     if (!data || !rfRunId) return;
+
+    // 목록 캐시에 최신 status 반영 — 기록 패널이 새로고침 없이 갱신되도록.
+    queryClient.setQueriesData<Paginated<RfRun>>(
+      { queryKey: ['rf-runs', data.floor_id] },
+      (old) => {
+        if (!old) return old;
+        const idx = old.items.findIndex((r) => r.id === data.id);
+        if (idx < 0) return old;
+        const items = [...old.items];
+        items[idx] = data;
+        return { ...old, items };
+      },
+    );
+
     if (notifiedRfRunIds.has(rfRunId)) return;
     if (isJobSucceeded(data.status)) {
       notifiedRfRunIds.add(rfRunId);
+      invalidateFloorRfRuns(queryClient, data.floor_id);
       toast.success('RF 시뮬레이션 완료', '결과를 확인해주세요.');
     } else if (isJobFailed(data.status)) {
       notifiedRfRunIds.add(rfRunId);
+      invalidateFloorRfRuns(queryClient, data.floor_id);
       const err = (data.metrics_json?.['error_message'] as string | undefined) ?? undefined;
       toast.error('RF 시뮬레이션 실패', err ?? '잠시 후 다시 시도해주세요.');
     }
-  }, [query.data, rfRunId]);
+  }, [query.data, rfRunId, queryClient]);
 
   const rfRun: RfRun | null = query.data ?? null;
   const status = rfRun?.status;
@@ -76,10 +132,16 @@ export function useRfRun(rfRunId: UUID | null) {
  */
 export function useFloorRfRuns(floorId: UUID | null, params?: ListRfRunsParams) {
   return useQuery({
-    queryKey: ['rf-runs', floorId, params ?? null] as const,
+    queryKey: rfRunsQueryKey(floorId as UUID, params),
     queryFn: () => rfRunApi.listByFloor(floorId as UUID, params),
     enabled: !!floorId,
-    staleTime: 30_000,
+    staleTime: 5_000,
+    refetchInterval: (q) => {
+      const hasActive = q.state.data?.items.some(
+        (r) => r.status === 'pending' || r.status === 'running',
+      );
+      return hasActive ? POLL_INTERVAL_MS : false;
+    },
   });
 }
 

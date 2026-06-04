@@ -1,8 +1,10 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { parseGeometry, type Coord } from '@/features/editor/geometry-utils';
 import { loadCachedViewBox } from '@/features/editor/viewbox-cache';
 import {
   deriveImageExtent,
+  inferImageExtentFromWallBounds,
+  saveCachedScaleRatio,
   useImageNaturalDimensions,
 } from '@/features/editor/floorplan-image-extent';
 import type {
@@ -133,6 +135,21 @@ function unionViewBoxWithHeatmapBounds(
   return { x: minX - padding, y: minY - padding, w: w + 2 * padding, h: h + 2 * padding };
 }
 
+/** 벽 centerline 기준 bbox — image scale fallback 용. */
+function computeWallBounds(
+  scene: SceneVersion | null | undefined,
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  const b = emptyBounds();
+  for (const wall of scene?.walls ?? []) {
+    const g = parseGeometry(wall.centerline_geom);
+    if (g?.type === 'LineString') {
+      for (const [x, y] of g.coordinates) extendBounds(b, x, y);
+    }
+  }
+  if (!isFinite(b.minX)) return null;
+  return { minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY };
+}
+
 /**
  * 시뮬레이션 페이지 캔버스 — 확정 버전 도형(rooms/walls/openings/objects)을 read-only 로
  * 보여주고, 그 위에 사용자가 AP 를 자유롭게 배치/드래그/삭제. 최대 8개.
@@ -159,14 +176,33 @@ export function SimulationCanvas({
   // 있으면 image 는 (0,0)~(extent.w, extent.h) 에 그림 → 벽과 정확히 정렬.
   // 없으면 viewBox 영역에 fit 으로 fallback (정렬은 안 맞아도 결과는 보임).
   const imageDims = useImageNaturalDimensions(backgroundImageUrl ?? null);
-  const imageExtent = useMemo(
-    () =>
-      deriveImageExtent(imageDims, {
-        sourceAssetId: sceneVersion?.source_asset_id ?? null,
-        floorId: sceneVersion?.floor_id ?? null,
-      }),
-    [imageDims, sceneVersion?.source_asset_id, sceneVersion?.floor_id],
-  );
+  const wallBounds = useMemo(() => computeWallBounds(sceneVersion), [sceneVersion]);
+  const imageExtent = useMemo(() => {
+    const fromCache = deriveImageExtent(imageDims, {
+      sourceAssetId: sceneVersion?.source_asset_id ?? null,
+      floorId: sceneVersion?.floor_id ?? null,
+    });
+    if (fromCache) return fromCache;
+    return inferImageExtentFromWallBounds(imageDims, wallBounds);
+  }, [
+    imageDims,
+    wallBounds,
+    sceneVersion?.source_asset_id,
+    sceneVersion?.floor_id,
+  ]);
+  // fallback 으로 scale 을 추정했으면 캐시에 저장 — 다음 방문부터 editor/sim 동일 정렬.
+  useEffect(() => {
+    if (!imageExtent || !imageDims || imageDims.w <= 0) return;
+    const cached = deriveImageExtent(imageDims, {
+      sourceAssetId: sceneVersion?.source_asset_id ?? null,
+      floorId: sceneVersion?.floor_id ?? null,
+    });
+    if (cached) return;
+    const scale = imageExtent.w / imageDims.w;
+    if (!Number.isFinite(scale) || scale <= 0) return;
+    if (sceneVersion?.source_asset_id) saveCachedScaleRatio(sceneVersion.source_asset_id, scale);
+    if (sceneVersion?.floor_id) saveCachedScaleRatio(sceneVersion.floor_id, scale);
+  }, [imageExtent, imageDims, sceneVersion?.source_asset_id, sceneVersion?.floor_id]);
 
   // viewBox: AP 배치(idle) 는 editor 캐시 우선. 결과(히트맵) 보기는 과거 run 의 bounds 가
   // 현재 편집 캐시와 어긋나 clip 되는 경우가 있어 scene+image(+heatmap) union 으로 계산.
@@ -313,7 +349,8 @@ export function SimulationCanvas({
             width={heatmapBounds ? heatmapBounds.maxX - heatmapBounds.minX : vb.w}
             height={heatmapBounds ? heatmapBounds.maxY - heatmapBounds.minY : vb.h}
             preserveAspectRatio={heatmapBounds ? 'none' : 'xMidYMid meet'}
-            opacity={0.72}
+            opacity={0.66}
+            style={{ filter: 'contrast(0.65) saturate(1.4) brightness(1.15)' }}
             pointerEvents="none"
             onError={() => {
               console.warn('[SimulationCanvas] 히트맵 이미지 로드 실패:', heatmapUrl);

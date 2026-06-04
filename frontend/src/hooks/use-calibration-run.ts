@@ -35,12 +35,12 @@ export function useEvaluateCalibrationRun() {
     mutationFn: (body: CalibrationEvaluationRequest) => calibrationRunApi.evaluate(body),
     onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ['calibration-run'] });
-      toast.success('Calibration evaluation complete', 'Validation metrics and 3-way maps are ready.');
+      toast.success('보정 평가 완료', '검증 지표와 보정맵을 확인할 수 있습니다.');
       return result;
     },
     onError: (err) => {
       const e = err as HttpError | null;
-      toast.error('Calibration evaluation failed', e?.message ?? 'Please check RF map and measurement points.');
+      toast.error('보정 실행 실패', e?.message ?? '측정점과 시뮬레이션 결과를 확인해주세요.');
     },
   });
 }

@@ -728,9 +728,17 @@ def evaluate_calibration_run(
     ]
     invalid_points = [p for p in sampled if p.invalid_reason is not None]
     if not valid_calibration:
+        outside = sum(1 for p in invalid_points if p.invalid_reason == "outside_bounds")
+        invalid_cell = sum(1 for p in invalid_points if p.invalid_reason == "invalid_radio_cell")
         raise AppError(
             ErrorCode.INVALID_REQUEST_BODY,
-            "No valid calibration points remain after radio map sampling.",
+            (
+                "측정점이 시뮬레이션 영역 밖에 있어 보정할 수 없습니다. "
+                f"(전체 {len(sampled)}점, 영역 밖 {outside}점, 무효 셀 {invalid_cell}점). "
+                f"시뮬 영역: x={radio_map.min_x:.1f}~{radio_map.max_x:.1f}m, "
+                f"y={radio_map.min_y:.1f}~{radio_map.max_y:.1f}m. "
+                "모바일 앱에서 도면 벽 안쪽의 시작 위치를 지정한 뒤 다시 측정해주세요."
+            ),
             400,
         )
     rssi_transfer = _fit_rssi_transfer(valid_calibration)
