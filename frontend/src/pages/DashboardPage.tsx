@@ -127,8 +127,9 @@ export default function DashboardPage() {
                   <div className="pointer-events-none flex-1">
                     <DraftSceneCanvas
                       draft={versionAsDraft}
-                      selectedRef={null}
+                      selectedRefs={[]}
                       onSelect={() => {}}
+                      onSelectMany={() => {}}
                       onDragEnd={() => {}}
                       tool="select"
                       onCreate={() => {}}

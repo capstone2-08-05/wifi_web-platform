@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.errors import AppError, ErrorCode
 from app.core.geom import wkb_to_geojson
 from app.models import Room, SceneVersion, Wall
+from app.services.rf.scene_obstacles import column_wall_segments_for_objects, normalize_rf_material
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,11 @@ MATERIAL_ALIAS: dict[str, str] = {
     "drywall": "plasterboard",
     "marble": "concrete",   # Sionna 1.0.2 에 marble 없음 → 가장 비슷한 concrete 로
     "plywood": "wood",
+    "plastic": "chipboard",
+    "\uc720\ub9ac": "glass",
+    "\ub098\ubb34": "wood",
+    "\ucf58\ud06c\ub9ac\ud2b8": "concrete",
+    "\ud50c\ub77c\uc2a4\ud2f1": "chipboard",
 }
 SIONNA_FALLBACK = "plasterboard"
 
@@ -79,6 +85,7 @@ def export_scene_version_to_scene_json(
         .options(
             selectinload(SceneVersion.walls),
             selectinload(SceneVersion.rooms),
+            selectinload(SceneVersion.objects),
         )
         .filter(SceneVersion.id == scene_version_id)
         .first()
@@ -105,7 +112,22 @@ def export_scene_version_to_scene_json(
                 "y2": float(y2),
                 "thickness": float(w.thickness_m or DEFAULT_WALL_THICKNESS_M),
                 "height": float(w.height_m or DEFAULT_WALL_HEIGHT_M),
-                "material": _to_sionna_material(w.material_label or DEFAULT_WALL_MATERIAL),
+                "material": _to_sionna_material(
+                    normalize_rf_material(w.material_label, DEFAULT_WALL_MATERIAL)
+                ),
+            }
+        )
+
+    for seg in column_wall_segments_for_objects(sv.objects):
+        walls_out.append(
+            {
+                "x1": float(seg["x1"]),
+                "y1": float(seg["y1"]),
+                "x2": float(seg["x2"]),
+                "y2": float(seg["y2"]),
+                "thickness": float(seg["thickness_m"]),
+                "height": DEFAULT_WALL_HEIGHT_M,
+                "material": _to_sionna_material(str(seg["material"] or DEFAULT_WALL_MATERIAL)),
             }
         )
 

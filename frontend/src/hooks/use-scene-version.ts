@@ -87,7 +87,7 @@ export function useSetCurrentVersion() {
     onMutate: async (versionId) => {
       await qc.cancelQueries({ queryKey: ['scene-versions'] });
       const snapshot = qc.getQueriesData<unknown>({ queryKey: ['scene-versions'] });
-      qc.setQueriesData<unknown>({ queryKey: ['scene-versions'] }, (old) => {
+      qc.setQueriesData<unknown>({ queryKey: ['scene-versions'] }, (old: unknown) => {
         if (!Array.isArray(old)) return old;
         return (old as Array<{ id: UUID; is_current: boolean }>).map((v) => ({
           ...v,

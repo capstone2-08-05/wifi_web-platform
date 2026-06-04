@@ -16,6 +16,7 @@ class ApRecommendationRequest(BaseModel):
     x_max: float
     y_min: float
     y_max: float
+    target_bboxes: list[dict[str, float]] = Field(default_factory=list)
     # 격자 간격 (기본 1m)
     step_m: float = Field(default=1.0, gt=0.0, le=5.0)
     # 기존 AP 리스트 — 이미 배치된 AP의 간섭/보완 효과 반영

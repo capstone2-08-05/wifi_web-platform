@@ -210,6 +210,17 @@ function SelectedBody({
         <WallHypothesesSection wallId={selected.data.id} />
       )}
 
+      {(selected.kind === 'opening' ||
+        (selected.kind === 'object' && selected.data.object_type === 'column')) && (
+        <Section label="재질">
+          <MaterialSelectWired
+            value={getMaterial(selected)}
+            onChange={onUpdateMaterial}
+            disabled={isSaving}
+          />
+        </Section>
+      )}
+
       <div className="flex gap-2">
         {/* 회전은 점 객체엔 의미 없음 — 그 외 종류에서만 노출. */}
         {selected.kind !== 'object' && onRotate && (
@@ -578,7 +589,10 @@ function MaterialSelect({
   sourceLabel?: string;
 }) {
   const normalizedValue = normalizeMaterialValue(value, materials);
-  const optionNames = materials.map((m) => m.material_name);
+  const fallbackNames = ['유리', '나무', '콘크리트', '플라스틱'];
+  const optionNames = Array.from(
+    new Set([...materials.map((m) => m.material_name), ...fallbackNames]),
+  );
   const showRawValue = !!normalizedValue && !optionNames.includes(normalizedValue);
   return (
     <div className="relative">
@@ -744,9 +758,21 @@ function fmtConfidence(value: string | null | undefined): string {
 
 function getMaterial(selected: SelectedEntityResolved): string {
   if (selected.kind === 'wall') return selected.data.material_label ?? '';
+  if (selected.kind === 'opening') {
+    const meta = selected.data.metadata_json as {
+      material_label?: string;
+      material?: string;
+      raw?: { material?: string };
+    };
+    return meta?.material_label ?? meta?.material ?? meta?.raw?.material ?? '';
+  }
   if (selected.kind === 'object') {
-    const raw = selected.data.metadata_json as { raw?: { material?: string } };
-    return raw?.raw?.material ?? '';
+    const meta = selected.data.metadata_json as {
+      material_label?: string;
+      material?: string;
+      raw?: { material?: string };
+    };
+    return meta?.material_label ?? meta?.material ?? meta?.raw?.material ?? '';
   }
   return '';
 }

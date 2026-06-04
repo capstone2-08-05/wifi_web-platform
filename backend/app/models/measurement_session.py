@@ -26,6 +26,16 @@ class MeasurementSession(Base):
         ForeignKey("floors.id", ondelete="CASCADE"),
         nullable=False,
     )
+    scene_version_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("scene_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    asset_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("assets.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     measurement_type: Mapped[str] = mapped_column(
         String(30), nullable=False, server_default=text("'rssi'")
     )

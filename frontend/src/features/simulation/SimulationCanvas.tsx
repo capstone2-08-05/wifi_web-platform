@@ -1,10 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { parseGeometry, type Coord } from '@/features/editor/geometry-utils';
 import { loadCachedViewBox } from '@/features/editor/viewbox-cache';
 import {
   deriveImageExtent,
-  inferImageExtentFromWallBounds,
-  saveCachedScaleRatio,
   useImageNaturalDimensions,
 } from '@/features/editor/floorplan-image-extent';
 import type {
@@ -15,15 +13,6 @@ import type {
   SceneVersion,
 } from '@/types/scene';
 import { cn } from '@/lib/utils';
-import {
-  CANVAS_AP_LABEL_BORDER,
-  CANVAS_BLUE,
-  CANVAS_OBJECT_FILL,
-  CANVAS_OBJECT_LABEL,
-  CANVAS_OBJECT_STROKE,
-  CANVAS_WINDOW_LABEL,
-  CANVAS_WINDOW_STROKE,
-} from '@/lib/canvas-scene-colors';
 
 export interface PlacedAp {
   id: string;          // 'ap1', 'ap2', ... — 사용자/SageMaker 식별자
@@ -120,36 +109,6 @@ function computeViewBox(
   return { x: b.minX - padding, y: b.minY - padding, w: w + 2 * padding, h: h + 2 * padding };
 }
 
-/** viewBox 와 히트맵 bounds 의 union — clipPath 밖으로 히트맵이 잘리지 않게. */
-function unionViewBoxWithHeatmapBounds(
-  vb: { x: number; y: number; w: number; h: number },
-  bounds: { minX: number; minY: number; maxX: number; maxY: number },
-): { x: number; y: number; w: number; h: number } {
-  const minX = Math.min(vb.x, bounds.minX);
-  const minY = Math.min(vb.y, bounds.minY);
-  const maxX = Math.max(vb.x + vb.w, bounds.maxX);
-  const maxY = Math.max(vb.y + vb.h, bounds.maxY);
-  const w = maxX - minX || 1;
-  const h = maxY - minY || 1;
-  const padding = Math.max(w, h) * 0.05;
-  return { x: minX - padding, y: minY - padding, w: w + 2 * padding, h: h + 2 * padding };
-}
-
-/** 벽 centerline 기준 bbox — image scale fallback 용. */
-function computeWallBounds(
-  scene: SceneVersion | null | undefined,
-): { minX: number; minY: number; maxX: number; maxY: number } | null {
-  const b = emptyBounds();
-  for (const wall of scene?.walls ?? []) {
-    const g = parseGeometry(wall.centerline_geom);
-    if (g?.type === 'LineString') {
-      for (const [x, y] of g.coordinates) extendBounds(b, x, y);
-    }
-  }
-  if (!isFinite(b.minX)) return null;
-  return { minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY };
-}
-
 /**
  * 시뮬레이션 페이지 캔버스 — 확정 버전 도형(rooms/walls/openings/objects)을 read-only 로
  * 보여주고, 그 위에 사용자가 AP 를 자유롭게 배치/드래그/삭제. 최대 8개.
@@ -176,59 +135,23 @@ export function SimulationCanvas({
   // 있으면 image 는 (0,0)~(extent.w, extent.h) 에 그림 → 벽과 정확히 정렬.
   // 없으면 viewBox 영역에 fit 으로 fallback (정렬은 안 맞아도 결과는 보임).
   const imageDims = useImageNaturalDimensions(backgroundImageUrl ?? null);
-  const wallBounds = useMemo(() => computeWallBounds(sceneVersion), [sceneVersion]);
-  const imageExtent = useMemo(() => {
-    const fromCache = deriveImageExtent(imageDims, {
-      sourceAssetId: sceneVersion?.source_asset_id ?? null,
-      floorId: sceneVersion?.floor_id ?? null,
-    });
-    if (fromCache) return fromCache;
-    return inferImageExtentFromWallBounds(imageDims, wallBounds);
-  }, [
-    imageDims,
-    wallBounds,
-    sceneVersion?.source_asset_id,
-    sceneVersion?.floor_id,
-  ]);
-  // fallback 으로 scale 을 추정했으면 캐시에 저장 — 다음 방문부터 editor/sim 동일 정렬.
-  useEffect(() => {
-    if (!imageExtent || !imageDims || imageDims.w <= 0) return;
-    const cached = deriveImageExtent(imageDims, {
-      sourceAssetId: sceneVersion?.source_asset_id ?? null,
-      floorId: sceneVersion?.floor_id ?? null,
-    });
-    if (cached) return;
-    const scale = imageExtent.w / imageDims.w;
-    if (!Number.isFinite(scale) || scale <= 0) return;
-    if (sceneVersion?.source_asset_id) saveCachedScaleRatio(sceneVersion.source_asset_id, scale);
-    if (sceneVersion?.floor_id) saveCachedScaleRatio(sceneVersion.floor_id, scale);
-  }, [imageExtent, imageDims, sceneVersion?.source_asset_id, sceneVersion?.floor_id]);
+  const imageExtent = useMemo(
+    () =>
+      deriveImageExtent(imageDims, {
+        sourceAssetId: sceneVersion?.source_asset_id ?? null,
+        floorId: sceneVersion?.floor_id ?? null,
+      }),
+    [imageDims, sceneVersion?.source_asset_id, sceneVersion?.floor_id],
+  );
 
-  // viewBox: AP 배치(idle) 는 editor 캐시 우선. 결과(히트맵) 보기는 과거 run 의 bounds 가
-  // 현재 편집 캐시와 어긋나 clip 되는 경우가 있어 scene+image(+heatmap) union 으로 계산.
+  // viewBox: editor/measurement 와 같은 floor 캐시를 우선 사용해 페이지 간 도면 크기를 고정.
+  // 캐시가 없을 때만 image+shape union 으로 계산.
   const vb = useMemo(() => {
-    if (readOnly && heatmapUrl) {
-      const base = imageExtent
-        ? computeViewBox(sceneVersion, imageExtent)
-        : computeViewBox(sceneVersion, null);
-      if (heatmapBounds) {
-        return unionViewBoxWithHeatmapBounds(base, heatmapBounds);
-      }
-      return base;
-    }
     const cached = loadCachedViewBox(sceneVersion?.floor_id ?? null);
     if (cached) return cached;
     if (imageExtent) return computeViewBox(sceneVersion, imageExtent);
     return computeViewBox(sceneVersion, null);
-  }, [
-    sceneId,
-    sceneVersion,
-    sceneVersion?.floor_id,
-    imageExtent,
-    readOnly,
-    heatmapUrl,
-    heatmapBounds,
-  ]);
+  }, [sceneId, sceneVersion?.floor_id, imageExtent]);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<Coord>([0, 0]);
 
@@ -297,7 +220,7 @@ export function SimulationCanvas({
     : 'cursor-default';
 
   return (
-    <div className="relative flex h-full w-full items-center justify-center overflow-hidden bg-slate-50/80 p-4 [background-image:radial-gradient(circle,_rgb(148_163_184_/_0.12)_1px,_transparent_1px)] [background-position:0_0] [background-size:20px_20px]">
+    <div className="relative flex h-full w-full items-center justify-center overflow-hidden bg-[#f8fafc] p-6 [background-image:radial-gradient(circle,_oklch(0.92_0_0)_1px,_transparent_1px)] [background-position:0_0] [background-size:18px_18px]">
       <svg
         ref={svgRef}
         viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
@@ -349,8 +272,7 @@ export function SimulationCanvas({
             width={heatmapBounds ? heatmapBounds.maxX - heatmapBounds.minX : vb.w}
             height={heatmapBounds ? heatmapBounds.maxY - heatmapBounds.minY : vb.h}
             preserveAspectRatio={heatmapBounds ? 'none' : 'xMidYMid meet'}
-            opacity={0.66}
-            style={{ filter: 'contrast(0.65) saturate(1.4) brightness(1.15)' }}
+            opacity={0.6}
             pointerEvents="none"
             onError={() => {
               console.warn('[SimulationCanvas] 히트맵 이미지 로드 실패:', heatmapUrl);
@@ -369,9 +291,9 @@ export function SimulationCanvas({
         ))}
         {/* [object 비활성화] 시뮬레이션 캔버스에서 가구/공간성 객체 렌더 제거.
             다시 켜려면 아래 블록 주석 해제. */}
-        {/* {(sceneVersion?.objects ?? []).map((o) => (
+        {(sceneVersion?.objects ?? []).filter((o) => o.object_type === 'column').map((o) => (
           <ObjectShape key={o.id} object={o} />
-        ))} */}
+        ))}
 
         {aps.map((ap) => (
           <ApMarker
@@ -432,6 +354,7 @@ function RoomShape({ room }: { room: DraftRoom }) {
     </g>
   );
 }
+void RoomShape;
 
 function WallShape({ wall }: { wall: DraftWall }) {
   const g = parseGeometry(wall.centerline_geom);
@@ -461,8 +384,7 @@ function OpeningShape({ opening }: { opening: DraftOpening }) {
   const end = g.coordinates[g.coordinates.length - 1];
   if (!start || !end) return null;
   const isDoor = opening.opening_type === 'door';
-  const strokeColor = isDoor ? CANVAS_BLUE : CANVAS_WINDOW_STROKE;
-  const labelColor = isDoor ? CANVAS_BLUE : CANVAS_WINDOW_LABEL;
+  const color = isDoor ? 'oklch(0.55 0.22 264)' : 'oklch(0.7 0.18 200)';
   const label = isDoor ? '문' : '창문';
   const midX = (start[0] + end[0]) / 2;
   const midY = (start[1] + end[1]) / 2;
@@ -481,7 +403,7 @@ function OpeningShape({ opening }: { opening: DraftOpening }) {
         y1={start[1]}
         x2={end[0]}
         y2={end[1]}
-        stroke={strokeColor}
+        stroke={color}
         strokeWidth="5"
         strokeLinecap="butt"
         vectorEffect="non-scaling-stroke"
@@ -493,7 +415,7 @@ function OpeningShape({ opening }: { opening: DraftOpening }) {
         dominantBaseline="middle"
         fontSize={OPENING_LABEL_FONT_SIZE_M}
         fontWeight="500"
-        fill={labelColor}
+        fill={color}
         style={{ userSelect: 'none' }}
       >
         {label}
@@ -511,6 +433,7 @@ function ObjectShape({ object }: { object: DraftObject }) {
   const h = typeof meta.height_m === 'number' && meta.height_m > 0 ? meta.height_m : SPACE_DEFAULT_SIZE_M;
   const label = objectLabel(object);
   const spaceLike = isSpaceLikeObject(object);
+  const isColumn = object.object_type === 'column';
   const strokeDasharray = spaceLike ? '0.18 0.12' : undefined;
   return (
     <g pointerEvents="none">
@@ -519,9 +442,9 @@ function ObjectShape({ object }: { object: DraftObject }) {
         y={y - h / 2}
         width={w}
         height={h}
-        rx="0.15"
-        fill={CANVAS_OBJECT_FILL}
-        stroke={CANVAS_OBJECT_STROKE}
+        rx={isColumn ? 0 : 0.15}
+        fill={isColumn ? 'oklch(0.25 0.02 256)' : 'oklch(0.95 0.03 240)'}
+        stroke={isColumn ? 'oklch(0.18 0.02 256)' : 'oklch(0.74 0.08 240)'}
         strokeWidth="1.5"
         strokeDasharray={strokeDasharray}
         vectorEffect="non-scaling-stroke"
@@ -534,7 +457,7 @@ function ObjectShape({ object }: { object: DraftObject }) {
           dominantBaseline="middle"
           fontSize={computeLabelFontSize(label, w, h)}
           fontWeight="500"
-          fill={CANVAS_OBJECT_LABEL}
+          fill={isColumn ? 'white' : 'oklch(0.4 0.04 240)'}
           style={{ userSelect: 'none' }}
         >
           {label}
@@ -559,7 +482,7 @@ function ApMarker({
   onPointerDown: (e: React.PointerEvent) => void;
   onRemove: () => void;
 }) {
-  const fill = CANVAS_BLUE;
+  const fill = 'oklch(0.55 0.22 254)';
   const r = AP_MARKER_RADIUS_M;
   // lucide Wifi 아이콘 (24x24 viewBox) 을 r 안에 들어갈 크기로 스케일.
   const iconSize = r * 1.1; // 원 지름의 약 55%
@@ -597,7 +520,7 @@ function ApMarker({
           height={r * 0.75}
           rx={r * 0.18}
           fill="white"
-          stroke={CANVAS_AP_LABEL_BORDER}
+          stroke="oklch(0.85 0.02 240)"
           strokeWidth="1"
           vectorEffect="non-scaling-stroke"
         />
@@ -608,7 +531,7 @@ function ApMarker({
           dominantBaseline="middle"
           fontSize={AP_LABEL_FONT_SIZE_M}
           fontWeight="600"
-          fill={fill}
+          fill="oklch(0.25 0.04 240)"
           style={{ userSelect: 'none' }}
         >
           {ap.id.toUpperCase()}
@@ -727,6 +650,7 @@ function roomLabel(room: DraftRoom): string | null {
 
 function objectLabel(object: DraftObject): string | null {
   if (!object.object_type) return null;
+  if (object.object_type === 'column') return '기둥';
   return OBJECT_TYPE_LABEL[object.object_type] ?? object.object_type;
 }
 

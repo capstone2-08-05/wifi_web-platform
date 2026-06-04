@@ -390,7 +390,7 @@ def get_measurement_link_context(
     floorplan = _floorplan_info_from_asset(
         db, link.asset_id, link_token=token, base_url=base_url,
     )
-    bounds = _bounds_from_floorplan(floorplan)
+    bounds = _bounds_from_scene_walls(db, str(link.floor_id)) or _bounds_from_floorplan(floorplan)
 
     return MeasurementLinkContextResponseDTO(
         token=link.token,
@@ -419,6 +419,8 @@ def create_measurement_session(
     session_row = MeasurementSession(
         project_id=link.project_id,
         floor_id=link.floor_id,
+        scene_version_id=link.scene_version_id,
+        asset_id=link.asset_id,
         measurement_type=request.measurement_type,
         measurement_purpose=request.measurement_purpose,
         device_info_json=request.device_info.model_dump(exclude_none=True),
@@ -598,8 +600,8 @@ def _session_to_response(row: MeasurementSession) -> MeasurementSessionResponseD
         id=row.id,
         project_id=row.project_id,
         floor_id=row.floor_id,
-        scene_version_id=None,
-        asset_id=None,
+        scene_version_id=row.scene_version_id,
+        asset_id=row.asset_id,
         measurement_type=row.measurement_type,
         measurement_purpose=row.measurement_purpose,
         status=row.status,
