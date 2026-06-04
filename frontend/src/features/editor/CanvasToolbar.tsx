@@ -1,7 +1,7 @@
 import {
+  DoorOpen,
   MousePointer2,
   Upload,
-  DoorOpen,
   type LucideIcon,
 } from 'lucide-react';
 import type { ComponentType } from 'react';
@@ -30,12 +30,9 @@ const TOP_TOOLS: ToolDef[] = [
 
 const SHAPE_TOOLS: ToolDef[] = [
   { id: 'rect', icon: WallIcon, label: '벽', onClick: 'change' },
-  // [room 비활성화] '방 만들기' 도구 노출 제거. 다시 켜려면 아래 줄 주석 해제.
-  // { id: 'polygon', icon: Hexagon, label: '방 만들기', onClick: 'change' },
   { id: 'door', icon: DoorOpen, label: '문 추가', onClick: 'change' },
   { id: 'window', icon: WindowIcon, label: '창문 추가', onClick: 'change' },
-  // [object 비활성화] 공간 편집 화면에서 가구/공간성 객체 추가 도구 숨김.
-  // { id: 'circle', icon: Circle, label: '가구 배치', onClick: 'change' },
+  { id: 'column', icon: ColumnIcon, label: '기둥 추가', onClick: 'change' },
 ];
 
 export function CanvasToolbar({ tool, onChangeTool, onUploadClick }: CanvasToolbarProps) {
@@ -116,16 +113,7 @@ function WallIcon({
   strokeWidth?: number;
 }) {
   return (
-    <svg
-      viewBox="0 0 24 24"
-      className={className}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={strokeWidth}
-      strokeLinecap="butt"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="butt" strokeLinejoin="round" aria-hidden="true">
       <path d="M4 7h16" strokeWidth={strokeWidth + 1.5} />
       <path d="M4 17h16" strokeWidth={strokeWidth + 1.5} />
       <path d="M8 4v16" strokeWidth={strokeWidth + 1.5} />
@@ -142,21 +130,27 @@ function WindowIcon({
   strokeWidth?: number;
 }) {
   return (
-    <svg
-      viewBox="0 0 24 24"
-      className={className}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={strokeWidth}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <rect x="5" y="6" width="14" height="12" rx="1.5" />
       <path d="M12 6v12" />
       <path d="M5 12h14" />
       <path d="M8 4h8" />
       <path d="M8 20h8" />
+    </svg>
+  );
+}
+
+function ColumnIcon({
+  className,
+  strokeWidth = 2,
+}: {
+  className?: string;
+  strokeWidth?: number;
+}) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" opacity="0.22" />
+      <rect x="6" y="6" width="12" height="12" rx="1.5" />
     </svg>
   );
 }

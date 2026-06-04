@@ -12,14 +12,6 @@ import type {
   SceneVersion,
 } from '@/types/scene';
 import { cn } from '@/lib/utils';
-import {
-  CANVAS_BLUE,
-  CANVAS_OBJECT_FILL,
-  CANVAS_OBJECT_LABEL,
-  CANVAS_OBJECT_STROKE,
-  CANVAS_WINDOW_STROKE,
-} from '@/lib/canvas-scene-colors';
-import { dbmToHeatmapColor } from '@/lib/rssi-colormap';
 
 export type MeasurementPointQuality = 'good' | 'warning' | 'poor';
 
@@ -141,6 +133,38 @@ const QUALITY_HEATMAP_RGBA: Record<MeasurementPointQuality, string> = {
   warning: 'rgba(250, 204, 21, 0.45)',
   poor: 'rgba(248, 113, 113, 0.6)',
 };
+
+// matplotlib inferno cmap stops — Sionna heatmap 과 동일 visual language.
+// HeatmapColorLegend.tsx 와 동기화 유지.
+const INFERNO_STOPS = [
+  [0, 0, 4],
+  [22, 11, 57],
+  [66, 10, 104],
+  [106, 23, 110],
+  [147, 38, 103],
+  [188, 55, 84],
+  [221, 81, 58],
+  [243, 120, 25],
+  [252, 165, 10],
+  [246, 215, 70],
+  [252, 255, 164],
+] as const;
+
+/** dBm 값 → inferno cmap RGB. min/max 범위로 정규화 후 stops 사이 선형 보간. */
+function dbmToInfernoColor(dbm: number, min: number, max: number): string {
+  if (!Number.isFinite(dbm) || max <= min) return 'rgb(255, 255, 255)';
+  const t = Math.max(0, Math.min(1, (dbm - min) / (max - min)));
+  const scaled = t * (INFERNO_STOPS.length - 1);
+  const lo = Math.floor(scaled);
+  const hi = Math.min(INFERNO_STOPS.length - 1, lo + 1);
+  const frac = scaled - lo;
+  const c0 = INFERNO_STOPS[lo];
+  const c1 = INFERNO_STOPS[hi];
+  const r = Math.round(c0[0] + frac * (c1[0] - c0[0]));
+  const g = Math.round(c0[1] + frac * (c1[1] - c0[1]));
+  const b = Math.round(c0[2] + frac * (c1[2] - c0[2]));
+  return `rgb(${r}, ${g}, ${b})`;
+}
 
 /**
  * 실측/진단 캔버스. 확정 버전 도형 위에 측정 경로(line + 색상 dot) 와/또는
@@ -340,7 +364,7 @@ export function MeasurementCanvas({
                     y={bounds.min_y + rowIdx * cellH}
                     width={cellW}
                     height={cellH}
-                    fill={dbmToHeatmapColor(value, range.min, range.max)}
+                    fill={dbmToInfernoColor(value, range.min, range.max)}
                   />
                 );
               }),
@@ -356,7 +380,6 @@ export function MeasurementCanvas({
             height={estimatedHeatmap.bounds.max_y - estimatedHeatmap.bounds.min_y}
             preserveAspectRatio="none"
             opacity={0.65}
-            style={{ filter: 'contrast(0.65) saturate(1.4) brightness(1.15)' }}
             pointerEvents="none"
             onError={() => {
               console.warn(
@@ -387,16 +410,16 @@ export function MeasurementCanvas({
         ))}
         {/* [object 비활성화] 실측 캔버스에서 가구/공간성 객체 렌더 제거.
             다시 켜려면 아래 블록 주석 해제. */}
-        {/* {(sceneVersion?.objects ?? []).map((o) => (
+        {(sceneVersion?.objects ?? []).filter((o) => o.object_type === 'column').map((o) => (
           <ObjectShape key={o.id} object={o} />
-        ))} */}
+        ))}
 
         {/* 측정 경로 라인 — route/both 모드에서만 (heatmap 모드는 점만 표시). */}
         {showLine && sortedPoints.length >= 2 && (
           <polyline
             points={sortedPoints.map((p) => `${p.x_m},${p.y_m}`).join(' ')}
             fill="none"
-            stroke={CANVAS_BLUE}
+            stroke="oklch(0.6 0.18 255)"
             strokeWidth="2"
             strokeDasharray="6 4"
             vectorEffect="non-scaling-stroke"
@@ -409,7 +432,7 @@ export function MeasurementCanvas({
           sortedPoints.map((p) => {
             const fill =
               effectiveColorMode === 'dbm'
-                ? dbmToHeatmapColor(
+                ? dbmToInfernoColor(
                     pointRssiByOrder?.get(p.id) ?? Number.NaN,
                     dbmMin,
                     dbmMax,
@@ -528,7 +551,7 @@ function OpeningShape({ opening }: { opening: DraftOpening }) {
   const end = g.coordinates[g.coordinates.length - 1];
   if (!start || !end) return null;
   const isDoor = opening.opening_type === 'door';
-  const color = isDoor ? CANVAS_BLUE : CANVAS_WINDOW_STROKE;
+  const color = isDoor ? 'oklch(0.55 0.22 264)' : 'oklch(0.7 0.18 200)';
   return (
     <line
       x1={start[0]}
@@ -554,6 +577,7 @@ function ObjectShape({ object }: { object: DraftObject }) {
   const label =
     (typeof meta.label === 'string' && meta.label) ||
     objectTypeLabel(object.object_type);
+  const isColumn = object.object_type === 'column';
   return (
     <g pointerEvents="none">
       <rect
@@ -561,9 +585,9 @@ function ObjectShape({ object }: { object: DraftObject }) {
         y={y - h / 2}
         width={w}
         height={h}
-        rx="0.15"
-        fill={CANVAS_OBJECT_FILL}
-        stroke={CANVAS_OBJECT_STROKE}
+        rx={isColumn ? 0 : 0.15}
+        fill={isColumn ? 'oklch(0.25 0.02 256)' : 'oklch(0.95 0.03 240)'}
+        stroke={isColumn ? 'oklch(0.18 0.02 256)' : 'oklch(0.74 0.08 240)'}
         strokeWidth="1.5"
         vectorEffect="non-scaling-stroke"
       />
@@ -575,7 +599,7 @@ function ObjectShape({ object }: { object: DraftObject }) {
           dominantBaseline="middle"
           fontSize={Math.min(w, h) * 0.22}
           fontWeight="500"
-          fill={CANVAS_OBJECT_LABEL}
+          fill={isColumn ? 'white' : 'oklch(0.4 0.04 240)'}
         >
           {label}
         </text>
@@ -585,6 +609,7 @@ function ObjectShape({ object }: { object: DraftObject }) {
 }
 
 const OBJECT_TYPE_LABEL: Record<string, string> = {
+  column: '기둥',
   furniture: '가구',
   table: '테이블',
   bathroom: '화장실',
@@ -600,7 +625,7 @@ function objectTypeLabel(t: string | null | undefined): string | null {
 }
 
 function ApMarker({ ap }: { ap: PlacedApSimple }) {
-  const fill = CANVAS_BLUE;
+  const fill = 'oklch(0.55 0.22 254)';
   const r = AP_MARKER_RADIUS_M;
   const iconSize = r * 1.1;
   const iconScale = iconSize / 24;
@@ -628,7 +653,7 @@ function ApMarker({ ap }: { ap: PlacedApSimple }) {
           dominantBaseline="middle"
           fontSize={AP_LABEL_FONT_SIZE_M}
           fontWeight="600"
-          fill={fill}
+          fill="oklch(0.4 0.1 254)"
         >
           {ap.label}
         </text>

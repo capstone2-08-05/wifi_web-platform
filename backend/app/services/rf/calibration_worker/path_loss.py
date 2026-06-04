@@ -49,6 +49,7 @@ ATTENUATION_DB_PER_M: dict[str, float] = {
     "metal": 80.0,
     "marble": 30.0,
     "plywood": 5.0,
+    "plastic": 3.0,
     "chipboard": 6.0,
     "ceiling_board": 4.0,
     "floorboard": 5.0,

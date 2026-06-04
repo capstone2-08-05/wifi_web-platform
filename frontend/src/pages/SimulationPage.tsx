@@ -41,7 +41,7 @@ import { DbmColorBar } from '@/features/simulation/DbmColorBar';
 import { FloorSpaceTypeSelector } from '@/features/floor/FloorSpaceTypeSelector';
 import { toast } from '@/stores/toast-store';
 import type { SceneVersion } from '@/types/scene';
-import type { UUID } from '@/types/common';
+import type { ApCandidate, ApLayout } from '@/types/ap-layout';
 import type { RfBackend } from '@/types/rf';
 import { cn } from '@/lib/utils';
 import { nextApSequentialName } from '@/lib/ap-layout-naming';
@@ -743,6 +743,7 @@ function EmptyState({
  * RF Run 이 succeeded 된 후에만 표시되고, 후보 생성 + 후보 선택 → 배치 저장 흐름.
  * 백엔드 ap-candidates 미구현으로 시연 동안 사용처에서만 주석 처리됨 (정의 유지).
  */
+void ApPlacementPanel;
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function ApPlacementPanel({ rfRunId }: { rfRunId: string }) {
   const generate = useGenerateApCandidates();

@@ -496,7 +496,7 @@ export default function EditorPage() {
       if (ref.kind === 'wall' || ref.kind === 'opening') {
         const list = ref.kind === 'wall' ? baseScene.walls : baseScene.openings;
         const field = ref.kind === 'wall' ? 'centerline_geom' : 'line_geom';
-        const entity = (list as Array<{ id: string } & Record<string, unknown>>).find(
+        const entity = (list as unknown as Array<{ id: string } & Record<string, unknown>>).find(
           (e) => e.id === ref.id,
         );
         const g = parseGeometry(entity?.[field] as Record<string, unknown> | null | undefined);
@@ -560,8 +560,27 @@ export default function EditorPage() {
 
   // 벽 재질 변경
   const handleUpdateMaterial = (material: string) => {
-    if (!selectedRef || selectedRef.kind !== 'wall') return;
-    runPatch('wall', selectedRef.id, { material_label: material });
+    if (!selectedRef) return;
+    if (selectedRef.kind === 'wall') {
+      runPatch('wall', selectedRef.id, { material_label: material });
+      return;
+    }
+    if (selectedRef.kind === 'opening' && baseScene) {
+      const opening = baseScene.openings.find((o) => o.id === selectedRef.id);
+      const meta = (opening?.metadata_json ?? {}) as Record<string, unknown>;
+      runPatch('opening', selectedRef.id, {
+        metadata_json: { ...meta, material_label: material },
+      });
+      return;
+    }
+    if (selectedRef.kind === 'object' && baseScene) {
+      const obj = baseScene.objects.find((o) => o.id === selectedRef.id);
+      if (obj?.object_type !== 'column') return;
+      const meta = (obj.metadata_json ?? {}) as Record<string, unknown>;
+      runPatch('object', selectedRef.id, {
+        metadata_json: { ...meta, material_label: material },
+      });
+    }
   };
 
   // 벽 실측 길이 (m) 갱신 — metadata_json.dimension_match.user_meters 에 저장.
@@ -927,6 +946,7 @@ export default function EditorPage() {
                   <PromotedCard
                     version={justPromoted}
                     versions={versions}
+                    onEdit={() => toast.info('확정본 수정은 자동 저장됩니다')}
                     onReupload={() => {
                       setJustPromoted(null);
                       setPendingFileName(null);
@@ -975,6 +995,7 @@ export default function EditorPage() {
                   <PromotedCard
                     version={currentVersion}
                     versions={versions}
+                    onEdit={() => toast.info('확정본 수정은 자동 저장됩니다')}
                     onReupload={() => {
                       setPendingFileName(null);
                       openFilePicker();

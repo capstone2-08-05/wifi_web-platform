@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
 import {
   Activity,
   AlertTriangle,
   ChevronRight,
   Clock,
-  Loader2,
   MapPin,
   Smartphone,
   TrendingUp,
@@ -13,7 +11,6 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { RSSI_HEATMAP_GRADIENT_CSS } from '@/lib/rssi-colormap';
 import { HelpFab } from '@/components/HelpFab';
 import { MobileConnectModal } from '@/features/mobile/MobileConnectModal';
 import { Popover } from '@/components/ui/Popover';
@@ -41,7 +38,7 @@ import { useFloorAssets, useAssetDownloadUrl } from '@/hooks/use-assets';
 import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
 import { useEvaluateCalibrationRun } from '@/hooks/use-calibration-run';
-import { CalibrationCard, type CalibrationGate } from '@/features/calibration/CalibrationCard';
+import { CalibrationCard } from '@/features/calibration/CalibrationCard';
 import type { CalibrationEvaluationResponse, SpaceType } from '@/types/calibration-run';
 import { parseGeometry } from '@/features/editor/geometry-utils';
 import {
@@ -56,7 +53,6 @@ const EMPTY_MEASUREMENT_SESSIONS: MeasurementSession[] = [];
 const EMPTY_MEASUREMENT_POINTS: ApiPoint[] = [];
 
 export default function MeasurementPage() {
-  const queryClient = useQueryClient();
   const floorId = useAppStore((s) => s.selectedFloorId);
 
   // 확정된 도면 (캔버스 배경).
@@ -82,25 +78,37 @@ export default function MeasurementPage() {
     assetUrl && /^https?:\/\//i.test(assetUrl) ? assetUrl : null;
   const backgroundImageUrl = usableAssetUrl ?? localImage ?? null;
 
-  // calibration soft prior — Floor.space_type 이 source of truth (헤더 FloorSpaceTypeSelector).
+  // calibration soft prior 용 공간 유형.
+  // - Source of truth: Floor.space_type (헤더의 도면 셀렉터에서 설정)
+  // - 이 페이지에서도 일회성 override 가능 — 사용자가 다른 prior 로 실험하고 싶을 때
+  // - floor 가 바뀌면 그 floor 의 값으로 자동 리셋.
+  const [spaceTypeOverrideState, setSpaceTypeOverrideState] = useState<{
+    floorId: string | null;
+    value: SpaceType | null;
+  }>({ floorId: null, value: null });
+  const spaceTypeOverride =
+    spaceTypeOverrideState.floorId === floorId ? spaceTypeOverrideState.value : null;
+  const setSpaceTypeOverride = (value: SpaceType | null) => {
+    setSpaceTypeOverrideState({ floorId: floorId ?? null, value });
+  };
+  // Floor 의 space_type 을 reactive 하게 읽음 — 헤더에서 변경하면 즉시 반영.
   const projectIdForFloors = useAppStore((s) => s.selectedProjectId);
   const floorsList = useFloors(projectIdForFloors);
   const currentFloor = floorsList.data?.find((f) => f.id === floorId) ?? null;
-  const spaceType: SpaceType = currentFloor?.space_type ?? 'unknown';
+  const spaceType: SpaceType = spaceTypeOverride ?? currentFloor?.space_type ?? 'unknown';
 
   // 측정 세션. 기본은 최근 세션 자동 선택, 사용자가 '이력 보기' 로 다른 세션 선택 가능.
-  // 모바일 측정 완료 후 웹에 세션이 늦게 반영되는 경우가 있어 주기적으로 목록 갱신.
-  const sessionsQuery = useFloorMeasurementSessions(floorId, { refetchInterval: 5_000 });
-  const allSessions = sessionsQuery.data?.items ?? EMPTY_MEASUREMENT_SESSIONS;
-  // 현재 도면 버전이 생성된 이후에 측정된 세션만 표시.
-  // 도면을 수정하고 재시뮬레이션하면 이전 버전의 측정 기록은 자동으로 숨겨진다.
-  const sessions = useMemo(() => {
-    if (!currentVersion?.created_at) return allSessions;
-    return allSessions.filter((s) => s.created_at >= currentVersion.created_at);
-  }, [allSessions, currentVersion?.created_at]);
+  const sessionsQuery = useFloorMeasurementSessions(floorId);
+  const sessions = sessionsQuery.data?.items ?? EMPTY_MEASUREMENT_SESSIONS;
+  const sessionsForCurrentVersion = useMemo(() => {
+    if (!currentVersion?.id) return sessions;
+    return sessions.filter((s) => s.scene_version_id === currentVersion.id);
+  }, [sessions, currentVersion?.id]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const activeSession =
-    sessions.find((s) => s.id === selectedSessionId) ?? sessions[0] ?? null;
+    sessionsForCurrentVersion.find((s) => s.id === selectedSessionId) ??
+    sessionsForCurrentVersion[0] ??
+    null;
   const pointsQuery = useMeasurementPoints(activeSession?.id ?? null);
   const points = pointsQuery.data?.items ?? EMPTY_MEASUREMENT_POINTS;
 
@@ -174,16 +182,6 @@ export default function MeasurementPage() {
 
   const hasVersion = versions.length > 0;
   const hasMeasurement = points.length > 0;
-  const isLoadingMeasurement =
-    sessionsQuery.isFetching || (!!activeSession && pointsQuery.isFetching);
-
-  const prevMobileOpen = useRef(false);
-  useEffect(() => {
-    if (prevMobileOpen.current && !mobileOpen && floorId) {
-      void queryClient.invalidateQueries({ queryKey: ['measurement-sessions', floorId] });
-    }
-    prevMobileOpen.current = mobileOpen;
-  }, [mobileOpen, floorId, queryClient]);
 
   // §11 캘리브레이션 — 현재 측정 세션 + 최근 RF Run + 현재 버전을 입력으로 사용.
   // 측정 페이지에 둠: 진단 카드에서 차이를 발견한 직후 보정 가능.
@@ -195,24 +193,14 @@ export default function MeasurementPage() {
   // 백엔드 평가는 기존 데이터 호환을 위해 최소 5점 guard를 별도로 유지한다.
   const MIN_MEASUREMENTS_FOR_CALIBRATION = 8;
   const hasEnoughMeasurements = points.length >= MIN_MEASUREMENTS_FOR_CALIBRATION;
-  const radioMapBounds = useMemo(
-    () => extractRadioMapBounds(latestRfRun?.metrics_json),
-    [latestRfRun?.metrics_json],
-  );
-  const pointsInsideSim = useMemo(
-    () => countPointsInsideBounds(points, radioMapBounds),
-    [points, radioMapBounds],
-  );
-  const hasEnoughPointsInSim = pointsInsideSim >= MIN_MEASUREMENTS_FOR_CALIBRATION;
   const canCalibrate =
     !!activeSession?.id &&
     !!latestRfRunId &&
     !!currentVersion?.id &&
-    hasEnoughMeasurements &&
-    hasEnoughPointsInSim;
+    hasEnoughMeasurements;
   const evaluationSessionIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const session of sessions) {
+    for (const session of sessionsForCurrentVersion) {
       if (
         session.measurement_purpose === 'calibration' ||
         session.measurement_purpose === 'reference' ||
@@ -223,25 +211,15 @@ export default function MeasurementPage() {
     }
     if (activeSession?.id) ids.add(activeSession.id);
     return [...ids];
-  }, [activeSession, sessions]);
-  const calibrationGate: CalibrationGate = !hasMeasurement
-    ? 'no_measurement'
-    : !hasEnoughMeasurements
-      ? 'insufficient_points'
-      : !latestRfRunId
-        ? 'no_simulation'
-        : !hasEnoughPointsInSim
-          ? 'outside_sim_area'
-          : 'ready';
+  }, [activeSession, sessionsForCurrentVersion]);
   const calibrationDisabledReason = !hasMeasurement
-    ? null
+    ? '먼저 측정을 진행해주세요.'
     : !hasEnoughMeasurements
-      ? `보정을 위해 측정점 ${MIN_MEASUREMENTS_FOR_CALIBRATION}개 이상이 필요합니다 (현재 ${points.length}개). 도면 곳곳을 더 측정해주세요.`
-      : !latestRfRunId
-        ? null
-        : !hasEnoughPointsInSim
-          ? `측정점 ${points.length}개 중 ${pointsInsideSim}개만 시뮬레이션 영역 안에 있습니다. 모바일 앱에서 도면 벽 안쪽의 시작 위치를 지정하고 건물 안을 따라 다시 측정해주세요.`
-          : null;
+    ? `보정 신뢰성 확보를 위해 측정점이 ${MIN_MEASUREMENTS_FOR_CALIBRATION}개 이상 필요합니다 ` +
+      `(현재 ${points.length}개). 도면 전반 골고루 더 측정해주세요.`
+    : !latestRfRunId
+    ? '비교할 시뮬레이션 결과가 없습니다. 시뮬레이션 페이지에서 실행해주세요.'
+    : null;
   const handleCalibrate = () => {
     if (!canCalibrate || !activeSession || !latestRfRunId || !currentVersion) return;
     evaluateCalibration.mutate(
@@ -337,7 +315,7 @@ export default function MeasurementPage() {
   return (
     <div className="relative flex h-full flex-col gap-5 p-6">
       <PageHeader
-        sessions={sessions}
+        sessions={sessionsForCurrentVersion}
         activeSession={activeSession}
         floorId={floorId ?? null}
         projectId={projectIdForFloors}
@@ -359,7 +337,7 @@ export default function MeasurementPage() {
           subtitle="공간 편집에서 도면을 분석·확정한 후 모바일 앱으로 실측을 진행할 수 있습니다."
         />
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[1fr_350px]">
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
           <section className="flex min-h-0 flex-col gap-3">
             <TabBar mode={mode} onChange={setMode} />
             <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border bg-background shadow-sm">
@@ -388,7 +366,7 @@ export default function MeasurementPage() {
                   mode={mode}
                   estimatedHeatmap={displayedHeatmap}
                 />
-                {!hasMeasurement && <CanvasEmptyOverlay loading={isLoadingMeasurement} />}
+                {!hasMeasurement && <CanvasEmptyOverlay loading={pointsQuery.isFetching} />}
                 {/* dbm 모드 colorbar — 도면 좌상단. gradient + tick 값 수직 정렬로 "이 색=이 dBm" 직관. */}
                 {mode !== 'route' && displayedRange && (
                   <div className="pointer-events-none absolute left-3 top-3 z-10 w-70">
@@ -415,12 +393,10 @@ export default function MeasurementPage() {
               isStarting={evaluateCalibration.isPending}
               canCalibrate={canCalibrate}
               disabledReason={calibrationDisabledReason}
-              calibrationGate={calibrationGate}
               spaceType={spaceType}
-              showSpaceTypeField={false}
+              onSpaceTypeChange={setSpaceTypeOverride}
               onCalibrate={handleCalibrate}
-              showCalibrateButton
-              showMeasurementLink={false}
+              showCalibrateButton={false}
               onAddReferenceMeasurement={() => {
                 setMobilePurpose('reference');
                 setMobileOpen(true);
@@ -504,40 +480,6 @@ function apsFromRfRunRequest(requestJson: Record<string, unknown> | undefined): 
   return out;
 }
 
-/** RfRun.metrics_json.radio_map.bounds_m 추출. */
-function extractRadioMapBounds(
-  metrics: Record<string, unknown> | undefined,
-): { min_x: number; min_y: number; max_x: number; max_y: number } | null {
-  const radioMap = metrics?.['radio_map'];
-  if (!radioMap || typeof radioMap !== 'object') return null;
-  const bounds = (radioMap as Record<string, unknown>)['bounds_m'];
-  if (!bounds || typeof bounds !== 'object') return null;
-  const b = bounds as Record<string, unknown>;
-  const min_x = Number(b['min_x']);
-  const min_y = Number(b['min_y']);
-  const max_x = Number(b['max_x']);
-  const max_y = Number(b['max_y']);
-  if (![min_x, min_y, max_x, max_y].every(Number.isFinite)) return null;
-  if (max_x <= min_x || max_y <= min_y) return null;
-  return { min_x, min_y, max_x, max_y };
-}
-
-function countPointsInsideBounds(
-  points: ApiPoint[],
-  bounds: { min_x: number; min_y: number; max_x: number; max_y: number } | null,
-): number {
-  if (!bounds) return points.length;
-  return points.filter((p) => {
-    const { x, y } = p.floor_position;
-    return (
-      x >= bounds.min_x &&
-      x <= bounds.max_x &&
-      y >= bounds.min_y &&
-      y <= bounds.max_y
-    );
-  }).length;
-}
-
 /** RfMap.metrics_json.rss_dbm.mean 추출 (없으면 옛 avg_rssi_dbm fallback). */
 function extractPredictedAvgDbm(maps: RfMap[]): number | null {
   for (const m of maps) {
@@ -588,8 +530,8 @@ function PageHeader({
   return (
     <header className="flex flex-wrap items-start justify-between gap-3">
       <div className="space-y-1.5">
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-900">실측 및 진단</h1>
-        <p className="mt-0.5 text-sm text-slate-500">
+        <h1 className="text-2xl font-semibold tracking-tight">실측 및 진단</h1>
+        <p className="text-sm text-muted-foreground">
           모바일 기기로 측정한 실제 와이파이 품질 데이터와 시뮬레이션을 통합하여 분석합니다.
         </p>
       </div>
@@ -642,7 +584,7 @@ function PageHeader({
                       <SessionStatusBadge status={s.status} />
                     </span>
                     <span className="text-[10px] text-muted-foreground">
-                      {s.measurement_type} · {s.id.slice(0, 8)}…
+                      {s.measurement_type} · 도면 {s.scene_version_id?.slice(0, 8) ?? '미지정'} · {s.id.slice(0, 8)}…
                     </span>
                   </button>
                 );
@@ -653,7 +595,7 @@ function PageHeader({
         <button
           type="button"
           onClick={onStartMeasurement}
-          className="inline-flex items-center gap-2 rounded-lg bg-blue-500 px-4 py-2 text-sm font-medium text-white shadow-sm shadow-blue-500/20 hover:bg-blue-600"
+          className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
         >
           <Smartphone className="h-4 w-4" />
           새로운 측정 시작
@@ -741,7 +683,7 @@ function TabBar({
   );
 }
 
-/** dbm 모드일 땐 jet 그라데이션 + 양 끝/중간 dBm 표시. quality 모드면 기존 3-tier. */
+/** dbm 모드일 땐 inferno 그라데이션 + 양 끝/중간 dBm 표시. quality 모드면 기존 3-tier. */
 function Legend({
   colorMode,
   range,
@@ -758,7 +700,10 @@ function Legend({
         <span className="font-semibold text-foreground">실측 RSSI</span>
         <div
           className="h-2 w-32 rounded-sm border border-border/60"
-          style={{ backgroundImage: RSSI_HEATMAP_GRADIENT_CSS }}
+          style={{
+            backgroundImage:
+              'linear-gradient(to right, rgb(0,0,4), rgb(66,10,104), rgb(147,38,103), rgb(221,81,58), rgb(252,165,10), rgb(252,255,164))',
+          }}
         />
         <span className="font-mono tabular-nums text-[10px] text-foreground/70">
           {min.toFixed(0)} · {mid.toFixed(0)} · {max.toFixed(0)} dBm
@@ -822,56 +767,15 @@ function LegendDot({ color, label }: { color: string; label: string }) {
 
 function CanvasEmptyOverlay({ loading }: { loading: boolean }) {
   return (
-    <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6 pb-20">
-      <div
-        className={cn(
-          'pointer-events-auto w-full max-w-md -translate-y-6 animate-panel-rise',
-          'rounded-2xl border border-sky-200/90 bg-sky-50/95 px-6 py-5 shadow-md backdrop-blur-sm',
-        )}
-      >
-        <div className="flex items-start gap-4">
-          <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-sky-100 text-sky-600">
-            {loading ? (
-              <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
-            ) : (
-              <MapPin className="h-5 w-5" aria-hidden />
-            )}
-          </span>
-          <div className="min-w-0 space-y-4 text-left">
-            <div className="space-y-2">
-              <p className="text-base font-semibold leading-relaxed text-sky-950">
-                {loading ? '측정 데이터를 불러오는 중' : '아직 측정 데이터가 없어요'}
-              </p>
-              <p className="text-xs leading-relaxed text-sky-900/75">
-                {loading
-                  ? '잠시만 기다려주세요.'
-                  : '모바일로 도면 위를 걸으며 측정하면 결과가 이곳에 표시됩니다.'}
-              </p>
-            </div>
-            {!loading && (
-              <ol className="space-y-2.5 text-xs leading-relaxed text-sky-900/80">
-                <li className="flex items-center gap-2.5">
-                  <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white text-[10px] font-bold text-sky-700 ring-1 ring-sky-200">
-                    1
-                  </span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <Smartphone className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
-                    헤더에서 모바일 앱 연결
-                  </span>
-                </li>
-                <li className="flex items-center gap-2.5">
-                  <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white text-[10px] font-bold text-sky-700 ring-1 ring-sky-200">
-                    2
-                  </span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <Activity className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
-                    상단에서 새로운 측정 시작
-                  </span>
-                </li>
-              </ol>
-            )}
-          </div>
-        </div>
+    <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+      <div className="pointer-events-auto max-w-sm rounded-xl border bg-background/95 px-5 py-4 text-center shadow-sm backdrop-blur">
+        <p className="text-sm font-semibold">
+          {loading ? '측정 데이터 불러오는 중...' : '측정 데이터가 없습니다'}
+        </p>
+        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+          상단의 "새로운 측정 시작" 또는 헤더의 "모바일 앱 연결" 로 측정을 진행하면
+          여기에 결과가 표시됩니다.
+        </p>
       </div>
     </div>
   );
@@ -901,9 +805,8 @@ function DiagnosticCard({
           예측·실측 통합 진단
         </h2>
         <p className="mt-3 text-xs text-muted-foreground">
-          측정 데이터가 없습니다. 모바일 앱으로 측정을 진행하면 가장
-          <br />
-          신호가 약한 지점의 진단이 자동으로 표시됩니다.
+          측정 데이터가 없습니다. 모바일 앱으로 측정을 진행하면 가장 신호가 약한 지점의
+          진단이 자동으로 표시됩니다.
         </p>
       </div>
     );

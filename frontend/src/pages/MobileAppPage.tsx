@@ -1,5 +1,5 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Check, CheckCircle2, Loader2, RotateCcw, Sparkles } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { CheckCircle2, Loader2, Sparkles } from 'lucide-react';
 import type { HttpError } from '@/api/client';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
@@ -8,7 +8,6 @@ import { useApLayouts, useCreateApLayout } from '@/hooks/use-ap-layouts';
 import { useFloorAssets, useAssetDownloadUrl } from '@/hooks/use-assets';
 import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
 import { useApRecommendation } from '@/hooks/use-ap-recommendation';
-import { useApRecommendationSession } from '@/hooks/use-ap-recommendation-session';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
 import { DEFAULT_TX_POWER_DBM } from '@/features/simulation/SimulationCanvas';
 import {
@@ -20,10 +19,8 @@ import { ApRecommendationCanvas } from '@/features/ap-recommendation/ApRecommend
 import {
   AP_DEFAULT_Z_M,
   buildApRecommendationPayload,
-  getRecommendationRankUi,
-  getRecommendationReason,
-  isValidSelectionBBox,
   normalizeRecommendations,
+  validSelectionBBoxes,
   type MeterBBox,
 } from '@/features/ap-recommendation/recommendation-utils';
 import type { ApRecommendationResult } from '@/types/ap-recommendation';
@@ -37,11 +34,7 @@ const PROGRESS_STEPS = [
   { id: 3, label: '추천 위치 선택' },
 ] as const;
 
-const CARD_BORDER = 'border-[#E5E7EB]';
-
-/** 추천 패널 스크롤 영역 — 연한 하늘/회색 scrollbar */
-const PANEL_SCROLL =
-  '[scrollbar-width:thin] [scrollbar-color:#BDE0FE_transparent] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[#CBD5E1] hover:[&::-webkit-scrollbar-thumb]:bg-[#A2D2FF]';
+const CARD_BORDER = 'border-[#E5EAF2]';
 
 export default function MobileAppPage() {
   const floorId = useAppStore((s) => s.selectedFloorId);
@@ -84,23 +77,11 @@ export default function MobileAppPage() {
     return apsFromRfRunRequest(latestRfRun?.request_json as Record<string, unknown> | undefined);
   }, [apLayoutsQuery.data, latestRfRun?.request_json]);
 
+  const [selectionBBoxes, setSelectionBBoxes] = useState<MeterBBox[]>([]);
+  const [recommendations, setRecommendations] = useState<ApRecommendationResult[]>([]);
+  const [selectedRank, setSelectedRank] = useState<number | null>(null);
+  const [savedRank, setSavedRank] = useState<number | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
-  const [hoveredRank, setHoveredRank] = useState<number | null>(null);
-
-  const {
-    selectionBBox,
-    recommendations,
-    selectedRank,
-    savedRank,
-    setSelectionBBox,
-    setRecommendations,
-    setSelectedRank,
-    setSavedRank,
-    persistSavedSession,
-    resetSession,
-  } = useApRecommendationSession(floorId, sceneVersionId);
-
-  const highlightedRank = selectedRank ?? hoveredRank;
 
   const recommendMutation = useApRecommendation();
   const createLayout = useCreateApLayout();
@@ -109,36 +90,28 @@ export default function MobileAppPage() {
     if (recommendMutation.isPending) return 'loading';
     if (recommendMutation.isError) return 'error';
     if (recommendations.length > 0) return 'success';
-    if (isValidSelectionBBox(selectionBBox)) return 'areaSelected';
+    if (validSelectionBBoxes(selectionBBoxes).length > 0) return 'areaSelected';
     return 'idle';
   }, [
     recommendMutation.isPending,
     recommendMutation.isError,
     recommendations.length,
-    selectionBBox,
+    selectionBBoxes,
   ]);
 
   const activeStep = useMemo(() => {
-    if (savedRank != null) return 4;
-    if (selectedRank != null) return 3;
+    if (savedRank != null || selectedRank != null) return 3;
     if (pageStatus === 'success') return 3;
     if (pageStatus === 'loading') return 2;
     if (pageStatus === 'areaSelected') return 1;
     return 1;
   }, [pageStatus, selectedRank, savedRank]);
 
-  /** 저장 완료 후 — 선택한 순위 AP만 캔버스에 표시, 나머지 추천 마커 숨김 */
-  const canvasRecommendations = useMemo(() => {
-    if (savedRank == null) return recommendations;
-    return recommendations.filter((r) => r.rank === savedRank);
-  }, [recommendations, savedRank]);
-
-  const handleSelectionChange = (bbox: MeterBBox | null) => {
-    setSelectionBBox(bbox);
+  const handleSelectionChange = (bboxes: MeterBBox[]) => {
+    setSelectionBBoxes(validSelectionBBoxes(bboxes));
     setRecommendations([]);
     setSelectedRank(null);
     setSavedRank(null);
-    setHoveredRank(null);
     setPageError(null);
     recommendMutation.reset();
   };
@@ -148,11 +121,12 @@ export default function MobileAppPage() {
       setPageError('도면 정보를 불러올 수 없습니다.');
       return;
     }
-    if (!isValidSelectionBBox(selectionBBox)) return;
+    const validBBoxes = validSelectionBBoxes(selectionBBoxes);
+    if (validBBoxes.length === 0) return;
 
     const payload = buildApRecommendationPayload({
       sceneVersionId,
-      bbox: selectionBBox,
+      bboxes: validBBoxes,
       existingAps,
       txPowerDbm: DEFAULT_TX_POWER_DBM,
     });
@@ -163,7 +137,6 @@ export default function MobileAppPage() {
 
     setPageError(null);
     setSavedRank(null);
-    setHoveredRank(null);
     recommendMutation.mutate(payload, {
       onSuccess: (data) => {
         const normalized = normalizeRecommendations(data);
@@ -177,21 +150,6 @@ export default function MobileAppPage() {
         setPageError(e?.message ?? '추천 계산에 실패했습니다.');
       },
     });
-  };
-
-  const handleResetRecommendation = () => {
-    resetSession();
-    setPageError(null);
-    setHoveredRank(null);
-    recommendMutation.reset();
-  };
-
-  const handleHeaderAction = () => {
-    if (recommendations.length > 0) {
-      handleResetRecommendation();
-      return;
-    }
-    handleRecommend();
   };
 
   const handleSelectRecommendation = (rec: ApRecommendationResult) => {
@@ -219,13 +177,6 @@ export default function MobileAppPage() {
       {
         onSuccess: () => {
           setSavedRank(rec.rank);
-          persistSavedSession({
-            sceneVersionId,
-            selectionBBox,
-            recommendations,
-            selectedRank: rec.rank,
-            savedRank: rec.rank,
-          });
         },
         onError: (err) => {
           const e = err as HttpError | null;
@@ -236,17 +187,8 @@ export default function MobileAppPage() {
     );
   };
 
-  const hasRecommendation = recommendations.length > 0;
-  const isRecommendPending = recommendMutation.isPending;
-
   const canRecommend =
-    !hasRecommendation &&
-    !!sceneVersionId &&
-    isValidSelectionBBox(selectionBBox) &&
-    !isRecommendPending;
-
-  const headerButtonDisabled =
-    isRecommendPending || (!hasRecommendation && !canRecommend);
+    !!sceneVersionId && validSelectionBBoxes(selectionBBoxes).length > 0 && !recommendMutation.isPending;
 
   const sceneLoading =
     versionsQuery.isLoading ||
@@ -254,79 +196,36 @@ export default function MobileAppPage() {
     (floorId != null && !sceneVersionId && !versionsQuery.isError);
 
   const statusHint = getStatusHint(pageStatus, pageError, savedRank);
-  const hintStepId = useMemo(
-    () => getHintStepId(pageStatus, activeStep),
-    [pageStatus, activeStep],
-  );
-
-  const canvasAreaRef = useRef<HTMLDivElement>(null);
-  const stepIconRefs = useRef<(HTMLDivElement | null)[]>([]);
-  const [bubbleLeftPx, setBubbleLeftPx] = useState<number | null>(null);
-
-  const registerStepIconRef = useCallback((index: number, el: HTMLDivElement | null) => {
-    stepIconRefs.current[index] = el;
-  }, []);
-
-  useLayoutEffect(() => {
-    const syncBubblePosition = () => {
-      const canvas = canvasAreaRef.current;
-      const icon = stepIconRefs.current[hintStepId - 1];
-      if (!canvas || !icon) {
-        setBubbleLeftPx(null);
-        return;
-      }
-      const canvasRect = canvas.getBoundingClientRect();
-      const iconRect = icon.getBoundingClientRect();
-      setBubbleLeftPx(iconRect.left + iconRect.width / 2 - canvasRect.left);
-    };
-
-    syncBubblePosition();
-    window.addEventListener('resize', syncBubblePosition);
-    return () => window.removeEventListener('resize', syncBubblePosition);
-  }, [hintStepId, statusHint, sceneVersionId, pageStatus]);
 
   return (
-    <div className="flex h-full flex-col overflow-auto bg-background">
-      <header className="shrink-0 px-6 pb-3 pt-5 lg:px-8">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+    <div className="flex h-full flex-col overflow-auto bg-[#F8FAFC]">
+      {/* 본문 헤더 — Figma: 제목 + 설명 + 우측 CTA */}
+      <header className="shrink-0 px-6 pb-4 pt-6 lg:px-8">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
+            <h1 className="text-2xl font-bold tracking-tight text-foreground">
               AP 배치 추천
             </h1>
-            <p className="mt-1 text-sm text-slate-500">
+            <p className="mt-1.5 text-sm text-muted-foreground">
               개선이 필요한 영역을 드래그하면 최적의 AP 설치 위치를 추천합니다.
             </p>
           </div>
-          <div className="flex shrink-0 flex-col items-stretch gap-1 sm:items-end">
+          <div className="flex shrink-0 flex-col items-stretch gap-1.5 sm:items-end">
             <button
               type="button"
-              onClick={handleHeaderAction}
-              disabled={headerButtonDisabled}
+              onClick={handleRecommend}
+              disabled={!canRecommend}
               className={cn(
-                'inline-flex h-9 items-center justify-center gap-1.5 rounded-md px-4 text-sm font-medium transition-colors',
-                isRecommendPending && 'cursor-not-allowed bg-slate-100 text-slate-400',
-                !isRecommendPending &&
-                  hasRecommendation &&
-                  'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50',
-                !isRecommendPending &&
-                  !hasRecommendation &&
-                  canRecommend &&
-                  'bg-blue-500 text-white shadow-sm shadow-blue-500/20 hover:bg-blue-600',
-                !isRecommendPending &&
-                  !hasRecommendation &&
-                  !canRecommend &&
-                  'cursor-not-allowed bg-slate-100 text-slate-400',
+                'inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold shadow-sm transition-colors',
+                canRecommend
+                  ? 'bg-blue-600 text-white hover:bg-blue-700'
+                  : 'cursor-not-allowed bg-muted text-muted-foreground',
               )}
             >
-              {isRecommendPending ? (
+              {recommendMutation.isPending ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
                   최적 위치 계산 중…
-                </>
-              ) : hasRecommendation ? (
-                <>
-                  <RotateCcw className="h-4 w-4" />
-                  다시 생성하기
                 </>
               ) : (
                 <>
@@ -344,21 +243,15 @@ export default function MobileAppPage() {
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 px-6 pb-5 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-5 lg:px-8">
-        <div className="flex min-h-0 flex-col gap-3">
-          <div className="w-full shrink-0 rounded-lg border border-[#E5E7EB] bg-white px-8 py-3 sm:px-10">
-            <ProgressStepper
-              activeStep={activeStep}
-              pageStatus={pageStatus}
-              registerStepIconRef={registerStepIconRef}
-            />
-          </div>
-
+      {/* 본문 — lg: 캔버스(좌) + 추천 패널(우), md↓ 단일 컬럼 */}
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 px-6 pb-6 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-6 lg:px-8">
+        {/* 좌측: 캔버스 + 진행 단계 */}
+        <div className="flex min-h-0 flex-col gap-4">
           <div
-            ref={canvasAreaRef}
             className={cn(
-              'relative flex min-h-[min(52vh,32rem)] flex-1 flex-col overflow-hidden rounded-xl border bg-white',
+              'relative flex min-h-[min(52vh,32rem)] flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-sm',
               CARD_BORDER,
+              'border',
             )}
           >
             {!floorId ? (
@@ -375,74 +268,73 @@ export default function MobileAppPage() {
                 sceneVersion={versionDetail}
                 backgroundImageUrl={backgroundImageUrl}
                 existingAps={existingAps}
-                selectionBBox={selectionBBox}
+                selectionBBoxes={selectionBBoxes}
                 onSelectionChange={handleSelectionChange}
-                recommendations={canvasRecommendations}
+                recommendations={recommendations}
                 selectedRecommendationRank={selectedRank}
-                highlightedRank={highlightedRank}
-                onMarkerHover={setHoveredRank}
-                disabled={isRecommendPending || createLayout.isPending}
-                dragDisabled={isRecommendPending || hasRecommendation}
+                disabled={recommendMutation.isPending || createLayout.isPending}
               />
             )}
 
-            {sceneVersionId && statusHint && bubbleLeftPx != null && (
-              <CanvasStatusBubble message={statusHint} leftPx={bubbleLeftPx} />
+            {sceneVersionId && statusHint && pageStatus !== 'loading' && (
+              <div className="pointer-events-none absolute bottom-4 left-4 right-4">
+                <p className="rounded-lg border border-[#E5EAF2] bg-white/95 px-4 py-2.5 text-center text-xs text-muted-foreground shadow-sm backdrop-blur">
+                  {statusHint}
+                </p>
+              </div>
             )}
+          </div>
+
+          {/* 진행 단계 카드 — 캔버스 아래 */}
+          <div
+            className={cn(
+              'shrink-0 rounded-2xl bg-white px-6 py-5 shadow-sm',
+              CARD_BORDER,
+              'border',
+            )}
+          >
+            <ProgressStepper activeStep={activeStep} pageStatus={pageStatus} />
           </div>
         </div>
 
+        {/* 우측: 추천 결과 패널 (모바일에서는 하단 카드) */}
         <aside
           className={cn(
-            'flex min-h-[260px] flex-col overflow-hidden rounded-xl border bg-white lg:min-h-0 lg:self-stretch',
+            'flex min-h-[280px] flex-col overflow-hidden rounded-2xl bg-white shadow-sm lg:min-h-0 lg:self-stretch',
             CARD_BORDER,
+            'border',
           )}
         >
-          <div className="border-b border-[#E5E7EB] px-5 py-4">
-            <h2 className="text-base font-semibold text-[#0F172A]">최적 배치 추천</h2>
-            {recommendations.length > 0 && (
-              <p className="mt-1.5 text-xs leading-relaxed text-[#64748B]">
-                선택한 우선 개선 영역과 기존 AP 위치를 함께 고려해 추천했습니다.
-                {recommendations[0]?.candidates_evaluated > 0 && (
-                  <>
-                    {' '}
-                    (총 {recommendations[0].candidates_evaluated}개 후보 비교)
-                  </>
-                )}
-              </p>
-            )}
+          <div className="border-b border-[#E5EAF2] px-5 py-4">
+            <h2 className="text-base font-bold text-foreground">최적 배치 추천</h2>
           </div>
 
-          <div className={cn('min-h-0 flex-1 overflow-y-auto bg-[#F8FAFC] p-4', PANEL_SCROLL)}>
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
             {recommendations.length === 0 ? (
               <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-2 px-4 text-center">
-                <div className="flex h-10 w-10 items-center justify-center rounded-full border border-[#E2E8F0] bg-white">
-                  <Sparkles className="h-5 w-5 text-[#94A3B8]" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-muted">
+                  <Sparkles className="h-5 w-5 text-muted-foreground" />
                 </div>
-                <p className="text-sm font-medium text-[#0F172A]">
+                <p className="text-sm font-medium text-foreground/80">
                   {pageStatus === 'loading'
                     ? '최적 위치를 계산하고 있습니다…'
-                    : '추천 결과가 아직 없습니다'}
+                    : '추천 결과가 여기에 표시됩니다'}
                 </p>
-                {pageStatus !== 'loading' && (
-                  <p className="text-xs leading-relaxed text-[#64748B]">
-                    도면에서 개선이 필요한 영역을 드래그한 뒤, 최적 배치 추천을 실행하세요.
-                  </p>
-                )}
+                <p className="text-xs text-muted-foreground">
+                  도면에서 우선 개선 영역을 드래그한 뒤 「최적 배치 추천」을 눌러주세요.
+                </p>
               </div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-3">
                 {recommendations.map((rec) => (
                   <RecommendationCard
                     key={rec.rank}
                     rec={rec}
-                    reason={getRecommendationReason(rec, recommendations, selectionBBox)}
-                    highlighted={highlightedRank === rec.rank}
+                    selected={selectedRank === rec.rank}
                     saved={savedRank === rec.rank}
                     saving={createLayout.isPending && selectedRank === rec.rank}
                     saveDisabled={!latestRfRunId || createLayout.isPending}
                     onSelect={() => handleSelectRecommendation(rec)}
-                    onHover={(active) => setHoveredRank(active ? rec.rank : null)}
                   />
                 ))}
               </div>
@@ -454,40 +346,6 @@ export default function MobileAppPage() {
   );
 }
 
-function CanvasStatusBubble({
-  message,
-  leftPx,
-}: {
-  message: string;
-  leftPx: number;
-}) {
-  return (
-    <div
-      className="pointer-events-none absolute top-3 z-10 -translate-x-1/2"
-      style={{ left: leftPx }}
-    >
-      <div
-        key={message}
-        className="relative w-max max-w-md animate-bubble-rise rounded-xl border border-sky-200 bg-sky-50/95 px-4 py-2.5 shadow-sm backdrop-blur-sm"
-      >
-        <span
-          className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 border-l border-t border-sky-200 bg-sky-50/95"
-          aria-hidden="true"
-        />
-        <p className="text-center text-xs leading-relaxed text-sky-900/90">{message}</p>
-      </div>
-    </div>
-  );
-}
-
-function getHintStepId(pageStatus: PageStatus, activeStep: number): number {
-  if (pageStatus === 'idle') return 1;
-  if (pageStatus === 'areaSelected') return 2;
-  if (pageStatus === 'loading') return 2;
-  if (pageStatus === 'success') return 3;
-  return Math.min(activeStep, 3);
-}
-
 function getStatusHint(
   pageStatus: PageStatus,
   pageError: string | null,
@@ -495,15 +353,13 @@ function getStatusHint(
 ): string | null {
   switch (pageStatus) {
     case 'idle':
-      return '개선이 필요한 영역을 드래그해 선택하세요.';
+      return '도면 위에서 우선 개선할 영역을 드래그하여 선택하세요.';
     case 'areaSelected':
-      return '영역이 선택되었습니다. 우측 상단 「최적 배치 추천」을 실행하세요.';
-    case 'loading':
-      return null;
+      return '영역이 선택되었습니다. 우측 상단 「최적 배치 추천」 버튼을 눌러주세요.';
     case 'success':
       return savedRank != null
-        ? 'AP 배치가 저장되었습니다. 다른 영역은 다시 생성하기로 선택하세요.'
-        : '추천 위치를 확인한 뒤 우측 패널에서 저장할 수 있습니다.';
+        ? '추천 위치가 AP 배치로 저장되었습니다.'
+        : '추천 위치를 확인하고 우측 패널에서 선택하세요.';
     case 'error':
       return pageError ?? '추천 계산에 실패했습니다. 다시 시도해 주세요.';
     default:
@@ -521,85 +377,72 @@ function EmptyState({ message }: { message: string }) {
 
 function RecommendationCard({
   rec,
-  reason,
-  highlighted,
+  selected,
   saved,
   saving,
   saveDisabled,
   onSelect,
-  onHover,
 }: {
   rec: ApRecommendationResult;
-  reason: string;
-  highlighted: boolean;
+  selected: boolean;
   saved: boolean;
   saving: boolean;
   saveDisabled: boolean;
   onSelect: () => void;
-  onHover: (active: boolean) => void;
 }) {
-  const ui = getRecommendationRankUi(rec.rank);
-  const isPrimary = rec.rank === 1;
-
   return (
     <article
-      onMouseEnter={() => onHover(true)}
-      onMouseLeave={() => onHover(false)}
       className={cn(
-        'flex flex-col gap-4 rounded-xl border border-l-4 bg-white p-5 transition-colors',
-        CARD_BORDER,
-        ui.cardAccentClass,
-        highlighted && isPrimary && !saved && ui.cardHighlightClass,
-        highlighted && !isPrimary && !saved && 'bg-[#EAF4FF]/30',
+        'rounded-xl border bg-white p-4 transition-colors',
+        saved || selected ? 'border-emerald-300 shadow-sm' : 'border-[#E5EAF2]',
       )}
     >
       <div className="flex items-start gap-3">
-        <div
-          className={cn(
-            'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs',
-            saved ? 'bg-[#3B82F6] text-white font-bold' : ui.badgeClass,
-          )}
-        >
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-sm font-bold text-white">
           {rec.rank}
         </div>
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-medium leading-snug text-[#0F172A]">{ui.title}</h3>
-          <p className="mt-1.5 text-xs font-normal leading-relaxed text-[#64748B]">{reason}</p>
+          <h3 className="text-sm font-bold text-foreground">{rec.rank}순위 추천</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            위치 X {rec.recommended_x.toFixed(0)}m / Y {rec.recommended_y.toFixed(0)}m
+          </p>
+          <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+            우선 개선 영역 커버리지 가장 높음
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            후보 점수{' '}
+            <span className="font-semibold text-foreground">{rec.score.toFixed(1)}</span>
+          </p>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">
+            탐색 후보 수 {rec.candidates_evaluated}
+          </p>
         </div>
       </div>
-
-      <div className="rounded-lg bg-[#F8FAFC] px-3 py-2.5 text-xs">
-        <p className="text-[#64748B]">도면 기준 위치</p>
-        <p className="mt-1 font-medium tabular-nums text-[#0F172A]">
-          가로 {rec.recommended_x.toFixed(1)}m · 세로 {rec.recommended_y.toFixed(1)}m
-        </p>
-      </div>
-
-      {saved ? (
-        <div className="flex items-center gap-2 rounded-lg bg-[#F8FAFC] px-3 py-2.5">
-          <CheckCircle2 className="h-4 w-4 shrink-0 text-[#3B82F6]" aria-hidden="true" />
-          <p className="text-sm font-normal text-[#0F172A]">AP 배치로 저장됨</p>
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={onSelect}
-          disabled={saveDisabled}
-          className={cn(
-            'flex h-11 w-full items-center justify-center rounded-xl border border-[#CBD5E1] bg-white text-sm font-medium text-[#0F172A] transition-colors',
-            'hover:border-[#94A3B8] hover:bg-[#F8FAFC] disabled:cursor-not-allowed disabled:opacity-50',
-          )}
-        >
-          {saving ? (
-            <span className="inline-flex items-center justify-center gap-1.5">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              저장 중…
-            </span>
-          ) : (
-            '이 위치에 AP 배치하기'
-          )}
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={onSelect}
+        disabled={saveDisabled && !saved}
+        className={cn(
+          'mt-4 w-full rounded-lg border py-2.5 text-sm font-medium transition-colors',
+          saved
+            ? 'border-emerald-500 bg-emerald-500 text-white'
+            : 'border-[#E5EAF2] bg-[#F8FAFC] text-foreground hover:bg-muted/60 disabled:cursor-not-allowed disabled:opacity-50',
+        )}
+      >
+        {saving ? (
+          <span className="inline-flex items-center justify-center gap-1.5">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            저장 중…
+          </span>
+        ) : saved ? (
+          <span className="inline-flex items-center justify-center gap-1.5">
+            <CheckCircle2 className="h-4 w-4" />
+            저장됨
+          </span>
+        ) : (
+          '이 위치 선택'
+        )}
+      </button>
     </article>
   );
 }
@@ -607,70 +450,56 @@ function RecommendationCard({
 function ProgressStepper({
   activeStep,
   pageStatus,
-  registerStepIconRef,
 }: {
   activeStep: number;
   pageStatus: PageStatus;
-  registerStepIconRef?: (index: number, el: HTMLDivElement | null) => void;
 }) {
-  const isStepDone = (stepId: number) =>
-    stepId < activeStep ||
-    (stepId === 1 && pageStatus !== 'idle') ||
-    (stepId === 2 && (pageStatus === 'success' || pageStatus === 'loading'));
-
   return (
-    <ol className="grid w-full grid-cols-3 items-start">
+    <ol className="flex items-start">
       {PROGRESS_STEPS.map((step, index) => {
-        const done = isStepDone(step.id);
+        const done =
+          step.id < activeStep ||
+          (step.id === 1 && pageStatus !== 'idle') ||
+          (step.id === 2 && (pageStatus === 'success' || pageStatus === 'loading')) ||
+          (step.id === 3 && activeStep >= 3);
         const current = step.id === activeStep && pageStatus !== 'error';
-        const isFirst = index === 0;
         const isLast = index === PROGRESS_STEPS.length - 1;
-        const lineBeforeDone = !isFirst && isStepDone(PROGRESS_STEPS[index - 1]!.id);
-        const lineAfterDone = !isLast && isStepDone(step.id);
 
         return (
-          <li key={step.id} className="flex min-w-0 flex-col items-center">
-            <div className="flex w-full items-center">
+          <li key={step.id} className="flex min-w-0 flex-1 items-start">
+            <div className="flex min-w-0 flex-1 flex-col items-center gap-2">
               <div
                 className={cn(
-                  'h-px flex-1',
-                  isFirst ? 'bg-transparent' : lineBeforeDone ? 'bg-primary/20' : 'bg-[#E5E7EB]',
-                )}
-                aria-hidden="true"
-              />
-              <div
-                ref={(el) => registerStepIconRef?.(index, el)}
-                className={cn(
-                  'mx-2 flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full text-[10px] font-medium',
-                  done &&
-                    !current &&
-                    'border border-primary/25 bg-primary/10 text-primary',
-                  current && 'bg-primary text-primary-foreground',
-                  !done && !current && 'border border-[#E5E7EB] bg-white text-[#64748B]',
+                  'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold',
+                  done && !current && 'bg-emerald-500 text-white',
+                  current && 'bg-blue-600 text-white',
+                  !done && !current && 'bg-muted text-muted-foreground',
                 )}
               >
                 {done && !current ? (
-                  <Check className="h-2.5 w-2.5" strokeWidth={2.5} aria-hidden="true" />
+                  <CheckCircle2 className="h-4 w-4" />
                 ) : (
                   step.id
                 )}
               </div>
+              <span
+                className={cn(
+                  'max-w-28 text-center text-xs leading-tight',
+                  current ? 'font-semibold text-foreground' : 'text-muted-foreground',
+                )}
+              >
+                {step.label}
+              </span>
+            </div>
+            {!isLast && (
               <div
                 className={cn(
-                  'h-px flex-1',
-                  isLast ? 'bg-transparent' : lineAfterDone ? 'bg-primary/20' : 'bg-[#E5E7EB]',
+                  'mt-4 h-0.5 min-w-4 flex-1',
+                  step.id < activeStep ? 'bg-emerald-400' : 'bg-[#E5EAF2]',
                 )}
                 aria-hidden="true"
               />
-            </div>
-            <span
-              className={cn(
-                'mt-1.5 w-full px-1 text-center text-xs leading-snug',
-                current ? 'font-normal text-primary' : 'font-normal text-[#64748B]',
-              )}
-            >
-              {step.label}
-            </span>
+            )}
           </li>
         );
       })}

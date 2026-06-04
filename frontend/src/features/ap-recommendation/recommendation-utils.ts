@@ -54,19 +54,40 @@ export function isValidSelectionBBox(bbox: MeterBBox | null): bbox is MeterBBox 
   return w >= MIN_SELECTION_M && h >= MIN_SELECTION_M;
 }
 
+export function validSelectionBBoxes(bboxes: MeterBBox[] | null | undefined): MeterBBox[] {
+  return (bboxes ?? []).filter(isValidSelectionBBox);
+}
+
+export function unionMeterBBoxes(bboxes: MeterBBox[]): MeterBBox | null {
+  const valid = validSelectionBBoxes(bboxes);
+  if (valid.length === 0) return null;
+  return {
+    x_min: Math.min(...valid.map((b) => b.x_min)),
+    x_max: Math.max(...valid.map((b) => b.x_max)),
+    y_min: Math.min(...valid.map((b) => b.y_min)),
+    y_max: Math.max(...valid.map((b) => b.y_max)),
+  };
+}
+
 /** POST /ap-recommendation 요청 본문 조립 (백엔드 default 필드는 생략). */
 export function buildApRecommendationPayload(params: {
   sceneVersionId: UUID;
-  bbox: MeterBBox;
+  bboxes: MeterBBox[];
   existingAps: { id: string; x_m: number; y_m: number }[];
   txPowerDbm?: number;
 }): ApRecommendationRequest {
+  const bboxes = validSelectionBBoxes(params.bboxes);
+  const union = unionMeterBBoxes(bboxes);
+  if (!union) {
+    throw new Error('At least one valid target bbox is required.');
+  }
   return {
     scene_version_id: params.sceneVersionId,
-    x_min: params.bbox.x_min,
-    x_max: params.bbox.x_max,
-    y_min: params.bbox.y_min,
-    y_max: params.bbox.y_max,
+    x_min: union.x_min,
+    x_max: union.x_max,
+    y_min: union.y_min,
+    y_max: union.y_max,
+    target_bboxes: bboxes,
     existing_aps: mapToExistingAps(params.existingAps, params.txPowerDbm),
   };
 }

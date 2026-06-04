@@ -15,6 +15,12 @@ export interface ApRecommendationRequest {
   x_max: number;
   y_min: number;
   y_max: number;
+  target_bboxes?: Array<{
+    x_min: number;
+    x_max: number;
+    y_min: number;
+    y_max: number;
+  }>;
   step_m?: number;
   existing_aps?: ExistingAp[];
   calibration_run_id?: UUID | null;

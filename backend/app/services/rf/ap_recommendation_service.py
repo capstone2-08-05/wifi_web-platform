@@ -28,6 +28,7 @@ from app.services.rf.calibration_worker.path_loss import (
     WallSegment,
     predict_rssi_best_ap,
 )
+from app.services.rf.scene_obstacles import column_wall_segments_for_objects, normalize_rf_material
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +66,7 @@ def recommend_ap_location(
     existing_aps = _parse_existing_aps(request.existing_aps)
 
     # 5) 탐색 후보 격자 생성
-    candidates = _generate_candidates(
-        request.x_min, request.x_max,
-        request.y_min, request.y_max,
-        request.step_m,
-    )
+    candidates = _generate_candidates_for_request(request)
     if not candidates:
         raise AppError(
             ErrorCode.INVALID_REQUEST_BODY,
@@ -147,6 +144,37 @@ def _generate_candidates(
     return pts
 
 
+def _generate_candidates_for_request(
+    request: ApRecommendationRequest,
+) -> list[tuple[float, float]]:
+    """Generate candidate grid points inside all selected target boxes."""
+    raw_boxes = request.target_bboxes or [
+        {
+            "x_min": request.x_min,
+            "x_max": request.x_max,
+            "y_min": request.y_min,
+            "y_max": request.y_max,
+        }
+    ]
+    seen: set[tuple[float, float]] = set()
+    candidates: list[tuple[float, float]] = []
+    for box in raw_boxes:
+        try:
+            x_min = float(box["x_min"])
+            x_max = float(box["x_max"])
+            y_min = float(box["y_min"])
+            y_max = float(box["y_max"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        for point in _generate_candidates(x_min, x_max, y_min, y_max, request.step_m):
+            key = (round(point[0], 6), round(point[1], 6))
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(point)
+    return candidates
+
+
 def _generate_eval_points(
     db: Session, scene_version_id: str,
 ) -> list[Measurement]:
@@ -190,9 +218,13 @@ def _generate_eval_points(
 
 def _load_walls(db: Session, scene_version_id: str) -> list[WallSegment]:
     from app.models.wall import Wall
+    from app.models.object import SceneObject
 
     rows = db.execute(
         select(Wall).where(Wall.scene_version_id == scene_version_id)
+    ).scalars().all()
+    objects = db.execute(
+        select(SceneObject).where(SceneObject.scene_version_id == scene_version_id)
     ).scalars().all()
     out: list[WallSegment] = []
     for w in rows:
@@ -207,7 +239,16 @@ def _load_walls(db: Session, scene_version_id: str) -> list[WallSegment]:
         out.append(WallSegment(
             x1=x1, y1=y1, x2=x2, y2=y2,
             thickness_m=float(w.thickness_m) if w.thickness_m is not None else 0.12,
-            material=(w.material_label or "").lower() or None,
+            material=normalize_rf_material(w.material_label),
+        ))
+    for seg in column_wall_segments_for_objects(objects):
+        out.append(WallSegment(
+            x1=float(seg["x1"]),
+            y1=float(seg["y1"]),
+            x2=float(seg["x2"]),
+            y2=float(seg["y2"]),
+            thickness_m=float(seg["thickness_m"]),
+            material=str(seg["material"]) if seg["material"] else None,
         ))
     return out
 

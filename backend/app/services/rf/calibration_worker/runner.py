@@ -31,6 +31,7 @@ from app.models.job import Job
 from app.models.measurement_point import MeasurementPoint
 from app.models.parameter_update import ParameterUpdate
 from app.models.rf_run import RfRun
+from app.models.object import SceneObject
 from app.models.scene_version import SceneVersion
 from app.models.user import User
 from app.services import ai_api_client
@@ -51,6 +52,7 @@ from app.services.rf.calibration_worker.space_priors import (
 )
 from app.services.scene.scene_version_export import export_scene_version_to_scene_json
 from app.core.geom import wkb_to_geojson
+from app.services.rf.scene_obstacles import column_wall_segments_for_objects, normalize_rf_material
 
 
 logger = logging.getLogger(__name__)
@@ -239,6 +241,9 @@ def _load_walls(db: Session, scene_version_id: str) -> list[WallSegment]:
     rows = db.execute(
         select(Wall).where(Wall.scene_version_id == scene_version_id)
     ).scalars().all()
+    objects = db.execute(
+        select(SceneObject).where(SceneObject.scene_version_id == scene_version_id)
+    ).scalars().all()
 
     out: list[WallSegment] = []
     for w in rows:
@@ -253,7 +258,16 @@ def _load_walls(db: Session, scene_version_id: str) -> list[WallSegment]:
         out.append(WallSegment(
             x1=x1, y1=y1, x2=x2, y2=y2,
             thickness_m=float(w.thickness_m) if w.thickness_m is not None else 0.12,
-            material=(w.material_label or "").lower() or None,
+            material=normalize_rf_material(w.material_label),
+        ))
+    for seg in column_wall_segments_for_objects(objects):
+        out.append(WallSegment(
+            x1=float(seg["x1"]),
+            y1=float(seg["y1"]),
+            x2=float(seg["x2"]),
+            y2=float(seg["y2"]),
+            thickness_m=float(seg["thickness_m"]),
+            material=str(seg["material"]) if seg["material"] else None,
         ))
     return out
 
