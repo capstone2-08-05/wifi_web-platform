@@ -12,7 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { dbmToHeatmapColor } from '@/lib/rssi-colormap';
+import { RSSI_HEATMAP_GRADIENT_CSS, dbmToHeatmapColor } from '@/lib/rssi-colormap';
 import type {
   CalibrationEvaluationResponse,
   CalibrationRun,
@@ -966,10 +966,7 @@ function RssiScaleBar({ min, max }: { min: number; max: number }) {
     <div className="mt-2">
       <div
         className="h-2 rounded-full"
-        style={{
-          background:
-            'linear-gradient(90deg, rgb(12,7,134), rgb(75,3,161), rgb(125,3,168), rgb(203,71,119), rgb(248,149,64), rgb(240,249,33))',
-        }}
+        style={{ background: RSSI_HEATMAP_GRADIENT_CSS }}
       />
       <div className="mt-1 flex justify-between text-[10px] text-muted-foreground">
         <span>{min} dBm</span>

@@ -31,12 +31,14 @@ router = APIRouter(tags=["measurement"])
 def create_measurement_link(
     floor_id: str,
     recommended_measurement_purpose: str = Query("calibration"),
+    scene_version_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> MeasurementLinkCreateResponseDTO:
     return measurement_service.create_measurement_link(
         db,
         floor_id,
         recommended_measurement_purpose=recommended_measurement_purpose,
+        scene_version_id=scene_version_id,
     )
 
 

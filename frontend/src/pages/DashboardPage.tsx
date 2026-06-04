@@ -14,7 +14,7 @@ import { HelpFab } from '@/components/HelpFab';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
-import { useAssetDownloadUrl, useFloorAssets } from '@/hooks/use-assets';
+import { useAssetDownloadUrl } from '@/hooks/use-assets';
 import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
 import { DraftSceneCanvas } from '@/features/editor/DraftSceneCanvas';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
@@ -88,14 +88,14 @@ export default function DashboardPage() {
     : null;
   // Asset.storage_url 이 s3:// URI 라서 직접 못 쓰고, /download-url 로 presigned 받음.
   const sourceAssetId = versionAsDraft?.source_asset_id ?? null;
-  const floorAssetsQuery = useFloorAssets(floorId, 'floorplan_image');
-  const fallbackAsset = (floorAssetsQuery.data ?? [])
-    .slice()
-    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
-  const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
+  const effectiveAssetId = sourceAssetId;
   const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
   // sourceAssetId 우선 — 히스토리 버전 클릭 시 그 자산 이미지로 정확히 복원.
-  const localImage = useLocalFloorplanImage({ floorId, sourceAssetId });
+  const localImage = useLocalFloorplanImage({
+    floorId,
+    sourceAssetId,
+    allowFloorFallback: false,
+  });
   // 절대 http(s) 자산 URL 만 <image> 에서 직접 로드. local 모드 `/assets/{id}/raw`
   // 상대경로는 origin/인증 문제로 못 써서 localStorage 캐시로 fallback.
   const assetUrl = assetUrlQuery.data?.url ?? null;

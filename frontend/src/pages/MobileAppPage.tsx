@@ -5,7 +5,7 @@ import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
 import { useFloorRfRuns } from '@/hooks/use-rf-run';
 import { useApLayouts, useCreateApLayout } from '@/hooks/use-ap-layouts';
-import { useFloorAssets, useAssetDownloadUrl } from '@/hooks/use-assets';
+import { useAssetDownloadUrl } from '@/hooks/use-assets';
 import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
 import { useApRecommendation } from '@/hooks/use-ap-recommendation';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
@@ -48,13 +48,13 @@ export default function MobileAppPage() {
 
   const versionAsDraft = versionDetail ? versionToDraftShape(versionDetail) : null;
   const sourceAssetId = versionAsDraft?.source_asset_id ?? null;
-  const floorAssetsQuery = useFloorAssets(floorId, 'floorplan_image');
-  const fallbackAsset = (floorAssetsQuery.data ?? [])
-    .slice()
-    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
-  const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
+  const effectiveAssetId = sourceAssetId;
   const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
-  const localImage = useLocalFloorplanImage({ floorId, sourceAssetId });
+  const localImage = useLocalFloorplanImage({
+    floorId,
+    sourceAssetId,
+    allowFloorFallback: false,
+  });
   const assetUrl = assetUrlQuery.data?.url ?? null;
   const usableAssetUrl =
     assetUrl && /^https?:\/\//i.test(assetUrl) ? assetUrl : null;

@@ -45,12 +45,13 @@ function readEntry(key: string): string | null {
 function readForAssetOrFloor(
   floorId: string | null,
   sourceAssetId: string | null | undefined,
+  allowFloorFallback: boolean,
 ): string | null {
   if (sourceAssetId) {
     const v = readEntry(assetKey(sourceAssetId));
     if (v) return v;
   }
-  if (floorId) {
+  if (allowFloorFallback && floorId) {
     const v = readEntry(floorKey(floorId));
     if (v) return v;
   }
@@ -61,6 +62,7 @@ export interface UseLocalFloorplanImageOpts {
   floorId: string | null;
   /** SceneVersion / SceneDraft 의 source_asset_id — 있으면 이 자산별 키를 우선 읽음. */
   sourceAssetId?: string | null;
+  allowFloorFallback?: boolean;
 }
 
 /**
@@ -76,14 +78,15 @@ export function useLocalFloorplanImage(
       ? floorIdOrOpts
       : { floorId: floorIdOrOpts ?? null };
   const { floorId, sourceAssetId } = opts;
+  const allowFloorFallback = opts.allowFloorFallback ?? !sourceAssetId;
 
   const [dataUrl, setDataUrl] = useState<string | null>(() =>
-    readForAssetOrFloor(floorId, sourceAssetId),
+    readForAssetOrFloor(floorId, sourceAssetId, allowFloorFallback),
   );
 
   useEffect(() => {
-    setDataUrl(readForAssetOrFloor(floorId, sourceAssetId));
-  }, [floorId, sourceAssetId]);
+    setDataUrl(readForAssetOrFloor(floorId, sourceAssetId, allowFloorFallback));
+  }, [floorId, sourceAssetId, allowFloorFallback]);
 
   // 다른 탭/스코프에서 변경되거나 같은 페이지의 save/link 호출 후 동기화.
   useEffect(() => {
@@ -95,7 +98,7 @@ export function useLocalFloorplanImage(
         const matchesAsset = !!sourceAssetId && detail?.assetId === sourceAssetId;
         if (!matchesFloor && !matchesAsset) return;
       }
-      setDataUrl(readForAssetOrFloor(floorId, sourceAssetId));
+      setDataUrl(readForAssetOrFloor(floorId, sourceAssetId, allowFloorFallback));
     };
     window.addEventListener('storage', onChange);
     window.addEventListener('floorplan-image-changed', onChange);
@@ -103,7 +106,7 @@ export function useLocalFloorplanImage(
       window.removeEventListener('storage', onChange);
       window.removeEventListener('floorplan-image-changed', onChange);
     };
-  }, [floorId, sourceAssetId]);
+  }, [floorId, sourceAssetId, allowFloorFallback]);
 
   return dataUrl;
 }

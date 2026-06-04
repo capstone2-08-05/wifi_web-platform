@@ -13,10 +13,12 @@ export function useCreateMeasurementLink() {
     mutationFn: ({
       floorId,
       recommendedPurpose = 'calibration',
+      sceneVersionId,
     }: {
       floorId: UUID;
       recommendedPurpose?: 'calibration' | 'reference' | 'validation' | 'unknown';
-    }) => measurementLinkApi.create(floorId, recommendedPurpose),
+      sceneVersionId?: UUID | null;
+    }) => measurementLinkApi.create(floorId, recommendedPurpose, sceneVersionId),
     onError: (err) => {
       const e = err as HttpError | null;
       toast.error(

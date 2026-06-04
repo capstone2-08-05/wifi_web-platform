@@ -169,6 +169,7 @@ export default function EditorPage() {
   // 2순위: 층의 floorplan 자산 중 가장 최근 것 (fallback).
   // Asset.storage_url 이 s3:// URI 라서 직접 못 쓰고, /download-url 로 presigned 받음.
   const sourceAssetId = baseScene?.source_asset_id ?? null;
+  const allowUnversionedImageFallback = !!activeDraftSummary;
   const floorAssetsQuery = useFloorAssets(floorId, 'floorplan_image');
   const fallbackAsset = useMemo(() => {
     const list = floorAssetsQuery.data ?? [];
@@ -176,12 +177,17 @@ export default function EditorPage() {
     // created_at 내림차순 정렬 후 첫 항목.
     return [...list].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
   }, [floorAssetsQuery.data]);
-  const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
+  const effectiveAssetId =
+    sourceAssetId ?? (allowUnversionedImageFallback ? fallbackAsset?.id : null) ?? null;
   const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
   // 3순위: 사용자가 업로드한 파일을 base64 로 캐시해둔 로컬 이미지 (백엔드 미지원 우회).
   // sourceAssetId 알면 자산별 키 우선, 없으면 floor 키 fallback — 히스토리 버전 클릭 시
   // 그 당시 업로드 이미지가 별도 키로 보존돼 있어 정확히 복원됨.
-  const localImage = useLocalFloorplanImage({ floorId, sourceAssetId });
+  const localImage = useLocalFloorplanImage({
+    floorId,
+    sourceAssetId,
+    allowFloorFallback: allowUnversionedImageFallback,
+  });
   // 업로드 직후엔 floor 키에만 임시 저장돼있음 → draft.source_asset_id 알게 되는 순간
   // asset 키로 복사해 보존 (덮어쓰진 않음). 새 업로드가 floor 키를 덮어써도 이전 자산은
   // 자기 자산 키에 그대로 남음.

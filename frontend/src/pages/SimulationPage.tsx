@@ -16,7 +16,7 @@ import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
 import { useCreateRfRun, useFloorRfRuns, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
 import { useRfMapImageUrl } from '@/hooks/use-rf-map-image-url';
-import { useFloorAssets, useAssetDownloadUrl } from '@/hooks/use-assets';
+import { useAssetDownloadUrl } from '@/hooks/use-assets';
 import { useLocalFloorplanImage, linkFloorImageToAsset } from '@/hooks/use-local-floorplan-image';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
 import {
@@ -258,6 +258,13 @@ export default function SimulationPage() {
       }),
     [pastRuns, activeRunId, activeMapMetrics],
   );
+  const measurementMapTo = useMemo(() => {
+    const params = new URLSearchParams();
+    if (canvasSceneVersionId) params.set('sceneVersionId', canvasSceneVersionId);
+    if (state === 'complete' && activeRunId) params.set('rfRunId', activeRunId);
+    const query = params.toString();
+    return query ? `/measurement?${query}` : '/measurement';
+  }, [activeRunId, canvasSceneVersionId, state]);
 
   return (
     <div className="relative flex h-full flex-col p-5 lg:p-6">
@@ -368,6 +375,15 @@ export default function SimulationPage() {
               showCompareButton={false}
               onSelect={(id) => setActiveRunId(id)}
             />
+            {canvasSceneVersionId && (
+              <Link
+                to={measurementMapTo}
+                className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50"
+              >
+                <MapIcon className="h-3.5 w-3.5 text-slate-500" />
+                선택 도면 실측맵 보기
+              </Link>
+            )}
           </aside>
         </div>
       )}
@@ -902,15 +918,13 @@ function useSceneFloorplanBackground(
 ): string | null {
   const versionAsDraft = sceneVersion ? versionToDraftShape(sceneVersion) : null;
   const sourceAssetId = versionAsDraft?.source_asset_id ?? null;
-  const floorAssetsQuery = useFloorAssets(floorId, 'floorplan_image');
-  const fallbackAsset = useMemo(() => {
-    const list = floorAssetsQuery.data ?? [];
-    if (list.length === 0) return null;
-    return [...list].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
-  }, [floorAssetsQuery.data]);
-  const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
+  const effectiveAssetId = sourceAssetId;
   const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
-  const localImage = useLocalFloorplanImage({ floorId, sourceAssetId });
+  const localImage = useLocalFloorplanImage({
+    floorId,
+    sourceAssetId,
+    allowFloorFallback: false,
+  });
   useEffect(() => {
     if (floorId && sourceAssetId) linkFloorImageToAsset(floorId, sourceAssetId);
   }, [floorId, sourceAssetId]);
