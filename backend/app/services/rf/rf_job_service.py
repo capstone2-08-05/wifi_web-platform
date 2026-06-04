@@ -945,6 +945,12 @@ def _build_room_mask(
     return np.array(img) > 0
 
 
+def _get_rssi_cmap():
+    """실측 히트맵과 동일한 커스텀 컬러맵 반환 (measurement_estimation/heatmap.py와 통일)."""
+    from app.services.rf.measurement_estimation.heatmap import _RSSI_CMAP
+    return _RSSI_CMAP
+
+
 def _render_heatmap_png(
     arr: np.ndarray,
     bounds: dict[str, Any],
@@ -990,7 +996,7 @@ def _render_heatmap_png(
     # origin="upper" — 프론트가 Y-down (위가 작은 y) 으로 표시하므로 PNG 도 같은 방향.
     # PIL room_mask 도 Y-down 이라 자연스럽게 일치.
     ax.imshow(
-        display_arr, cmap="inferno", origin="upper",
+        display_arr, cmap=_get_rssi_cmap(), origin="upper",
         vmin=vmin, vmax=vmax, interpolation="bilinear", alpha=alpha,
     )
     # 배경 투명 (figure 자체 배경도)
