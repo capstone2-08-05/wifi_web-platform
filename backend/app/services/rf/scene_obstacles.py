@@ -1,6 +1,7 @@
 """Helpers for RF obstacles derived from scene objects."""
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from typing import Any
 
@@ -84,6 +85,8 @@ def _positive_float(value: Any, default: float) -> float:
     try:
         parsed = float(value)
     except (TypeError, ValueError):
+        return default
+    if not math.isfinite(parsed):
         return default
     if parsed < MIN_COLUMN_SIZE_M:
         return default
