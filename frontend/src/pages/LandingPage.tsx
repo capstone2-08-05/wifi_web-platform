@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link, Navigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { Activity, LayoutGrid, Map, Radio, Settings, Sparkles } from 'lucide-react';
+import { ProfileMenu } from '@/features/header/ProfileMenu';
 import { useAuthStore } from '@/stores/auth-store';
 
 /* ------------------------------------------------------------------ */
@@ -124,7 +125,6 @@ function TextCycler() {
 /* ------------------------------------------------------------------ */
 export default function LandingPage() {
   const isAuthed = useAuthStore((s) => s.isAuthenticated());
-  if (isAuthed) return <Navigate to="/dashboard" replace />;
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-white text-slate-950">
@@ -147,12 +147,18 @@ export default function LandingPage() {
             <span className="font-semibold tracking-tight">Wi-Fi Space</span>
           </div>
           <nav className="flex items-center gap-6 text-sm">
-            <Link to="/auth/login" className="text-slate-500 transition hover:text-slate-900">
-              로그인
-            </Link>
-            <Link to="/auth/signup" className="text-slate-500 transition hover:text-slate-900">
-              회원가입
-            </Link>
+            {isAuthed ? (
+              <ProfileMenu />
+            ) : (
+              <>
+                <Link to="/auth/login" className="text-slate-500 transition hover:text-slate-900">
+                  로그인
+                </Link>
+                <Link to="/auth/signup" className="text-slate-500 transition hover:text-slate-900">
+                  회원가입
+                </Link>
+              </>
+            )}
           </nav>
         </div>
       </header>
@@ -184,10 +190,10 @@ export default function LandingPage() {
           <TextCycler />
           <div className="mt-10">
             <Link
-              to="/auth/signup"
+              to={isAuthed ? '/dashboard' : '/auth/signup'}
               className="inline-block rounded-2xl bg-blue-600 px-8 py-4 text-base font-semibold text-white shadow-xl shadow-blue-600/20 transition hover:bg-blue-700 hover:shadow-blue-600/30 active:scale-[0.98]"
             >
-              분석 시작하기
+              {isAuthed ? '대시보드 바로가기' : '분석 시작하기'}
             </Link>
           </div>
         </div>
@@ -298,7 +304,7 @@ function StepCard({ s, delay }: { s: typeof STEPS[number]; delay: number }) {
   const { ref, inView } = useInView();
   return (
     <div ref={ref} style={fadeUp(inView, delay)}>
-      <div className="relative h-full rounded-3xl border border-slate-200 bg-white px-9 py-10 shadow-sm transition duration-300 hover:-translate-y-1 hover:shadow-xl hover:shadow-slate-200/80">
+      <div className="relative h-full rounded-3xl border border-slate-200 bg-white px-9 py-10 shadow-sm transition duration-300 hover:-translate-y-1 hover:ring-2 hover:ring-blue-200 hover:shadow-xl hover:shadow-blue-100/80">
         <div className="mb-10 flex items-start justify-between">
           <div className="relative z-10 flex h-11 w-11 items-center justify-center rounded-full bg-white text-sm font-bold text-blue-600 shadow-sm ring-1 ring-slate-200">
             {s.num}
@@ -343,6 +349,7 @@ function StepsSection() {
 /* ------------------------------------------------------------------ */
 function CtaSection() {
   const { ref, inView } = useInView();
+  const isAuthed = useAuthStore((s) => s.isAuthenticated());
   return (
     <section className="relative overflow-hidden bg-slate-900 px-6 pb-30 pt-40">
       {/* 배경 글로우 */}
@@ -389,11 +396,11 @@ function CtaSection() {
         </p>
         <div style={fadeUp(inView, 360, 32)} className="mt-20">
           <Link
-            to="/auth/signup"
+            to={isAuthed ? '/dashboard' : '/auth/signup'}
             className="inline-block rounded-2xl bg-blue-600 px-15 py-4 text-base font-semibold text-white transition hover:bg-blue-500 active:scale-[0.98]"
             style={{ animation: 'lp-btn-pulse 2.5s ease-in-out infinite' }}
           >
-            분석 시작하기
+            {isAuthed ? '대시보드 바로가기' : '분석 시작하기'}
           </Link>
         </div>
       </div>

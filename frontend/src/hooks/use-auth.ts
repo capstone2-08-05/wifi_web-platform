@@ -45,6 +45,6 @@ export function useLogout() {
   return () => {
     clear();
     qc.clear();
-    navigate('/auth/login', { replace: true });
+    navigate('/', { replace: true });
   };
 }
