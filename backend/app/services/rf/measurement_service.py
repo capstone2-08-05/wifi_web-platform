@@ -129,32 +129,41 @@ def _latest_floorplan_asset(db: Session, floor_id: str) -> Asset | None:
 
 
 def _resolve_scene_and_asset(
-    db: Session, floor_id: str
+    db: Session, floor_id: str, scene_version_id: str | None = None
 ) -> tuple[str | None, str | None]:
     """Pick the scene_version + asset that this measurement link should anchor to.
 
-    Preference: latest **confirmed** scene_version for the floor (and its
-    source_asset_id); fall back to the latest floorplan_image asset on the
-    floor when no confirmed scene version exists yet. Draft (is_confirmed=False)
-    versions are ignored — measurement links must anchor to a stable, user-
-    approved scene so that downstream coordinates stay consistent.
+    When a scene_version_id is provided, the measurement link is anchored to
+    exactly that version. Otherwise, use the latest confirmed scene for the
+    floor. Do not pair a scene with the floor's latest unrelated asset.
     """
-    scene = db.execute(
-        select(SceneVersion)
-        .where(
-            SceneVersion.floor_id == floor_id,
-            SceneVersion.is_confirmed.is_(True),
-        )
-        .order_by(SceneVersion.version_no.desc())
-        .limit(1)
-    ).scalar_one_or_none()
+    if scene_version_id:
+        _validate_uuid(scene_version_id, "scene_version_id")
+        scene = db.execute(
+            select(SceneVersion).where(
+                SceneVersion.id == scene_version_id,
+                SceneVersion.floor_id == floor_id,
+            )
+        ).scalar_one_or_none()
+        if scene is None:
+            raise AppError(
+                ErrorCode.SCENE_VERSION_NOT_FOUND,
+                f"Scene version {scene_version_id} not found for floor {floor_id}.",
+                404,
+            )
+    else:
+        scene = db.execute(
+            select(SceneVersion)
+            .where(
+                SceneVersion.floor_id == floor_id,
+                SceneVersion.is_confirmed.is_(True),
+            )
+            .order_by(SceneVersion.version_no.desc())
+            .limit(1)
+        ).scalar_one_or_none()
 
     if scene is not None:
-        asset_id = scene.source_asset_id
-        if asset_id is None:
-            fallback = _latest_floorplan_asset(db, floor_id)
-            asset_id = fallback.id if fallback else None
-        return scene.id, asset_id
+        return scene.id, scene.source_asset_id
 
     fallback = _latest_floorplan_asset(db, floor_id)
     return None, fallback.id if fallback else None
@@ -207,33 +216,29 @@ def _floorplan_info_from_asset(
     )
 
 
-def _bounds_from_scene_walls(db: Session, floor_id: str) -> FloorBoundsDTO | None:
-    """Confirmed scene 의 벽/개구부 좌표로 bbox 계산.
+def _bounds_from_scene_walls(
+    db: Session, scene_version_id: str | None
+) -> FloorBoundsDTO | None:
+    """Scene version 의 벽/개구부 좌표로 bbox 계산.
 
     프론트 MeasurementCanvas 의 viewBox 도 같은 (walls + openings) 기준으로 잡힘.
     히트맵 PNG 가 도면 위에 정확히 깔리려면 같은 좌표계 bounds 가 필요.
-    confirmed scene 이 없거나 벽이 0개면 None — 호출측에서 다음 fallback 사용.
+    scene 이 없거나 벽/개구부 좌표가 없으면 None — 호출측에서 다음 fallback 사용.
     """
     from app.core.geom import wkb_to_geojson
     from app.models.opening import Opening
     from app.models.wall import Wall
 
-    scene = db.execute(
-        select(SceneVersion)
-        .where(
-            SceneVersion.floor_id == floor_id,
-            SceneVersion.is_confirmed.is_(True),
-        )
-        .order_by(SceneVersion.version_no.desc())
-        .limit(1)
-    ).scalar_one_or_none()
+    if not scene_version_id:
+        return None
+    scene = db.get(SceneVersion, scene_version_id)
     if scene is None:
         return None
 
     minx = miny = float("inf")
     maxx = maxy = float("-inf")
     for w in db.execute(
-        select(Wall).where(Wall.scene_version_id == scene.id)
+        select(Wall).where(Wall.scene_version_id == scene_version_id)
     ).scalars().all():
         gj = wkb_to_geojson(w.centerline_geom)
         if not gj or gj.get("type") != "LineString":
@@ -244,7 +249,7 @@ def _bounds_from_scene_walls(db: Session, floor_id: str) -> FloorBoundsDTO | Non
             if x > maxx: maxx = x
             if y > maxy: maxy = y
     for o in db.execute(
-        select(Opening).where(Opening.scene_version_id == scene.id)
+        select(Opening).where(Opening.scene_version_id == scene_version_id)
     ).scalars().all():
         gj = wkb_to_geojson(o.line_geom)
         if not gj or gj.get("type") != "LineString":
@@ -275,7 +280,11 @@ def _bounds_from_floorplan(floorplan: FloorplanInfoDTO) -> FloorBoundsDTO:
 
 
 def create_measurement_link(
-    db: Session, floor_id: str, *, recommended_measurement_purpose: str = "calibration"
+    db: Session,
+    floor_id: str,
+    *,
+    recommended_measurement_purpose: str = "calibration",
+    scene_version_id: str | None = None,
 ) -> MeasurementLinkCreateResponseDTO:
     _validate_uuid(floor_id, "floor_id")
     purpose = (
@@ -292,7 +301,9 @@ def create_measurement_link(
             404,
         )
 
-    scene_version_id, asset_id = _resolve_scene_and_asset(db, floor.id)
+    resolved_scene_version_id, asset_id = _resolve_scene_and_asset(
+        db, floor.id, scene_version_id
+    )
 
     token = _generate_token()
     now = datetime.now(timezone.utc)
@@ -302,7 +313,7 @@ def create_measurement_link(
         token=token,
         project_id=floor.project_id,
         floor_id=floor.id,
-        scene_version_id=scene_version_id,
+        scene_version_id=resolved_scene_version_id,
         asset_id=asset_id,
         purpose=purpose,
         status="active",
@@ -390,7 +401,7 @@ def get_measurement_link_context(
     floorplan = _floorplan_info_from_asset(
         db, link.asset_id, link_token=token, base_url=base_url,
     )
-    bounds = _bounds_from_scene_walls(db, str(link.floor_id)) or _bounds_from_floorplan(floorplan)
+    bounds = _bounds_from_scene_walls(db, link.scene_version_id) or _bounds_from_floorplan(floorplan)
 
     return MeasurementLinkContextResponseDTO(
         token=link.token,
@@ -711,10 +722,10 @@ def list_sessions_by_floor(
     )
 
 
-def _try_load_sim_grid_for_floor(
-    db: Session, floor_id: str,
+def _try_load_sim_grid_for_scene(
+    db: Session, floor_id: str, scene_version_id: str | None,
 ) -> tuple["np.ndarray", "np.ndarray", "np.ndarray"] | None:
-    """floor 의 최근 succeeded RfRun 의 radio_map values_dbm + xs/ys 추출.
+    """scene_version 기준 최근 succeeded RfRun 의 radio_map values_dbm + xs/ys 추출.
 
     Returns:
         (grid, xs, ys) — residual kriging 의 prior 로 사용.
@@ -723,13 +734,16 @@ def _try_load_sim_grid_for_floor(
     import numpy as np
     from app.models.rf_run import RfRun
 
-    # 가장 최근 done/completed/succeeded — 백엔드 status 표기 다양.
+    # scene_version_id 가 있는 세션은 반드시 같은 도면의 sim prior 만 사용.
+    filters = [
+        RfRun.floor_id == floor_id,
+        RfRun.status.in_(["done", "completed", "succeeded"]),
+    ]
+    if scene_version_id:
+        filters.append(RfRun.scene_version_id == scene_version_id)
     rf_run = db.execute(
         select(RfRun)
-        .where(
-            RfRun.floor_id == floor_id,
-            RfRun.status.in_(["done", "completed", "succeeded"]),
-        )
+        .where(*filters)
         .order_by(RfRun.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
@@ -822,10 +836,9 @@ def estimate_session_coverage(
 
     # bounds — confirmed scene 의 벽/개구부 bbox 우선 (프론트 캔버스가 이 좌표계로 도면을 그림).
     # 도면 이미지 픽셀 bounds 는 scene 좌표계와 어긋날 수 있어 후순위.
-    bounds_dto = _bounds_from_scene_walls(db, str(session_row.floor_id))
+    bounds_dto = _bounds_from_scene_walls(db, session_row.scene_version_id)
     if bounds_dto is None:
-        asset = _latest_floorplan_asset(db, str(session_row.floor_id))
-        floorplan = _floorplan_info_from_asset(db, asset.id if asset else None)
+        floorplan = _floorplan_info_from_asset(db, session_row.asset_id)
         bounds_dto = _bounds_from_floorplan(floorplan)
     if bounds_dto.max_x <= 0 or bounds_dto.max_y <= 0:
         # fallback: 측정점 bbox + 1m 마진
@@ -846,7 +859,9 @@ def estimate_session_coverage(
     estimate = None
     want_residual = method in ("residual_kriging", "auto")
     if want_residual:
-        sim_grid_data = _try_load_sim_grid_for_floor(db, str(session_row.floor_id))
+        sim_grid_data = _try_load_sim_grid_for_scene(
+            db, str(session_row.floor_id), session_row.scene_version_id
+        )
         if sim_grid_data is not None:
             sim_grid, sim_xs, sim_ys = sim_grid_data
             try:

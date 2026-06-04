@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Activity,
   AlertTriangle,
@@ -34,13 +35,18 @@ import {
 } from '@/hooks/use-measurement-session';
 import { useFloorRfRuns, useRfMaps } from '@/hooks/use-rf-run';
 import { useApLayouts } from '@/hooks/use-ap-layouts';
-import { useFloorAssets, useAssetDownloadUrl } from '@/hooks/use-assets';
+import { useAssetDownloadUrl } from '@/hooks/use-assets';
 import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
-import { useEvaluateCalibrationRun } from '@/hooks/use-calibration-run';
+import { useCalibrationRuns, useEvaluateCalibrationRun } from '@/hooks/use-calibration-run';
 import { CalibrationCard } from '@/features/calibration/CalibrationCard';
-import type { CalibrationEvaluationResponse, SpaceType } from '@/types/calibration-run';
+import type {
+  CalibrationEvaluationResponse,
+  CalibrationRun,
+  SpaceType,
+} from '@/types/calibration-run';
 import { parseGeometry } from '@/features/editor/geometry-utils';
+import { RSSI_HEATMAP_GRADIENT_CSS } from '@/lib/rssi-colormap';
 import {
   MeasurementCanvas,
   type MeasurementPoint as CanvasPoint,
@@ -51,28 +57,81 @@ import {
 
 const EMPTY_MEASUREMENT_SESSIONS: MeasurementSession[] = [];
 const EMPTY_MEASUREMENT_POINTS: ApiPoint[] = [];
+const MEASUREMENT_VIEW_STORAGE_KEY = 'wifang.measurement-view';
+
+interface StoredMeasurementView {
+  sessionId: string | null;
+  sceneVersionId: string | null;
+  mode: MeasurementViewMode;
+}
 
 export default function MeasurementPage() {
   const floorId = useAppStore((s) => s.selectedFloorId);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedSceneVersionId = searchParams.get('sceneVersionId');
+  const requestedSessionId = searchParams.get('sessionId');
+  const requestedRfRunId = searchParams.get('rfRunId');
 
   // 확정된 도면 (캔버스 배경).
   const versionsQuery = useFloorVersions(floorId);
   const versions = versionsQuery.data ?? [];
   const currentVersion = versions.find((v) => v.is_current) ?? versions[0] ?? null;
-  const versionDetailQuery = useSceneVersion(currentVersion?.id ?? null);
+  const sessionsQuery = useFloorMeasurementSessions(floorId);
+  const sessions = sessionsQuery.data?.items ?? EMPTY_MEASUREMENT_SESSIONS;
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [selectedSceneVersionId, setSelectedSceneVersionId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelectedSessionId(requestedSessionId);
+    setSelectedSceneVersionId(requestedSceneVersionId);
+  }, [requestedSessionId, requestedSceneVersionId]);
+
+  const selectedSession = useMemo(
+    () => sessions.find((s) => s.id === selectedSessionId) ?? null,
+    [sessions, selectedSessionId],
+  );
+  const latestMeasuredSession = useMemo(
+    () =>
+      sessions.find((s) => s.status === 'completed') ??
+      sessions.find((s) => s.status === 'in_progress') ??
+      sessions[0] ??
+      null,
+    [sessions],
+  );
+  const fallbackSceneVersionId =
+    selectedSceneVersionId ??
+    latestMeasuredSession?.scene_version_id ??
+    currentVersion?.id ??
+    null;
+  const viewingSceneVersionId =
+    selectedSceneVersionId ?? selectedSession?.scene_version_id ?? fallbackSceneVersionId;
+  const sessionsForViewingVersion = useMemo(() => {
+    if (!viewingSceneVersionId) return [];
+    return sessions.filter((s) => s.scene_version_id === viewingSceneVersionId);
+  }, [sessions, viewingSceneVersionId]);
+  const selectedSessionBelongsToViewingVersion =
+    !!selectedSession &&
+    !!viewingSceneVersionId &&
+    selectedSession.scene_version_id === viewingSceneVersionId;
+  const activeSession =
+    selectedSessionBelongsToViewingVersion
+      ? selectedSession
+      : sessionsForViewingVersion[0] ?? null;
+  const activeSceneVersionId = viewingSceneVersionId;
+  const versionDetailQuery = useSceneVersion(activeSceneVersionId);
   const sceneVersion = versionDetailQuery.data ?? null;
 
   // 배경 원본 도면 이미지 — 공간편집/시뮬과 동일한 방식.
   const versionAsDraft = sceneVersion ? versionToDraftShape(sceneVersion) : null;
   const sourceAssetId = versionAsDraft?.source_asset_id ?? null;
-  const floorAssetsQuery = useFloorAssets(floorId, 'floorplan_image');
-  const fallbackAsset = (floorAssetsQuery.data ?? [])
-    .slice()
-    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
-  const effectiveAssetId = sourceAssetId ?? fallbackAsset?.id ?? null;
+  const effectiveAssetId = sourceAssetId;
   const assetUrlQuery = useAssetDownloadUrl(effectiveAssetId);
   // sourceAssetId 우선 — 히스토리 버전 클릭 시 그 자산 이미지로 정확히 복원.
-  const localImage = useLocalFloorplanImage({ floorId, sourceAssetId });
+  const localImage = useLocalFloorplanImage({
+    floorId,
+    sourceAssetId,
+    allowFloorFallback: false,
+  });
   const assetUrl = assetUrlQuery.data?.url ?? null;
   const usableAssetUrl =
     assetUrl && /^https?:\/\//i.test(assetUrl) ? assetUrl : null;
@@ -98,17 +157,6 @@ export default function MeasurementPage() {
   const spaceType: SpaceType = spaceTypeOverride ?? currentFloor?.space_type ?? 'unknown';
 
   // 측정 세션. 기본은 최근 세션 자동 선택, 사용자가 '이력 보기' 로 다른 세션 선택 가능.
-  const sessionsQuery = useFloorMeasurementSessions(floorId);
-  const sessions = sessionsQuery.data?.items ?? EMPTY_MEASUREMENT_SESSIONS;
-  const sessionsForCurrentVersion = useMemo(() => {
-    if (!currentVersion?.id) return sessions;
-    return sessions.filter((s) => s.scene_version_id === currentVersion.id);
-  }, [sessions, currentVersion?.id]);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-  const activeSession =
-    sessionsForCurrentVersion.find((s) => s.id === selectedSessionId) ??
-    sessionsForCurrentVersion[0] ??
-    null;
   const pointsQuery = useMeasurementPoints(activeSession?.id ?? null);
   const points = pointsQuery.data?.items ?? EMPTY_MEASUREMENT_POINTS;
 
@@ -123,8 +171,13 @@ export default function MeasurementPage() {
   }, [points]);
 
   // 가장 최근 succeeded RF Run → AP layouts + RF Map metrics.
-  const rfRunsQuery = useFloorRfRuns(floorId, { status: 'succeeded', page_size: 5 });
-  const latestRfRun = rfRunsQuery.data?.items?.[0] ?? null;
+  const rfRunsQuery = useFloorRfRuns(floorId, { status: 'succeeded', page_size: 50 });
+  const latestRfRun =
+    rfRunsQuery.data?.items?.find(
+      (r) => r.id === requestedRfRunId && r.scene_version_id === activeSceneVersionId,
+    ) ??
+    rfRunsQuery.data?.items?.find((r) => r.scene_version_id === activeSceneVersionId) ??
+    null;
   const latestRfRunId = latestRfRun?.id ?? null;
   const apLayoutsQuery = useApLayouts(latestRfRunId);
   // AP 마커 우선순위: ap_layouts 테이블 > rf_run.request_json.access_points fallback.
@@ -154,6 +207,18 @@ export default function MeasurementPage() {
   const coverageResidualQuery = useEstimatedCoverage(activeSession?.id ?? null, { method: 'residual_kriging' });
 
   const [mode, setMode] = useState<MeasurementViewMode>('route');
+
+  useEffect(() => {
+    if (!floorId) return;
+    const stored = readStoredMeasurementView(floorId);
+    if (!stored) return;
+
+    if (!requestedSessionId && !requestedSceneVersionId) {
+      setSelectedSessionId(stored.sessionId);
+      setSelectedSceneVersionId(stored.sceneVersionId);
+    }
+    setMode(stored.mode);
+  }, [floorId, requestedSceneVersionId, requestedSessionId]);
 
   const activeCoverage = useMemo(() => {
     // mode 에 맞는 데이터 우선, 없으면 다른 method 데이터로 일시 fallback —
@@ -186,6 +251,7 @@ export default function MeasurementPage() {
   // §11 캘리브레이션 — 현재 측정 세션 + 최근 RF Run + 현재 버전을 입력으로 사용.
   // 측정 페이지에 둠: 진단 카드에서 차이를 발견한 직후 보정 가능.
   const evaluateCalibration = useEvaluateCalibrationRun();
+  const calibrationRunsQuery = useCalibrationRuns(activeSceneVersionId, 5);
   const [calibrationEvaluation, setCalibrationEvaluation] =
     useState<CalibrationEvaluationResponse | null>(null);
   // Affine RSSI transfer + residual IDW는 적은 측정점으로도 계산은 가능하지만,
@@ -196,11 +262,12 @@ export default function MeasurementPage() {
   const canCalibrate =
     !!activeSession?.id &&
     !!latestRfRunId &&
-    !!currentVersion?.id &&
+    !!activeSceneVersionId &&
     hasEnoughMeasurements;
   const evaluationSessionIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const session of sessionsForCurrentVersion) {
+    for (const session of sessions) {
+      if (activeSceneVersionId && session.scene_version_id !== activeSceneVersionId) continue;
       if (
         session.measurement_purpose === 'calibration' ||
         session.measurement_purpose === 'reference' ||
@@ -211,7 +278,7 @@ export default function MeasurementPage() {
     }
     if (activeSession?.id) ids.add(activeSession.id);
     return [...ids];
-  }, [activeSession, sessionsForCurrentVersion]);
+  }, [activeSession, activeSceneVersionId, sessions]);
   const calibrationDisabledReason = !hasMeasurement
     ? '먼저 측정을 진행해주세요.'
     : !hasEnoughMeasurements
@@ -221,12 +288,12 @@ export default function MeasurementPage() {
     ? '비교할 시뮬레이션 결과가 없습니다. 시뮬레이션 페이지에서 실행해주세요.'
     : null;
   const handleCalibrate = () => {
-    if (!canCalibrate || !activeSession || !latestRfRunId || !currentVersion) return;
+    if (!canCalibrate || !activeSession || !latestRfRunId || !activeSceneVersionId) return;
     evaluateCalibration.mutate(
       {
         floor_id: activeSession.floor_id,
         rf_run_id: latestRfRunId,
-        scene_version_id: currentVersion.id,
+        scene_version_id: activeSceneVersionId,
         measurement_session_ids: evaluationSessionIds.length > 0 ? evaluationSessionIds : [activeSession.id],
         method: 'affine_rssi_transfer',
         split: { strategy: 'purpose_or_random', holdout_ratio: 0.3, seed: 42 },
@@ -247,12 +314,17 @@ export default function MeasurementPage() {
 
   const lastAutoCalibrationKey = useRef<string | null>(null);
   useEffect(() => {
+    setCalibrationEvaluation(null);
+    lastAutoCalibrationKey.current = null;
+  }, [activeSession?.id, activeSceneVersionId, latestRfRunId]);
+
+  useEffect(() => {
     if (mode !== 'both') return;
-    if (!canCalibrate || !activeSession || !latestRfRunId || !currentVersion) return;
+    if (!canCalibrate || !activeSession || !latestRfRunId || !activeSceneVersionId) return;
     const sessionIds = evaluationSessionIds.length > 0 ? evaluationSessionIds : [activeSession.id];
     const key = [
       activeSession.floor_id,
-      currentVersion.id,
+      activeSceneVersionId,
       latestRfRunId,
       sessionIds.join(','),
       points.length,
@@ -263,7 +335,7 @@ export default function MeasurementPage() {
       {
         floor_id: activeSession.floor_id,
         rf_run_id: latestRfRunId,
-        scene_version_id: currentVersion.id,
+        scene_version_id: activeSceneVersionId,
         measurement_session_ids: sessionIds,
         method: 'affine_rssi_transfer',
         split: { strategy: 'purpose_or_random', holdout_ratio: 0.3, seed: 42 },
@@ -285,7 +357,7 @@ export default function MeasurementPage() {
     canCalibrate,
     activeSession,
     latestRfRunId,
-    currentVersion,
+    activeSceneVersionId,
     evaluationSessionIds,
     points.length,
     evaluateCalibration,
@@ -311,15 +383,45 @@ export default function MeasurementPage() {
       ? calibratedMainHeatmap.rssiRange
       : pointColorRange;
 
+  const handleSelectSession = (sessionId: string) => {
+    const session = sessions.find((s) => s.id === sessionId) ?? null;
+    setSelectedSessionId(sessionId);
+    setSelectedSceneVersionId(session?.scene_version_id ?? null);
+    persistMeasurementView(floorId, {
+      sessionId,
+      sceneVersionId: session?.scene_version_id ?? null,
+      mode,
+    });
+
+    const next = new URLSearchParams(searchParams);
+    next.set('sessionId', sessionId);
+    if (session?.scene_version_id) {
+      next.set('sceneVersionId', session.scene_version_id);
+    } else {
+      next.delete('sceneVersionId');
+    }
+    next.delete('rfRunId');
+    setSearchParams(next, { replace: true });
+  };
+
+  const handleModeChange = (nextMode: MeasurementViewMode) => {
+    setMode(nextMode);
+    persistMeasurementView(floorId, {
+      sessionId: activeSession?.id ?? selectedSessionId,
+      sceneVersionId: activeSceneVersionId,
+      mode: nextMode,
+    });
+  };
 
   return (
     <div className="relative flex h-full flex-col gap-5 p-6">
       <PageHeader
-        sessions={sessionsForCurrentVersion}
+        sessions={sessions}
         activeSession={activeSession}
+        currentVersionId={currentVersion?.id ?? null}
         floorId={floorId ?? null}
         projectId={projectIdForFloors}
-        onSelectSession={(id) => setSelectedSessionId(id)}
+        onSelectSession={handleSelectSession}
         onStartMeasurement={() => {
           setMobilePurpose('calibration');
           setMobileOpen(true);
@@ -339,7 +441,7 @@ export default function MeasurementPage() {
       ) : (
         <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
           <section className="flex min-h-0 flex-col gap-3">
-            <TabBar mode={mode} onChange={setMode} />
+            <TabBar mode={mode} onChange={handleModeChange} />
             <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border bg-background shadow-sm">
               {/* route 모드 범례/측정 방식 뱃지는 캔버스 위에 올려 도면 크기를 시뮬레이션과 맞춘다. */}
               <div className="pointer-events-none absolute left-3 top-3 z-10 flex flex-wrap items-center gap-2">
@@ -405,6 +507,10 @@ export default function MeasurementPage() {
               evaluation={calibrationEvaluation}
               backgroundImageUrl={backgroundImageUrl}
             />
+            <CalibrationHistoryCard
+              runs={calibrationRunsQuery.data?.items ?? []}
+              loading={calibrationRunsQuery.isLoading}
+            />
             <CauseAnalysisCard
               hasData={hasMeasurement}
               onOpenGuide={() => setActionGuideOpen(true)}
@@ -417,6 +523,7 @@ export default function MeasurementPage() {
       <MobileConnectModal
         open={mobileOpen}
         onClose={() => setMobileOpen(false)}
+        sceneVersionId={activeSceneVersionId}
         recommendedPurpose={mobilePurpose}
       />
       <ActionGuideModal open={actionGuideOpen} onClose={() => setActionGuideOpen(false)} />
@@ -514,6 +621,7 @@ function computeMeasuredAvg(points: ApiPoint[]): number | null {
 function PageHeader({
   sessions,
   activeSession,
+  currentVersionId,
   floorId,
   projectId,
   onSelectSession,
@@ -521,6 +629,7 @@ function PageHeader({
 }: {
   sessions: MeasurementSession[];
   activeSession: MeasurementSession | null;
+  currentVersionId: string | null;
   floorId: string | null;
   projectId: string | null;
   onSelectSession: (id: string) => void;
@@ -564,6 +673,7 @@ function PageHeader({
               </p>
               {sessions.map((s) => {
                 const isActive = activeSession?.id === s.id;
+                const isCurrentVersion = !!currentVersionId && s.scene_version_id === currentVersionId;
                 return (
                   <button
                     key={s.id}
@@ -581,7 +691,10 @@ function PageHeader({
                       <span className="font-medium text-foreground">
                         {formatRelative(s.created_at)}
                       </span>
-                      <SessionStatusBadge status={s.status} />
+                      <span className="flex items-center gap-1">
+                        <VersionScopeBadge current={isCurrentVersion} />
+                        <SessionStatusBadge status={s.status} />
+                      </span>
                     </span>
                     <span className="text-[10px] text-muted-foreground">
                       {s.measurement_type} · 도면 {s.scene_version_id?.slice(0, 8) ?? '미지정'} · {s.id.slice(0, 8)}…
@@ -616,6 +729,19 @@ function SessionStatusBadge({ status }: { status: string }) {
     status === 'completed' ? '완료' : status === 'in_progress' ? '진행 중' : status;
   return (
     <span className={cn('rounded px-1.5 py-0.5 text-[10px] font-medium', style)}>{label}</span>
+  );
+}
+
+function VersionScopeBadge({ current }: { current: boolean }) {
+  return (
+    <span
+      className={cn(
+        'rounded px-1.5 py-0.5 text-[10px] font-medium',
+        current ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-600',
+      )}
+    >
+      {current ? '현재 도면' : '다른 도면'}
+    </span>
   );
 }
 
@@ -683,7 +809,7 @@ function TabBar({
   );
 }
 
-/** dbm 모드일 땐 inferno 그라데이션 + 양 끝/중간 dBm 표시. quality 모드면 기존 3-tier. */
+/** dbm 모드일 땐 jet 무지개 그라데이션 + 양 끝/중간 dBm 표시. quality 모드면 기존 3-tier. */
 function Legend({
   colorMode,
   range,
@@ -700,10 +826,7 @@ function Legend({
         <span className="font-semibold text-foreground">실측 RSSI</span>
         <div
           className="h-2 w-32 rounded-sm border border-border/60"
-          style={{
-            backgroundImage:
-              'linear-gradient(to right, rgb(0,0,4), rgb(66,10,104), rgb(147,38,103), rgb(221,81,58), rgb(252,165,10), rgb(252,255,164))',
-          }}
+          style={{ backgroundImage: RSSI_HEATMAP_GRADIENT_CSS }}
         />
         <span className="font-mono tabular-nums text-[10px] text-foreground/70">
           {min.toFixed(0)} · {mid.toFixed(0)} · {max.toFixed(0)} dBm
@@ -784,6 +907,100 @@ function CanvasEmptyOverlay({ loading }: { loading: boolean }) {
 // ============================================
 // 우측 진단 카드
 // ============================================
+
+function CalibrationHistoryCard({
+  runs,
+  loading,
+}: {
+  runs: CalibrationRun[];
+  loading: boolean;
+}) {
+  return (
+    <div className="rounded-xl border bg-card p-4 shadow-sm">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+          <TrendingUp className="h-4 w-4 text-primary" />
+          보정 이력
+        </h3>
+        <span className="text-[11px] text-muted-foreground">{runs.length}개</span>
+      </div>
+      {loading ? (
+        <p className="mt-3 text-xs text-muted-foreground">보정 이력을 불러오는 중...</p>
+      ) : runs.length === 0 ? (
+        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+          이 도면에서 저장된 보정 결과가 아직 없습니다.
+        </p>
+      ) : (
+        <div className="mt-3 space-y-2">
+          {runs.map((run) => {
+            const summary = calibrationRunSummary(run);
+            return (
+              <div key={run.id} className="rounded-lg border bg-background px-3 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold text-foreground">
+                    {formatRelative(run.created_at)}
+                  </p>
+                  <SessionStatusBadge status={run.status} />
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+                  <MetricMini label="기울기" value={formatMetric(summary.slope, '')} />
+                  <MetricMini label="보정값" value={formatMetric(summary.interceptDb, ' dB')} />
+                  <MetricMini label="보정 전 MAE" value={formatMetric(summary.baselineMae, ' dB')} />
+                  <MetricMini label="보정 후 MAE" value={formatMetric(summary.calibratedMae, ' dB')} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MetricMini({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md bg-muted/40 px-2 py-1">
+      <p className="text-[10px] text-muted-foreground">{label}</p>
+      <p className="mt-0.5 font-semibold tabular-nums text-foreground">{value}</p>
+    </div>
+  );
+}
+
+function calibrationRunSummary(run: CalibrationRun): {
+  slope: number | null;
+  interceptDb: number | null;
+  baselineMae: number | null;
+  calibratedMae: number | null;
+} {
+  const metrics = run.error_metrics_json ?? {};
+  const evaluation = objectValue(metrics.evaluation);
+  const calibration = objectValue(evaluation?.calibration);
+  const response = objectValue(metrics.evaluation_response);
+  const responseEvaluation = objectValue(response?.evaluation);
+  const responseCalibration = objectValue(responseEvaluation?.calibration);
+  return {
+    slope: numberValue(calibration?.slope) ?? numberValue(responseCalibration?.slope),
+    interceptDb:
+      numberValue(calibration?.intercept_db) ??
+      numberValue(calibration?.intercept) ??
+      numberValue(responseCalibration?.intercept_db),
+    baselineMae: numberValue(metrics.baseline_mae_db),
+    calibratedMae: numberValue(metrics.calibrated_mae_db),
+  };
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+}
+
+function numberValue(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatMetric(value: number | null, suffix: string): string {
+  return value == null ? '값 없음' : `${value.toFixed(2)}${suffix}`;
+}
 
 function DiagnosticCard({
   points,
@@ -1012,6 +1229,55 @@ function DetectedApsCard({ aps }: { aps: DetectedAp[] }) {
       </ul>
     </div>
   );
+}
+
+function readStoredMeasurementView(floorId: string): StoredMeasurementView | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(MEASUREMENT_VIEW_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as {
+      byFloor?: Record<string, Partial<StoredMeasurementView>>;
+    };
+    const value = parsed.byFloor?.[floorId];
+    if (!value) return null;
+    const mode =
+      value.mode === 'heatmap' || value.mode === 'both' || value.mode === 'route'
+        ? value.mode
+        : 'route';
+    return {
+      sessionId: value.sessionId ?? null,
+      sceneVersionId: value.sceneVersionId ?? null,
+      mode,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistMeasurementView(
+  floorId: string | null,
+  view: StoredMeasurementView,
+): void {
+  if (!floorId || typeof window === 'undefined') return;
+  try {
+    const raw = window.localStorage.getItem(MEASUREMENT_VIEW_STORAGE_KEY);
+    const parsed = raw
+      ? (JSON.parse(raw) as { byFloor?: Record<string, StoredMeasurementView> })
+      : {};
+    window.localStorage.setItem(
+      MEASUREMENT_VIEW_STORAGE_KEY,
+      JSON.stringify({
+        ...parsed,
+        byFloor: {
+          ...(parsed.byFloor ?? {}),
+          [floorId]: view,
+        },
+      }),
+    );
+  } catch {
+    // Ignore storage failures; URL/query driven navigation still works.
+  }
 }
 
 // ============================================

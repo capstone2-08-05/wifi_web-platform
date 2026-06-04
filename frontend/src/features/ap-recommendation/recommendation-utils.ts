@@ -3,6 +3,7 @@ import type {
   ApRecommendationRequest,
   ApRecommendationResponse,
   ApRecommendationResult,
+  ApRecommendationRun,
 } from '@/types/ap-recommendation';
 import type { UUID } from '@/types/common';
 import { parseGeometry } from '@/features/editor/geometry-utils';
@@ -28,6 +29,17 @@ export interface MeterBBox {
   x_max: number;
   y_min: number;
   y_max: number;
+}
+
+export type ApRecommendationAreaType =
+  | 'candidate'
+  | 'priority'
+  | 'excluded';
+
+export interface ApRecommendationArea {
+  id: string;
+  type: ApRecommendationAreaType;
+  bbox: MeterBBox;
 }
 
 const MIN_SELECTION_M = 0.2;
@@ -58,6 +70,12 @@ export function validSelectionBBoxes(bboxes: MeterBBox[] | null | undefined): Me
   return (bboxes ?? []).filter(isValidSelectionBBox);
 }
 
+export function validRecommendationAreas(
+  areas: ApRecommendationArea[] | null | undefined,
+): ApRecommendationArea[] {
+  return (areas ?? []).filter((area) => isValidSelectionBBox(area.bbox));
+}
+
 export function unionMeterBBoxes(bboxes: MeterBBox[]): MeterBBox | null {
   const valid = validSelectionBBoxes(bboxes);
   if (valid.length === 0) return null;
@@ -72,24 +90,57 @@ export function unionMeterBBoxes(bboxes: MeterBBox[]): MeterBBox | null {
 /** POST /ap-recommendation 요청 본문 조립 (백엔드 default 필드는 생략). */
 export function buildApRecommendationPayload(params: {
   sceneVersionId: UUID;
-  bboxes: MeterBBox[];
+  bboxes?: MeterBBox[];
+  areas?: ApRecommendationArea[];
   existingAps: { id: string; x_m: number; y_m: number }[];
   txPowerDbm?: number;
 }): ApRecommendationRequest {
-  const bboxes = validSelectionBBoxes(params.bboxes);
-  const union = unionMeterBBoxes(bboxes);
-  if (!union) {
-    throw new Error('At least one valid target bbox is required.');
+  const areas = validRecommendationAreas(params.areas);
+  const legacyBboxes = validSelectionBBoxes(params.bboxes);
+  const candidateBBoxes =
+    areas.length > 0
+      ? areas.filter((area) => area.type === 'candidate').map((area) => area.bbox)
+      : legacyBboxes;
+  const priorityZones = areas
+    .filter((area) => area.type === 'priority')
+    .map((area) => ({
+      ...area.bbox,
+      label: '집중구간',
+      weight: 1.0,
+    }));
+  const excludedZones = areas
+    .filter((area) => area.type === 'excluded')
+    .map((area) => area.bbox);
+  const evaluationBBoxes =
+    areas.length > 0
+      ? areas
+          .filter((area) => area.type === 'priority')
+          .map((area) => area.bbox)
+      : [];
+  const legacyUnion = unionMeterBBoxes(legacyBboxes);
+
+  if (candidateBBoxes.length === 0) {
+    throw new Error('At least one installable candidate area is required.');
   }
-  return {
+  const request: ApRecommendationRequest = {
     scene_version_id: params.sceneVersionId,
-    x_min: union.x_min,
-    x_max: union.x_max,
-    y_min: union.y_min,
-    y_max: union.y_max,
-    target_bboxes: bboxes,
+    candidate_bboxes: candidateBBoxes,
+    evaluation_bboxes: evaluationBBoxes,
+    priority_zones: priorityZones,
+    excluded_zones: excludedZones,
+    default_unzoned_weight: 0.2,
+    calibration_policy: 'transfer_only',
+    candidate_tx_power_dbm: params.txPowerDbm,
     existing_aps: mapToExistingAps(params.existingAps, params.txPowerDbm),
   };
+  if (legacyUnion) {
+    request.x_min = legacyUnion.x_min;
+    request.x_max = legacyUnion.x_max;
+    request.y_min = legacyUnion.y_min;
+    request.y_max = legacyUnion.y_max;
+    request.target_bboxes = legacyBboxes;
+  }
+  return request;
 }
 
 /** 응답 → UI 표시용 배열로 normalize. */
@@ -103,7 +154,50 @@ export function normalizeRecommendations(
     recommended_y: item.recommended_y,
     score: item.score,
     candidates_evaluated: response.candidates_evaluated,
+    coverage_score: item.coverage_score,
+    coverage_ratio: item.coverage_ratio,
+    weak_zone_improvement_score: item.weak_zone_improvement_score,
+    weak_zone_improvement_db: item.weak_zone_improvement_db,
+    bottom_10_percent_score: item.bottom_10_percent_score,
+    bottom_10_percent_rssi_dbm: item.bottom_10_percent_rssi_dbm,
+    average_rssi_score: item.average_rssi_score,
+    average_rssi_dbm: item.average_rssi_dbm,
+    baseline_improvement_score: item.baseline_improvement_score,
+    baseline_improvement_db: item.baseline_improvement_db,
+    prediction_points: item.prediction_points ?? [],
   }));
+}
+
+export function normalizeRecommendationRun(
+  run: ApRecommendationRun | null | undefined,
+): ApRecommendationResult[] {
+  if (!run) return [];
+  return normalizeRecommendations({
+    run_id: run.id,
+    recommendations: run.recommendations,
+    status: run.status,
+    candidates_evaluated: run.candidates_evaluated,
+    eval_points_count: run.eval_points_count,
+    weighted_eval_points_count: run.weighted_eval_points_count,
+    calibration_applied: !!run.calibration_run_id,
+    calibration: isApRecommendationCalibrationInfo(run.calibration_json)
+      ? run.calibration_json
+      : null,
+    score_weights: run.score_weights_json,
+    created_at: run.created_at,
+  });
+}
+
+function isApRecommendationCalibrationInfo(
+  value: unknown,
+): value is NonNullable<ApRecommendationResponse['calibration']> {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.method === 'string' &&
+    typeof record.slope === 'number' &&
+    typeof record.intercept_db === 'number'
+  );
 }
 
 /** 캔버스 AP → API existing_aps. tx_power_dbm 없으면 필드 생략(백엔드 default 20). */
@@ -346,7 +440,7 @@ export function getRecommendationReason(
 
   if (rec.rank === 1) {
     parts.push(
-      '우선 개선 영역·도면 평가 지점에서 음영 구역을 줄이고 예측 신호가 가장 잘 닿는 위치입니다.',
+      '집중구간과 도면 평가 지점에서 음영 구역을 줄이고 예측 신호가 가장 잘 닿는 위치입니다.',
     );
     if (bbox && isNearBboxEdge(rec, bbox)) {
       parts.push('선택 영역 가장자리 근처입니다.');

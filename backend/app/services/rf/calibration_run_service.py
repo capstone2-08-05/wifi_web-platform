@@ -8,7 +8,7 @@ import random
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, ErrorCode
@@ -21,6 +21,7 @@ from app.models.project import Project
 from app.models.rf_run import RfRun
 from app.models.scene_version import SceneVersion
 from app.models.user import User
+from app.schemas.pagination import PaginatedResponse
 from app.schemas.rf.calibration_run import (
     CalibrationEvaluationRequest,
     CalibrationEvaluationResponse,
@@ -947,6 +948,41 @@ def get_calibration_run(
     db: Session, run_id: UUID, user: User
 ) -> CalibrationRunResponse:
     return _to_response(_get_owned_calibration_run(db, run_id, user))
+
+
+def list_calibration_runs(
+    db: Session,
+    *,
+    scene_version_id: UUID,
+    user: User,
+    page: int = 1,
+    page_size: int = 20,
+) -> PaginatedResponse[CalibrationRunResponse]:
+    sv = _get_owned_scene_version(db, scene_version_id, user)
+    total = db.execute(
+        select(func.count(CalibrationRun.id)).where(
+            CalibrationRun.scene_version_id == str(sv.id)
+        )
+    ).scalar() or 0
+    rows = (
+        db.execute(
+            select(CalibrationRun)
+            .where(
+                CalibrationRun.scene_version_id == str(sv.id)
+            )
+            .order_by(CalibrationRun.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        .scalars()
+        .all()
+    )
+    return PaginatedResponse[CalibrationRunResponse](
+        items=[_to_response(r) for r in rows],
+        page=page,
+        page_size=page_size,
+        total=int(total),
+    )
 
 
 # ---------------------------------------------------------------------------

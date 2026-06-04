@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Path, status
+from fastapi import APIRouter, Depends, Path, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, verify_internal_api_key
 from app.db.session import get_db
 from app.models.user import User
+from app.schemas.pagination import PaginatedResponse
 from app.schemas.rf.calibration_run import (
     CalibrationEvaluationRequest,
     CalibrationEvaluationResponse,
@@ -53,6 +54,27 @@ def evaluate_calibration_run(
 ) -> CalibrationEvaluationResponse:
     return calibration_run_service.evaluate_calibration_run(
         db, payload=payload, user=current_user
+    )
+
+
+@router.get(
+    "",
+    response_model=PaginatedResponse[CalibrationRunResponse],
+    summary="도면 버전별 보정 실행 이력 조회",
+)
+def list_calibration_runs(
+    scene_version_id: UUID = Query(...),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> PaginatedResponse[CalibrationRunResponse]:
+    return calibration_run_service.list_calibration_runs(
+        db,
+        scene_version_id=scene_version_id,
+        user=current_user,
+        page=page,
+        page_size=page_size,
     )
 
 

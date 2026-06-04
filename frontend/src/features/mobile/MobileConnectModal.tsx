@@ -4,16 +4,19 @@ import { QRCodeSVG } from 'qrcode.react';
 import { useAppStore } from '@/stores/app-store';
 import { useCreateMeasurementLink } from '@/hooks/use-measurement-link';
 import { toast } from '@/stores/toast-store';
+import type { UUID } from '@/types/common';
 
 interface Props {
   open: boolean;
   onClose: () => void;
+  sceneVersionId?: UUID | null;
   recommendedPurpose?: 'calibration' | 'reference' | 'validation' | 'unknown';
 }
 
 export function MobileConnectModal({
   open,
   onClose,
+  sceneVersionId,
   recommendedPurpose = 'calibration',
 }: Props) {
   const floorId = useAppStore((s) => s.selectedFloorId);
@@ -26,9 +29,9 @@ export function MobileConnectModal({
     if (!open) return;
     if (!floorId) return;
     if (createLink.isPending || link) return;
-    createLink.mutate({ floorId, recommendedPurpose });
+    createLink.mutate({ floorId, recommendedPurpose, sceneVersionId });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, floorId, recommendedPurpose]);
+  }, [open, floorId, sceneVersionId, recommendedPurpose]);
 
   // 닫힐 때 상태 초기화 (다음 열릴 때 새 QR 발급)
   useEffect(() => {
@@ -85,10 +88,12 @@ export function MobileConnectModal({
             expiresAt={link.expires_at}
             deepLink={link.deep_link}
             recommendedPurpose={recommendedPurpose}
-            onRefresh={() => createLink.mutate({ floorId, recommendedPurpose })}
+            onRefresh={() => createLink.mutate({ floorId, recommendedPurpose, sceneVersionId })}
           />
         ) : createLink.isError ? (
-          <ErrorState onRetry={() => createLink.mutate({ floorId, recommendedPurpose })} />
+          <ErrorState
+            onRetry={() => createLink.mutate({ floorId, recommendedPurpose, sceneVersionId })}
+          />
         ) : null}
       </div>
     </div>

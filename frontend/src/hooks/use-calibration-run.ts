@@ -33,8 +33,11 @@ export function useEvaluateCalibrationRun() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: CalibrationEvaluationRequest) => calibrationRunApi.evaluate(body),
-    onSuccess: (result) => {
+    onSuccess: (result, body) => {
       qc.invalidateQueries({ queryKey: ['calibration-run'] });
+      qc.invalidateQueries({
+        queryKey: ['calibration-runs', body.scene_version_id],
+      });
       toast.success('보정 평가 완료', '검증 지표와 보정맵을 확인할 수 있습니다.');
       return result;
     },
@@ -42,6 +45,19 @@ export function useEvaluateCalibrationRun() {
       const e = err as HttpError | null;
       toast.error('보정 실행 실패', e?.message ?? '측정점과 시뮬레이션 결과를 확인해주세요.');
     },
+  });
+}
+
+export function useCalibrationRuns(sceneVersionId: UUID | null, pageSize = 10) {
+  return useQuery({
+    queryKey: ['calibration-runs', sceneVersionId, pageSize] as const,
+    queryFn: () =>
+      calibrationRunApi.list(sceneVersionId as UUID, {
+        page: 1,
+        page_size: pageSize,
+      }),
+    enabled: !!sceneVersionId,
+    retry: false,
   });
 }
 
