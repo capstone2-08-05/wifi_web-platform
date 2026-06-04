@@ -660,20 +660,23 @@ def list_points(
     user: User,
     page: int,
     page_size: int,
+    ap_bssid: str | None = None,
 ) -> PaginatedResponse[MeasurementPointResponseDTO]:
     """§10.4 — 세션 내 측정 포인트 페이지네이션 조회."""
     _load_owned_session(db, session_id, user)
 
+    filters = [MeasurementPoint.session_id == session_id]
+    if ap_bssid:
+        filters.append(func.lower(MeasurementPoint.ap_bssid) == ap_bssid.lower())
+
     total = db.execute(
-        select(func.count(MeasurementPoint.id)).where(
-            MeasurementPoint.session_id == session_id
-        )
+        select(func.count(MeasurementPoint.id)).where(*filters)
     ).scalar() or 0
 
     rows = (
         db.execute(
             select(MeasurementPoint)
-            .where(MeasurementPoint.session_id == session_id)
+            .where(*filters)
             .order_by(MeasurementPoint.step_index.asc().nullslast(), MeasurementPoint.created_at.asc())
             .offset((page - 1) * page_size)
             .limit(page_size)
@@ -781,6 +784,7 @@ def estimate_session_coverage(
     user: User,
     grid_resolution_m: float = 0.5,
     method: str = "auto",
+    ap_bssid: str | None = None,
 ) -> "EstimatedCoverageResponseDTO":
     """§81 — 세션의 측정점들을 GP regression 으로 dense map 추정.
 
@@ -810,16 +814,13 @@ def estimate_session_coverage(
     session_row = _load_owned_session(db, session_id, user)
 
     # 측정점 (rssi 있는 것만) 로드
-    rows = (
-        db.execute(
-            select(MeasurementPoint).where(
-                MeasurementPoint.session_id == session_row.id,
-                MeasurementPoint.rssi_dbm.isnot(None),
-            )
-        )
-        .scalars()
-        .all()
-    )
+    filters = [
+        MeasurementPoint.session_id == session_row.id,
+        MeasurementPoint.rssi_dbm.isnot(None),
+    ]
+    if ap_bssid:
+        filters.append(func.lower(MeasurementPoint.ap_bssid) == ap_bssid.lower())
+    rows = db.execute(select(MeasurementPoint).where(*filters)).scalars().all()
 
     points: list[tuple[float, float, float]] = []
     for r in rows:
@@ -890,11 +891,20 @@ def estimate_session_coverage(
     # → noise floor 이상 + 비유한값 제외한 셀 들로만 계산.
     grid = estimate.mean_grid
     finite_mask = np.isfinite(grid) & (grid > -120.0)
+    coverage_threshold_dbm = -67.0
+    coverage_ratio = None
+    coverage_score = None
+    average_rssi_dbm = None
+    bottom_10_percent_rssi_dbm = None
     if finite_mask.any():
         valid = grid[finite_mask]
         # p2~p98 percentile — 양 극단 outlier (정상 범위지만 1~2 셀만 튀는 값) 도 제외.
         lo, hi = np.percentile(valid, [2.0, 98.0])
         rmin, rmax, rmean = float(lo), float(hi), float(valid.mean())
+        coverage_ratio = float(np.mean(valid >= coverage_threshold_dbm))
+        coverage_score = coverage_ratio
+        average_rssi_dbm = rmean
+        bottom_10_percent_rssi_dbm = float(np.percentile(valid, 10.0))
     else:
         rmin, rmax, rmean = -90.0, -30.0, -60.0  # fallback
     return EstimatedCoverageResponseDTO(
@@ -908,6 +918,11 @@ def estimate_session_coverage(
         input_point_count=estimate.input_point_count,
         kernel_repr=estimate.kernel_repr,
         method=estimate.method,
+        coverage_threshold_dbm=coverage_threshold_dbm,
+        coverage_ratio=coverage_ratio,
+        coverage_score=coverage_score,
+        average_rssi_dbm=average_rssi_dbm,
+        bottom_10_percent_rssi_dbm=bottom_10_percent_rssi_dbm,
     )
 
 

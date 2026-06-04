@@ -703,16 +703,13 @@ def evaluate_calibration_run(
 
     radio_map = _load_radio_map(rr)
     session_ids = [str(s.id) for s in sessions]
-    rows = (
-        db.execute(
-            select(MeasurementPoint).where(
-                MeasurementPoint.session_id.in_(session_ids),
-                MeasurementPoint.rssi_dbm.isnot(None),
-            )
-        )
-        .scalars()
-        .all()
-    )
+    filters = [
+        MeasurementPoint.session_id.in_(session_ids),
+        MeasurementPoint.rssi_dbm.isnot(None),
+    ]
+    if payload.ap_bssid:
+        filters.append(func.lower(MeasurementPoint.ap_bssid) == payload.ap_bssid.lower())
+    rows = db.execute(select(MeasurementPoint).where(*filters)).scalars().all()
     split_points, split_meta = _split_points(
         rows,
         {str(s.id): s for s in sessions},

@@ -22,19 +22,17 @@ matplotlib.use("Agg")  # 서버 환경 — GUI backend 비활성
 # frontend rssi-colormap.ts 의 RSSI_HEATMAP_STOPS_RGB 와 동일한 stops.
 # t=0 (weak) → medium blue, t=1 (strong) → medium-bright red.
 _RSSI_CMAP = mcolors.LinearSegmentedColormap.from_list(
-    "wifi_thermal",
+    "wifi_jet",
     [
-        np.array([30,  80, 235]) / 255,
-        np.array([ 0, 140, 255]) / 255,
-        np.array([ 0, 210, 255]) / 255,
-        np.array([ 0, 240, 190]) / 255,
-        np.array([30, 240,  70]) / 255,
-        np.array([160, 240,   0]) / 255,
-        np.array([255, 235,   0]) / 255,
-        np.array([255, 160,   0]) / 255,
-        np.array([255,  55,   0]) / 255,
-        np.array([235,   0,   0]) / 255,
-        np.array([195,   0,   0]) / 255,
+        np.array([0,   0, 128]) / 255,
+        np.array([0,   0, 255]) / 255,
+        np.array([0, 128, 255]) / 255,
+        np.array([0, 255, 255]) / 255,
+        np.array([128, 255, 128]) / 255,
+        np.array([255, 255,   0]) / 255,
+        np.array([255, 128,   0]) / 255,
+        np.array([255,   0,   0]) / 255,
+        np.array([128,   0,   0]) / 255,
     ],
 )
 
