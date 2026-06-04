@@ -107,8 +107,8 @@ export default function DashboardPage() {
     <div className="relative h-full overflow-auto p-6">
       <div className="space-y-6">
         <header className="space-y-1.5">
-          <h1 className="text-2xl font-semibold tracking-tight">대시보드</h1>
-          <p className="text-sm text-muted-foreground">
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">대시보드</h1>
+          <p className="mt-0.5 text-sm text-slate-500">
             현장 앱과 연동된 매장 도면 및 최신 진단 내역을 확인하세요.
           </p>
         </header>

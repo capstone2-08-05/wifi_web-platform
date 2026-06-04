@@ -588,8 +588,8 @@ function PageHeader({
   return (
     <header className="flex flex-wrap items-start justify-between gap-3">
       <div className="space-y-1.5">
-        <h1 className="text-2xl font-semibold tracking-tight">실측 및 진단</h1>
-        <p className="text-sm text-muted-foreground">
+        <h1 className="text-2xl font-semibold tracking-tight text-slate-900">실측 및 진단</h1>
+        <p className="mt-0.5 text-sm text-slate-500">
           모바일 기기로 측정한 실제 와이파이 품질 데이터와 시뮬레이션을 통합하여 분석합니다.
         </p>
       </div>

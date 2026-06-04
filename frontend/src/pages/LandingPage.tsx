@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Activity, LayoutGrid, Map, Radio, Settings, Sparkles } from 'lucide-react';
+import { Activity, Map, Radio, Settings, Sparkles, Wifi } from 'lucide-react';
 import { ProfileMenu } from '@/features/header/ProfileMenu';
 import { useAuthStore } from '@/stores/auth-store';
 
@@ -41,11 +41,10 @@ function fadeUp(inView: boolean, delay = 0, dist = 44) {
 /* 데이터                                                               */
 /* ------------------------------------------------------------------ */
 const NAV_ITEMS = [
-  { label: '대시보드', icon: LayoutGrid, active: false },
-  { label: '공간 편집', icon: Map, active: false },
-  { label: '시뮬레이션', icon: Radio, active: true },
-  { label: '실측/진단', icon: Activity, active: false },
-  { label: 'AP 배치 추천', icon: Sparkles, active: false },
+  { step: '01', label: '공간 편집', active: false },
+  { step: '02', label: '시뮬레이션', active: true },
+  { step: '03', label: '실측/진단', active: false },
+  { step: '04', label: 'AP 배치 추천', active: false },
 ];
 
 const STEPS = [
@@ -141,8 +140,11 @@ export default function LandingPage() {
       >
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-600 text-xs font-bold text-white">
-              Wi
+            <div
+              className="flex h-8 w-8 items-center justify-center rounded-xl text-white"
+              style={{ background: 'linear-gradient(135deg, #0A74FF, #37B6FF)' }}
+            >
+              <Wifi className="h-4 w-4" />
             </div>
             <span className="font-semibold tracking-tight">Wi-Fi Space</span>
           </div>
@@ -211,7 +213,9 @@ export default function LandingPage() {
             {/* 앱 상단 바 */}
             <div className="flex items-center justify-between border-b bg-slate-50 px-5 py-3">
               <div className="flex items-center gap-2.5">
-                <div className="flex h-5 w-5 items-center justify-center rounded bg-blue-600 text-[8px] font-bold text-white">Wi</div>
+                <div className="flex h-5 w-5 items-center justify-center rounded-lg text-white" style={{ background: 'linear-gradient(135deg, #0A74FF, #37B6FF)' }}>
+                    <Wifi className="h-3 w-3" />
+                  </div>
                 <span className="text-xs font-semibold text-slate-700">Wi-Fi Space</span>
               </div>
               <div className="flex items-center gap-2 text-[10px]">
@@ -230,7 +234,11 @@ export default function LandingPage() {
                       item.active ? 'bg-blue-100 text-blue-700' : 'text-slate-400'
                     }`}
                   >
-                    <item.icon className="h-3 w-3 shrink-0" />
+                    <span className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full text-[7px] font-bold ${
+                      item.active ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-500'
+                    }`}>
+                      {item.step}
+                    </span>
                     {item.label}
                   </div>
                 ))}

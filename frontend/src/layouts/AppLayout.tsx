@@ -15,11 +15,11 @@ import { ProfileMenu } from '@/features/header/ProfileMenu';
 import { InferenceModeToggle } from '@/features/header/InferenceModeToggle';
 
 const NAV = [
-  { to: '/dashboard', label: '대시보드', icon: LayoutGrid },
-  { to: '/editor', label: '공간 편집', icon: Map },
-  { to: '/simulation', label: '시뮬레이션', icon: Radio },
-  { to: '/measurement', label: '실측/진단', icon: Activity },
-  { to: '/mobile', label: 'AP 배치 추천', icon: Sparkles },
+  { to: '/dashboard', label: '대시보드', icon: LayoutGrid, step: null },
+  { to: '/editor', label: '공간 편집', icon: Map, step: '01' },
+  { to: '/simulation', label: '시뮬레이션', icon: Radio, step: '02' },
+  { to: '/measurement', label: '실측/진단', icon: Activity, step: '03' },
+  { to: '/mobile', label: 'AP 배치 추천', icon: Sparkles, step: '04' },
 ] as const;
 
 export function AppLayout() {
@@ -27,44 +27,90 @@ export function AppLayout() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background">
-      <aside className="flex w-60 shrink-0 flex-col border-r bg-sidebar">
-        <div className="flex h-16 items-center gap-2 px-5 border-b">
-          <Wifi className="h-5 w-5 text-primary" />
-          <span className="text-base font-semibold">Wi-Fi Space</span>
+      <aside
+        className="flex w-70 shrink-0 flex-col border-r"
+        style={{ background: 'linear-gradient(180deg, #F8FBFF 0%, #F2F6FB 100%)', borderColor: '#E5EAF0' }}
+      >
+        <div className="flex h-16 items-center gap-3 border-b px-5" style={{ borderColor: '#E5EAF0' }}>
+          <div
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-white"
+            style={{ background: 'linear-gradient(135deg, #0A74FF, #37B6FF)' }}
+          >
+            <Wifi className="h-5 w-5" />
+          </div>
+          <span className="text-sm font-semibold">Wi-Fi Space</span>
         </div>
-        <nav className="flex-1 space-y-1 p-3">
-          {NAV.map(({ to, label, icon: Icon }) => (
+        <nav className="flex-1 space-y-0.5 p-3">
+          {NAV.map(({ to, label, icon: Icon, step }) => (
             <NavLink
               key={to}
               to={to}
               className={({ isActive }) =>
                 cn(
-                  'flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
+                  'relative flex items-center gap-3 rounded-xl py-2.75 pr-4 text-sm transition-all duration-200',
                   isActive
-                    ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
-                    : 'text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+                    ? 'pl-3 font-bold'
+                    : 'pl-4 font-medium text-slate-500 hover:bg-blue-50/60 hover:text-slate-700',
                 )
               }
+              style={({ isActive }) =>
+                isActive
+                  ? { background: '#EAF3FF', color: '#0A74FF', boxShadow: '0 4px 16px rgba(10,116,255,0.10)' }
+                  : undefined
+              }
             >
-              <Icon className="h-4 w-4" />
-              {label}
+              {({ isActive }) => (
+                <>
+                  {isActive && (
+                    <span className="absolute left-0 top-1/2 h-5 w-0.75 -translate-y-1/2 rounded-r-full bg-[#0A74FF]" />
+                  )}
+                  {step ? (
+                    <span
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold transition-colors"
+                      style={
+                        isActive
+                          ? { background: '#0A74FF', color: 'white' }
+                          : { background: '#EEF2F6', color: '#6B7280' }
+                      }
+                    >
+                      {step}
+                    </span>
+                  ) : (
+                    <Icon className="h-4 w-4 shrink-0" />
+                  )}
+                  {step && <Icon className="h-3.75 w-3.75 shrink-0 opacity-50" />}
+                  {label}
+                </>
+              )}
             </NavLink>
           ))}
         </nav>
-        <div className="border-t p-3">
+        <div className="border-t p-3" style={{ borderColor: '#E5EAF0' }}>
           <NavLink
             to="/settings"
             className={({ isActive }) =>
               cn(
-                'flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
+                'relative flex items-center gap-3 rounded-xl py-2.75 pr-4 text-sm transition-all duration-200',
                 isActive
-                  ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
-                  : 'text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+                  ? 'pl-3 font-bold'
+                  : 'pl-4 font-medium text-slate-500 hover:bg-blue-50/60 hover:text-slate-700',
               )
             }
+            style={({ isActive }) =>
+              isActive
+                ? { background: '#EAF3FF', color: '#0A74FF', boxShadow: '0 4px 16px rgba(10,116,255,0.10)' }
+                : undefined
+            }
           >
-            <Settings className="h-4 w-4" />
-            설정
+            {({ isActive }) => (
+              <>
+                {isActive && (
+                  <span className="absolute left-0 top-1/2 h-5 w-0.75 -translate-y-1/2 rounded-r-full bg-[#0A74FF]" />
+                )}
+                <Settings className="h-4 w-4 shrink-0" />
+                설정
+              </>
+            )}
           </NavLink>
         </div>
       </aside>
