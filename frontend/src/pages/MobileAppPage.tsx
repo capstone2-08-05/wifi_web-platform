@@ -11,7 +11,10 @@ import { useFloorRfRuns, useRfMaps } from '@/hooks/use-rf-run';
 import { useApLayouts, useCreateApLayout } from '@/hooks/use-ap-layouts';
 import { useAssetDownloadUrl } from '@/hooks/use-assets';
 import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
-import { useApRecommendation } from '@/hooks/use-ap-recommendation';
+import {
+  useApRecommendation,
+  useApRecommendationRuns,
+} from '@/hooks/use-ap-recommendation';
 import { useEstimatedCoverage, useFloorMeasurementSessions } from '@/hooks/use-measurement-session';
 import { useRfMapImageUrl } from '@/hooks/use-rf-map-image-url';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
@@ -25,12 +28,13 @@ import { ApRecommendationCanvas } from '@/features/ap-recommendation/ApRecommend
 import {
   AP_DEFAULT_Z_M,
   buildApRecommendationPayload,
+  normalizeRecommendationRun,
   normalizeRecommendations,
   validRecommendationAreas,
   type ApRecommendationArea,
   type ApRecommendationAreaType,
 } from '@/features/ap-recommendation/recommendation-utils';
-import type { ApRecommendationResult } from '@/types/ap-recommendation';
+import type { ApRecommendationResult, ApRecommendationRun } from '@/types/ap-recommendation';
 import { cn } from '@/lib/utils';
 
 type PageStatus = 'idle' | 'areaSelected' | 'loading' | 'success' | 'error';
@@ -143,6 +147,7 @@ export default function MobileAppPage() {
   const [pageError, setPageError] = useState<string | null>(null);
 
   const recommendMutation = useApRecommendation();
+  const recommendationRunsQuery = useApRecommendationRuns(sceneVersionId, 10);
   const createLayout = useCreateApLayout();
   const measurementSessionsQuery = useFloorMeasurementSessions(floorId);
   const comparisonSession = useMemo(() => {
@@ -230,6 +235,32 @@ export default function MobileAppPage() {
     setCompareWithMeasurement(stored.compareWithMeasurement);
     setRecommendationUpdatedAt(stored.updatedAt);
   }, [sceneVersionId]);
+
+  useEffect(() => {
+    const latestRun = recommendationRunsQuery.data?.items?.[0] ?? null;
+    if (!latestRun || latestRun.scene_version_id !== sceneVersionId) return;
+
+    const runAreas = areasFromRecommendationRun(latestRun);
+    const runRecommendations = normalizeRecommendationRun(latestRun);
+    setSelectedAreas(runAreas);
+    setRecommendations(runRecommendations);
+    setSelectedRank(runRecommendations[0]?.rank ?? null);
+    setSavedRank(null);
+    setCompareWithMeasurement(false);
+    setRecommendationUpdatedAt(latestRun.created_at);
+    setPageError(null);
+    if (sceneVersionId) {
+      patchRecommendationScene(sceneVersionId, {
+        sceneVersionId,
+        areas: runAreas,
+        recommendations: runRecommendations,
+        selectedRank: runRecommendations[0]?.rank ?? null,
+        savedRank: null,
+        compareWithMeasurement: false,
+        updatedAt: latestRun.created_at,
+      });
+    }
+  }, [recommendationRunsQuery.data, sceneVersionId, patchRecommendationScene]);
 
   const pageStatus: PageStatus = useMemo(() => {
     if (recommendMutation.isPending) return 'loading';
@@ -695,6 +726,35 @@ function AreaControls({
 
 function formatBBox(bbox: ApRecommendationArea['bbox']): string {
   return `${bbox.x_min.toFixed(1)},${bbox.y_min.toFixed(1)}-${bbox.x_max.toFixed(1)},${bbox.y_max.toFixed(1)}`;
+}
+
+function areasFromRecommendationRun(run: ApRecommendationRun): ApRecommendationArea[] {
+  const areas: ApRecommendationArea[] = [];
+  const input = run.input_areas_json ?? {};
+  const append = (
+    type: ApRecommendationAreaType,
+    bboxes: Array<ApRecommendationArea['bbox']> | undefined,
+  ) => {
+    for (const [index, bbox] of (bboxes ?? []).entries()) {
+      areas.push({
+        id: `${run.id}-${type}-${index}`,
+        type,
+        bbox,
+      });
+    }
+  };
+  append('candidate', input.candidate_bboxes);
+  append(
+    'priority',
+    input.priority_zones?.map((zone) => ({
+      x_min: zone.x_min,
+      x_max: zone.x_max,
+      y_min: zone.y_min,
+      y_max: zone.y_max,
+    })),
+  );
+  append('excluded', input.excluded_zones);
+  return validRecommendationAreas(areas);
 }
 
 function formatHistoryTime(value: string): string {

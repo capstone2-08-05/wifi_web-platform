@@ -38,9 +38,13 @@ import { useApLayouts } from '@/hooks/use-ap-layouts';
 import { useAssetDownloadUrl } from '@/hooks/use-assets';
 import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
-import { useEvaluateCalibrationRun } from '@/hooks/use-calibration-run';
+import { useCalibrationRuns, useEvaluateCalibrationRun } from '@/hooks/use-calibration-run';
 import { CalibrationCard } from '@/features/calibration/CalibrationCard';
-import type { CalibrationEvaluationResponse, SpaceType } from '@/types/calibration-run';
+import type {
+  CalibrationEvaluationResponse,
+  CalibrationRun,
+  SpaceType,
+} from '@/types/calibration-run';
 import { parseGeometry } from '@/features/editor/geometry-utils';
 import { RSSI_HEATMAP_GRADIENT_CSS } from '@/lib/rssi-colormap';
 import {
@@ -247,6 +251,7 @@ export default function MeasurementPage() {
   // §11 캘리브레이션 — 현재 측정 세션 + 최근 RF Run + 현재 버전을 입력으로 사용.
   // 측정 페이지에 둠: 진단 카드에서 차이를 발견한 직후 보정 가능.
   const evaluateCalibration = useEvaluateCalibrationRun();
+  const calibrationRunsQuery = useCalibrationRuns(activeSceneVersionId, 5);
   const [calibrationEvaluation, setCalibrationEvaluation] =
     useState<CalibrationEvaluationResponse | null>(null);
   // Affine RSSI transfer + residual IDW는 적은 측정점으로도 계산은 가능하지만,
@@ -501,6 +506,10 @@ export default function MeasurementPage() {
               parameterUpdates={[]}
               evaluation={calibrationEvaluation}
               backgroundImageUrl={backgroundImageUrl}
+            />
+            <CalibrationHistoryCard
+              runs={calibrationRunsQuery.data?.items ?? []}
+              loading={calibrationRunsQuery.isLoading}
             />
             <CauseAnalysisCard
               hasData={hasMeasurement}
@@ -898,6 +907,100 @@ function CanvasEmptyOverlay({ loading }: { loading: boolean }) {
 // ============================================
 // 우측 진단 카드
 // ============================================
+
+function CalibrationHistoryCard({
+  runs,
+  loading,
+}: {
+  runs: CalibrationRun[];
+  loading: boolean;
+}) {
+  return (
+    <div className="rounded-xl border bg-card p-4 shadow-sm">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+          <TrendingUp className="h-4 w-4 text-primary" />
+          보정 이력
+        </h3>
+        <span className="text-[11px] text-muted-foreground">{runs.length}개</span>
+      </div>
+      {loading ? (
+        <p className="mt-3 text-xs text-muted-foreground">보정 이력을 불러오는 중...</p>
+      ) : runs.length === 0 ? (
+        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+          이 도면에서 저장된 보정 결과가 아직 없습니다.
+        </p>
+      ) : (
+        <div className="mt-3 space-y-2">
+          {runs.map((run) => {
+            const summary = calibrationRunSummary(run);
+            return (
+              <div key={run.id} className="rounded-lg border bg-background px-3 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold text-foreground">
+                    {formatRelative(run.created_at)}
+                  </p>
+                  <SessionStatusBadge status={run.status} />
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+                  <MetricMini label="기울기" value={formatMetric(summary.slope, '')} />
+                  <MetricMini label="보정값" value={formatMetric(summary.interceptDb, ' dB')} />
+                  <MetricMini label="보정 전 MAE" value={formatMetric(summary.baselineMae, ' dB')} />
+                  <MetricMini label="보정 후 MAE" value={formatMetric(summary.calibratedMae, ' dB')} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MetricMini({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md bg-muted/40 px-2 py-1">
+      <p className="text-[10px] text-muted-foreground">{label}</p>
+      <p className="mt-0.5 font-semibold tabular-nums text-foreground">{value}</p>
+    </div>
+  );
+}
+
+function calibrationRunSummary(run: CalibrationRun): {
+  slope: number | null;
+  interceptDb: number | null;
+  baselineMae: number | null;
+  calibratedMae: number | null;
+} {
+  const metrics = run.error_metrics_json ?? {};
+  const evaluation = objectValue(metrics.evaluation);
+  const calibration = objectValue(evaluation?.calibration);
+  const response = objectValue(metrics.evaluation_response);
+  const responseEvaluation = objectValue(response?.evaluation);
+  const responseCalibration = objectValue(responseEvaluation?.calibration);
+  return {
+    slope: numberValue(calibration?.slope) ?? numberValue(responseCalibration?.slope),
+    interceptDb:
+      numberValue(calibration?.intercept_db) ??
+      numberValue(calibration?.intercept) ??
+      numberValue(responseCalibration?.intercept_db),
+    baselineMae: numberValue(metrics.baseline_mae_db),
+    calibratedMae: numberValue(metrics.calibrated_mae_db),
+  };
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+}
+
+function numberValue(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatMetric(value: number | null, suffix: string): string {
+  return value == null ? '값 없음' : `${value.toFixed(2)}${suffix}`;
+}
 
 function DiagnosticCard({
   points,

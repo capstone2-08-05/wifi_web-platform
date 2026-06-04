@@ -1,6 +1,7 @@
 """Schemas for AP placement recommendation."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -103,6 +104,7 @@ class ApRecommendationCalibrationInfo(BaseModel):
 class ApRecommendationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    run_id: UUID | None = None
     recommendations: list[ApRecommendationItem]
     status: str = "success"
     candidates_evaluated: int
@@ -111,3 +113,25 @@ class ApRecommendationResponse(BaseModel):
     calibration_applied: bool = False
     calibration: ApRecommendationCalibrationInfo | None = None
     score_weights: dict[str, float] = Field(default_factory=dict)
+    created_at: datetime | None = None
+
+
+class ApRecommendationRunResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    project_id: UUID
+    floor_id: UUID
+    scene_version_id: UUID
+    calibration_run_id: UUID | None = None
+    status: str
+    request_json: dict[str, Any] = Field(default_factory=dict)
+    input_areas_json: dict[str, Any] = Field(default_factory=dict)
+    existing_aps_json: list[dict[str, Any]] = Field(default_factory=list)
+    calibration_json: dict[str, Any] = Field(default_factory=dict)
+    score_weights_json: dict[str, float] = Field(default_factory=dict)
+    candidates_evaluated: int
+    eval_points_count: int | None = None
+    weighted_eval_points_count: int | None = None
+    recommendations: list[ApRecommendationItem] = Field(default_factory=list)
+    created_at: datetime

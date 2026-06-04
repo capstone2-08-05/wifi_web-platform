@@ -1,4 +1,5 @@
 from app.models.ap_layout import ApLayout
+from app.models.ap_recommendation_run import ApRecommendationItem, ApRecommendationRun
 from app.models.asset import Asset
 from app.models.calibration_run import CalibrationRun
 from app.models.parameter_update import ParameterUpdate
@@ -52,6 +53,8 @@ __all__ = [
     "MeasurementSession",
     "MeasurementPoint",
     "ApLayout",
+    "ApRecommendationRun",
+    "ApRecommendationItem",
     "CalibrationRun",
     "ParameterUpdate",
 ]

@@ -3,6 +3,7 @@ import type {
   ApRecommendationRequest,
   ApRecommendationResponse,
   ApRecommendationResult,
+  ApRecommendationRun,
 } from '@/types/ap-recommendation';
 import type { UUID } from '@/types/common';
 import { parseGeometry } from '@/features/editor/geometry-utils';
@@ -165,6 +166,38 @@ export function normalizeRecommendations(
     baseline_improvement_db: item.baseline_improvement_db,
     prediction_points: item.prediction_points ?? [],
   }));
+}
+
+export function normalizeRecommendationRun(
+  run: ApRecommendationRun | null | undefined,
+): ApRecommendationResult[] {
+  if (!run) return [];
+  return normalizeRecommendations({
+    run_id: run.id,
+    recommendations: run.recommendations,
+    status: run.status,
+    candidates_evaluated: run.candidates_evaluated,
+    eval_points_count: run.eval_points_count,
+    weighted_eval_points_count: run.weighted_eval_points_count,
+    calibration_applied: !!run.calibration_run_id,
+    calibration: isApRecommendationCalibrationInfo(run.calibration_json)
+      ? run.calibration_json
+      : null,
+    score_weights: run.score_weights_json,
+    created_at: run.created_at,
+  });
+}
+
+function isApRecommendationCalibrationInfo(
+  value: unknown,
+): value is NonNullable<ApRecommendationResponse['calibration']> {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.method === 'string' &&
+    typeof record.slope === 'number' &&
+    typeof record.intercept_db === 'number'
+  );
 }
 
 /** 캔버스 AP → API existing_aps. tx_power_dbm 없으면 필드 생략(백엔드 default 20). */

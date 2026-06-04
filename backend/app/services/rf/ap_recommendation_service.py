@@ -3,19 +3,25 @@ from __future__ import annotations
 
 import logging
 import math
+from decimal import Decimal
 from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, ErrorCode
 from app.core.geom import wkb_to_geojson
+from app.models.ap_recommendation_run import (
+    ApRecommendationItem as ApRecommendationItemRow,
+    ApRecommendationRun,
+)
 from app.models.calibration_run import CalibrationRun
 from app.models.project import Project
 from app.models.scene_version import SceneVersion
 from app.models.user import User
+from app.schemas.pagination import PaginatedResponse
 from app.schemas.rf.ap_recommendation import (
     ApRecommendationBBox,
     ApRecommendationCalibrationInfo,
@@ -23,6 +29,7 @@ from app.schemas.rf.ap_recommendation import (
     ApRecommendationPredictionPoint,
     ApRecommendationRequest,
     ApRecommendationResponse,
+    ApRecommendationRunResponse,
 )
 from app.services.rf.calibration_worker.path_loss import (
     AccessPoint,
@@ -198,7 +205,7 @@ def recommend_ap_location(
         for i, (x, y, metrics, predicted) in enumerate(top_results)
     ]
 
-    return ApRecommendationResponse(
+    response = ApRecommendationResponse(
         recommendations=recommendations,
         candidates_evaluated=len(candidates),
         eval_points_count=len(raw_eval_points),
@@ -218,6 +225,214 @@ def recommend_ap_location(
         ),
         score_weights=SCORE_WEIGHTS,
     )
+    run = _persist_recommendation_run(
+        db=db,
+        scene_version=sv,
+        request=request,
+        response=response,
+        calibration_run=selected_calibration_run,
+    )
+    response.run_id = UUID(str(run.id))
+    response.created_at = run.created_at
+    return response
+
+
+def list_recommendation_runs(
+    db: Session,
+    *,
+    scene_version_id: UUID,
+    current_user: User,
+    page: int = 1,
+    page_size: int = 20,
+) -> PaginatedResponse[ApRecommendationRunResponse]:
+    sv = db.execute(
+        select(SceneVersion)
+        .join(Project, SceneVersion.project_id == Project.id)
+        .where(
+            SceneVersion.id == str(scene_version_id),
+            Project.owner_user_id == current_user.id,
+        )
+    ).scalar_one_or_none()
+    if sv is None:
+        raise AppError(ErrorCode.SCENE_VERSION_NOT_FOUND, "Scene version not found.", 404)
+
+    stmt = select(ApRecommendationRun).where(
+        ApRecommendationRun.scene_version_id == str(scene_version_id)
+    )
+    total = db.execute(
+        select(func.count(ApRecommendationRun.id)).where(
+            ApRecommendationRun.scene_version_id == str(scene_version_id)
+        )
+    ).scalar() or 0
+    rows = (
+        db.execute(
+            stmt.order_by(ApRecommendationRun.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        .scalars()
+        .all()
+    )
+    return PaginatedResponse[ApRecommendationRunResponse](
+        items=[_run_to_response(row) for row in rows],
+        page=page,
+        page_size=page_size,
+        total=int(total),
+    )
+
+
+def get_recommendation_run(
+    db: Session,
+    *,
+    run_id: UUID,
+    current_user: User,
+) -> ApRecommendationRunResponse:
+    row = (
+        db.execute(
+            select(ApRecommendationRun)
+            .join(Project, ApRecommendationRun.project_id == Project.id)
+            .where(
+                ApRecommendationRun.id == str(run_id),
+                Project.owner_user_id == current_user.id,
+            )
+        )
+        .scalar_one_or_none()
+    )
+    if row is None:
+        raise AppError(
+            ErrorCode.INVALID_REQUEST_BODY,
+            "AP recommendation run not found.",
+            404,
+        )
+    return _run_to_response(row)
+
+
+def _persist_recommendation_run(
+    *,
+    db: Session,
+    scene_version: SceneVersion,
+    request: ApRecommendationRequest,
+    response: ApRecommendationResponse,
+    calibration_run: CalibrationRun | None,
+) -> ApRecommendationRun:
+    calibration = (
+        response.calibration.model_dump(mode="json")
+        if response.calibration is not None
+        else {}
+    )
+    run = ApRecommendationRun(
+        project_id=scene_version.project_id,
+        floor_id=scene_version.floor_id,
+        scene_version_id=scene_version.id,
+        calibration_run_id=calibration_run.id if calibration_run is not None else None,
+        status=response.status,
+        request_json=request.model_dump(mode="json"),
+        input_areas_json={
+            "candidate_bboxes": [b.model_dump(mode="json") for b in request.candidate_bboxes],
+            "evaluation_bboxes": [b.model_dump(mode="json") for b in request.evaluation_bboxes],
+            "priority_zones": [z.model_dump(mode="json") for z in request.priority_zones],
+            "excluded_zones": [b.model_dump(mode="json") for b in request.excluded_zones],
+            "default_unzoned_weight": request.default_unzoned_weight,
+        },
+        existing_aps_json=list(request.existing_aps),
+        calibration_json=calibration,
+        score_weights_json=dict(response.score_weights),
+        candidates_evaluated=response.candidates_evaluated,
+        eval_points_count=response.eval_points_count,
+        weighted_eval_points_count=response.weighted_eval_points_count,
+    )
+    db.add(run)
+    db.flush()
+
+    for item in response.recommendations:
+        db.add(
+            ApRecommendationItemRow(
+                run_id=run.id,
+                rank=item.rank,
+                recommended_x=Decimal(str(item.recommended_x)),
+                recommended_y=Decimal(str(item.recommended_y)),
+                score=Decimal(str(item.score)),
+                metrics_json=_item_metrics_json(item),
+                prediction_points_json=[
+                    p.model_dump(mode="json") for p in item.prediction_points
+                ],
+            )
+        )
+
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def _item_metrics_json(item: ApRecommendationItem) -> dict[str, Any]:
+    data = item.model_dump(mode="json", exclude={"prediction_points"})
+    data.pop("rank", None)
+    data.pop("recommended_x", None)
+    data.pop("recommended_y", None)
+    data.pop("score", None)
+    return data
+
+
+def _run_to_response(row: ApRecommendationRun) -> ApRecommendationRunResponse:
+    return ApRecommendationRunResponse(
+        id=row.id,
+        project_id=row.project_id,
+        floor_id=row.floor_id,
+        scene_version_id=row.scene_version_id,
+        calibration_run_id=row.calibration_run_id,
+        status=row.status,
+        request_json=row.request_json or {},
+        input_areas_json=row.input_areas_json or {},
+        existing_aps_json=row.existing_aps_json or [],
+        calibration_json=row.calibration_json or {},
+        score_weights_json=row.score_weights_json or {},
+        candidates_evaluated=row.candidates_evaluated,
+        eval_points_count=row.eval_points_count,
+        weighted_eval_points_count=row.weighted_eval_points_count,
+        recommendations=[_item_row_to_schema(item) for item in row.items],
+        created_at=row.created_at,
+    )
+
+
+def _item_row_to_schema(row: ApRecommendationItemRow) -> ApRecommendationItem:
+    metrics = row.metrics_json or {}
+    return ApRecommendationItem(
+        rank=row.rank,
+        recommended_x=float(row.recommended_x),
+        recommended_y=float(row.recommended_y),
+        score=float(row.score),
+        coverage_score=_float_or_none(metrics.get("coverage_score")),
+        coverage_ratio=_float_or_none(metrics.get("coverage_ratio")),
+        weak_zone_improvement_score=_float_or_none(
+            metrics.get("weak_zone_improvement_score")
+        ),
+        weak_zone_improvement_db=_float_or_none(metrics.get("weak_zone_improvement_db")),
+        bottom_10_percent_score=_float_or_none(metrics.get("bottom_10_percent_score")),
+        bottom_10_percent_rssi_dbm=_float_or_none(
+            metrics.get("bottom_10_percent_rssi_dbm")
+        ),
+        average_rssi_score=_float_or_none(metrics.get("average_rssi_score")),
+        average_rssi_dbm=_float_or_none(metrics.get("average_rssi_dbm")),
+        baseline_improvement_score=_float_or_none(
+            metrics.get("baseline_improvement_score")
+        ),
+        baseline_improvement_db=_float_or_none(metrics.get("baseline_improvement_db")),
+        prediction_points=[
+            ApRecommendationPredictionPoint(**p)
+            for p in (row.prediction_points_json or [])
+            if isinstance(p, dict)
+        ],
+    )
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _to_response_item(

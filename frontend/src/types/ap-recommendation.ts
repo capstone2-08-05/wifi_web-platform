@@ -1,4 +1,4 @@
-import type { UUID } from './common';
+import type { ISODateString, UUID } from './common';
 
 /** POST /ap-recommendation — existing_aps 항목. */
 export interface ExistingAp {
@@ -81,6 +81,7 @@ export interface ApRecommendationCalibrationInfo {
 
 /** POST /ap-recommendation 응답 (backend ApRecommendationResponse). */
 export interface ApRecommendationResponse {
+  run_id?: UUID | null;
   recommendations: ApRecommendationItem[];
   status: string;
   candidates_evaluated: number;
@@ -89,6 +90,7 @@ export interface ApRecommendationResponse {
   calibration_applied?: boolean;
   calibration?: ApRecommendationCalibrationInfo | null;
   score_weights?: Record<string, number>;
+  created_at?: ISODateString | null;
 }
 
 /** UI 표시용. */
@@ -109,4 +111,29 @@ export interface ApRecommendationResult {
   baseline_improvement_score?: number | null;
   baseline_improvement_db?: number | null;
   prediction_points: ApRecommendationPredictionPoint[];
+}
+
+export interface ApRecommendationRun {
+  id: UUID;
+  project_id: UUID;
+  floor_id: UUID;
+  scene_version_id: UUID;
+  calibration_run_id?: UUID | null;
+  status: string;
+  request_json: ApRecommendationRequest;
+  input_areas_json: {
+    candidate_bboxes?: MeterBBox[];
+    evaluation_bboxes?: MeterBBox[];
+    priority_zones?: Array<MeterBBox & { label?: string | null; weight?: number }>;
+    excluded_zones?: MeterBBox[];
+    default_unzoned_weight?: number;
+  };
+  existing_aps_json: ExistingAp[];
+  calibration_json: ApRecommendationCalibrationInfo | Record<string, unknown>;
+  score_weights_json: Record<string, number>;
+  candidates_evaluated: number;
+  eval_points_count?: number | null;
+  weighted_eval_points_count?: number | null;
+  recommendations: ApRecommendationItem[];
+  created_at: ISODateString;
 }
