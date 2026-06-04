@@ -17,12 +17,17 @@ export interface ApRecommendationRequest {
   y_max?: number;
   target_bboxes?: MeterBBox[];
   candidate_bboxes?: MeterBBox[];
+  evaluation_bboxes?: MeterBBox[];
   priority_zones?: Array<MeterBBox & { label?: string | null; weight?: number }>;
   excluded_zones?: MeterBBox[];
+  default_unzoned_weight?: number;
   step_m?: number;
   existing_aps?: ExistingAp[];
   calibration_run_id?: UUID | null;
+  calibration_policy?: 'transfer_only' | 'best_params_only' | 'combined';
   recommendation_mode?: 'add' | 'replace';
+  replace_target_ap_id?: string | null;
+  candidate_tx_power_dbm?: number;
   coverage_threshold_dbm?: number;
   weak_zone_threshold_dbm?: number;
   shadow_threshold_dbm?: number;
@@ -56,8 +61,11 @@ export interface ApRecommendationItem {
 
 export interface ApRecommendationCalibrationInfo {
   method: string;
+  policy: 'transfer_only' | 'best_params_only' | 'combined';
   slope: number;
   intercept_db: number;
+  transfer_applied: boolean;
+  best_params_applied: boolean;
   residual_used: boolean;
   calibration_run_id?: UUID | null;
 }

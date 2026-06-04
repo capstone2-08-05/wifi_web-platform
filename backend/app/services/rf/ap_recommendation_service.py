@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy import select
@@ -41,6 +41,9 @@ _EVAL_GRID_STEP_M = 1.0
 _MIN_CANDIDATES = 4
 _DEFAULT_COVERAGE_THRESHOLD_DBM = -67.0
 _DEFAULT_WEAK_ZONE_THRESHOLD_DBM = -67.0
+_DEFAULT_UNZONED_WEIGHT = 0.2
+
+CalibrationPolicy = Literal["transfer_only", "best_params_only", "combined"]
 
 SCORE_WEIGHTS: dict[str, float] = {
     "coverage": 0.30,
@@ -76,6 +79,7 @@ class RssiTransfer:
     intercept_db: float = 0.0
     method: str = "identity"
     calibration_run_id: str | None = None
+    transfer_applied: bool = False
     residual_enabled: bool = False
     residual_weight: float = 0.0
 
@@ -113,8 +117,17 @@ def recommend_ap_location(
         raise AppError(ErrorCode.SCENE_VERSION_NOT_FOUND, "Scene version not found.", 404)
 
     walls = _load_walls(db, str(sv.id))
-    params = _load_calibration_params(db, str(sv.id), request.calibration_run_id)
-    rssi_transfer = _load_rssi_transfer(db, str(sv.id), request.calibration_run_id)
+    selected_calibration_run = _select_calibration_run(
+        db,
+        str(sv.id),
+        request.calibration_run_id,
+    )
+    params = _params_from_run(selected_calibration_run, request.calibration_policy)
+    best_params_applied = _best_params_applied(
+        selected_calibration_run,
+        request.calibration_policy,
+    )
+    rssi_transfer = _transfer_from_run(selected_calibration_run, request.calibration_policy)
     existing_aps = _parse_existing_aps(request.existing_aps)
 
     candidates = _generate_candidates_for_request(request)
@@ -135,6 +148,7 @@ def recommend_ap_location(
         raw_eval_points,
         priority_zones=request.priority_zones,
         excluded_zones=request.excluded_zones,
+        default_unzoned_weight=request.default_unzoned_weight,
     )
     if not weighted_points:
         raise AppError(
@@ -169,6 +183,8 @@ def recommend_ap_location(
         params=params,
         transfer=rssi_transfer,
         recommendation_mode=request.recommendation_mode,
+        replace_target_ap_id=request.replace_target_ap_id,
+        candidate_tx_power_dbm=request.candidate_tx_power_dbm,
         coverage_threshold_dbm=request.coverage_threshold_dbm
         or _DEFAULT_COVERAGE_THRESHOLD_DBM,
         weak_zone_threshold_dbm=request.weak_zone_threshold_dbm
@@ -186,14 +202,17 @@ def recommend_ap_location(
         candidates_evaluated=len(candidates),
         eval_points_count=len(raw_eval_points),
         weighted_eval_points_count=len(weighted_points),
-        calibration_applied=rssi_transfer.method != "identity",
+        calibration_applied=rssi_transfer.transfer_applied or best_params_applied,
         calibration=ApRecommendationCalibrationInfo(
             method=rssi_transfer.method,
+            policy=request.calibration_policy,
             slope=round(rssi_transfer.slope, 6),
             intercept_db=round(rssi_transfer.intercept_db, 6),
+            transfer_applied=rssi_transfer.transfer_applied,
+            best_params_applied=best_params_applied,
             residual_used=False,
-            calibration_run_id=UUID(rssi_transfer.calibration_run_id)
-            if rssi_transfer.calibration_run_id
+            calibration_run_id=UUID(str(selected_calibration_run.id))
+            if selected_calibration_run is not None
             else None,
         ),
         score_weights=SCORE_WEIGHTS,
@@ -277,6 +296,12 @@ def _candidate_boxes_for_request(
 ) -> list[ApRecommendationBBox]:
     if request.candidate_bboxes:
         return request.candidate_bboxes
+    return _legacy_boxes_for_request(request)
+
+
+def _legacy_boxes_for_request(
+    request: ApRecommendationRequest,
+) -> list[ApRecommendationBBox]:
     if request.target_bboxes:
         out: list[ApRecommendationBBox] = []
         for raw in request.target_bboxes:
@@ -322,7 +347,7 @@ def _candidate_step_for_box(box: ApRecommendationBBox, step_m: float) -> float:
 def _generate_eval_fallback_points(
     request: ApRecommendationRequest,
 ) -> list[tuple[float, float]]:
-    boxes = _candidate_boxes_for_request(request)
+    boxes = _evaluation_boxes_for_request(request)
     if not boxes:
         return []
     points: list[tuple[float, float]] = []
@@ -341,6 +366,24 @@ def _generate_eval_fallback_points(
             seen.add(key)
             points.append(point)
     return points
+
+
+def _evaluation_boxes_for_request(
+    request: ApRecommendationRequest,
+) -> list[ApRecommendationBBox]:
+    """Fallback evaluation areas, ordered by scoring intent.
+
+    Candidate boxes are installable AP areas, so they are only used as the last
+    legacy fallback when the request gives no explicit evaluation scope.
+    """
+    if request.priority_zones:
+        return request.priority_zones
+    if request.evaluation_bboxes:
+        return request.evaluation_bboxes
+    legacy = _legacy_boxes_for_request(request)
+    if legacy:
+        return legacy
+    return request.candidate_bboxes
 
 
 def _generate_eval_points(
@@ -389,17 +432,26 @@ def _build_weighted_eval_points(
     *,
     priority_zones: list[Any],
     excluded_zones: list[Any],
+    default_unzoned_weight: float = _DEFAULT_UNZONED_WEIGHT,
 ) -> list[WeightedEvalPoint]:
     weighted: list[WeightedEvalPoint] = []
+    has_priority_zones = len(priority_zones) > 0
+    default_weight = (
+        max(0.0, min(1.0, default_unzoned_weight))
+        if math.isfinite(default_unzoned_weight)
+        else _DEFAULT_UNZONED_WEIGHT
+    )
     for point in eval_points:
         if any(_point_in_bbox(point.x, point.y, zone) for zone in excluded_zones):
             continue
-        weight = 1.0
+        weight = default_weight if has_priority_zones else 1.0
         label: str | None = None
         for zone in priority_zones:
             if _point_in_bbox(point.x, point.y, zone):
-                zone_weight = float(getattr(zone, "weight", 1.0))
-                if zone_weight >= weight or label is None:
+                zone_weight = _finite_float(getattr(zone, "weight", 1.0), 1.0)
+                zone_weight = max(0.0, min(1.0, zone_weight))
+                # Overlap rule: the strongest priority wins; ties keep first match.
+                if zone_weight > weight or label is None:
                     weight = zone_weight
                     label = getattr(zone, "label", None)
         if weight <= 0:
@@ -466,25 +518,33 @@ def _load_walls(db: Session, scene_version_id: str) -> list[WallSegment]:
     return out
 
 
-def _load_calibration_params(
+def _select_calibration_run(
     db: Session,
     scene_version_id: str,
     calibration_run_id=None,
-) -> CalibrationParams:
-    from app.services.rf.calibration_worker.apply import get_latest_calibration
-
-    run = None
+) -> CalibrationRun | None:
     if calibration_run_id is not None:
-        run = _get_calibration_for_scene_or_400(db, scene_version_id, calibration_run_id)
-    if run is None:
-        run = get_latest_calibration(db, scene_version_id)
-    if run is None or not run.metrics_json:
-        return CalibrationParams()
+        return _get_calibration_for_scene_or_400(db, scene_version_id, calibration_run_id)
+    return db.execute(
+        select(CalibrationRun)
+        .where(
+            CalibrationRun.scene_version_id == str(scene_version_id),
+            CalibrationRun.status == "completed",
+        )
+        .order_by(CalibrationRun.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
 
-    best = (run.metrics_json or {}).get("best_params") or {}
+
+def _params_from_run(
+    run: CalibrationRun | None,
+    policy: CalibrationPolicy,
+) -> CalibrationParams:
+    if policy not in ("best_params_only", "combined"):
+        return CalibrationParams()
+    best = _find_best_params(run.metrics_json if run is not None else None)
     if not best:
         return CalibrationParams()
-
     return CalibrationParams(
         tx_power_offset_db=_finite_float(best.get("tx_power_offset_db"), 0.0),
         path_loss_exp=_finite_float(best.get("path_loss_exp"), 3.0),
@@ -500,28 +560,25 @@ def _load_calibration_params(
     )
 
 
-def _load_rssi_transfer(
-    db: Session,
-    scene_version_id: str,
-    calibration_run_id=None,
+def _best_params_applied(
+    run: CalibrationRun | None,
+    policy: CalibrationPolicy,
+) -> bool:
+    return policy in ("best_params_only", "combined") and bool(
+        _find_best_params(run.metrics_json if run is not None else None)
+    )
+
+
+def _transfer_from_run(
+    run: CalibrationRun | None,
+    policy: CalibrationPolicy,
 ) -> RssiTransfer:
-    run = None
-    if calibration_run_id is not None:
-        run = _get_calibration_for_scene_or_400(db, scene_version_id, calibration_run_id)
-    else:
-        run = db.execute(
-            select(CalibrationRun)
-            .where(
-                CalibrationRun.scene_version_id == str(scene_version_id),
-                CalibrationRun.status == "completed",
-            )
-            .order_by(CalibrationRun.created_at.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+    if policy not in ("transfer_only", "combined"):
+        return RssiTransfer()
     if run is None or not run.metrics_json:
         return RssiTransfer()
 
-    calibration = _find_calibration_metrics(run.metrics_json)
+    calibration = _find_rssi_transfer_metrics(run.metrics_json)
     if not calibration:
         return RssiTransfer()
 
@@ -532,11 +589,16 @@ def _load_rssi_transfer(
     )
     if not math.isfinite(slope) or not math.isfinite(intercept):
         return RssiTransfer()
+    transfer_applied = not (
+        math.isclose(slope, 1.0, abs_tol=1e-9)
+        and math.isclose(intercept, 0.0, abs_tol=1e-9)
+    )
     return RssiTransfer(
         slope=slope,
         intercept_db=intercept,
         method=str(calibration.get("method") or "affine_rssi_transfer"),
         calibration_run_id=str(run.id),
+        transfer_applied=transfer_applied,
         residual_enabled=False,
         residual_weight=0.0,
     )
@@ -559,7 +621,25 @@ def _get_calibration_for_scene_or_400(
     return run
 
 
-def _find_calibration_metrics(metrics_json: dict[str, Any]) -> dict[str, Any] | None:
+def _find_best_params(metrics_json: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(metrics_json, dict):
+        return None
+    best = metrics_json.get("best_params")
+    if isinstance(best, dict):
+        return best
+    # Forward-compatible shape for future physical calibration records. Study-room
+    # spaces may benefit from internal wall effective attenuation scale, but AP
+    # recommendation does not tune path_loss_exp here to avoid overfitting.
+    physical = metrics_json.get("physical_params")
+    if isinstance(physical, dict):
+        return physical
+    return None
+
+
+def _find_rssi_transfer_metrics(metrics_json: dict[str, Any]) -> dict[str, Any] | None:
+    transfer = metrics_json.get("rssi_transfer")
+    if isinstance(transfer, dict):
+        return transfer
     evaluation = metrics_json.get("evaluation")
     if isinstance(evaluation, dict):
         calibration = evaluation.get("calibration")
@@ -639,6 +719,8 @@ def _grid_search_topn(
     params: CalibrationParams,
     transfer: RssiTransfer,
     recommendation_mode: str,
+    replace_target_ap_id: str | None,
+    candidate_tx_power_dbm: float,
     coverage_threshold_dbm: float,
     weak_zone_threshold_dbm: float,
     n: int,
@@ -646,11 +728,17 @@ def _grid_search_topn(
     scored: list[tuple[float, float, CandidateMetrics]] = []
 
     for cx, cy in candidates:
-        test_ap = AccessPoint(name="candidate", x=cx, y=cy)
-        eval_aps = (
-            existing_aps + [test_ap]
-            if recommendation_mode == "add"
-            else [test_ap]
+        test_ap = AccessPoint(
+            name=replace_target_ap_id or "candidate",
+            x=cx,
+            y=cy,
+            tx_power_dbm=_finite_float(candidate_tx_power_dbm, 20.0),
+        )
+        eval_aps = _aps_for_candidate(
+            existing_aps=existing_aps,
+            candidate_ap=test_ap,
+            recommendation_mode=recommendation_mode,
+            replace_target_ap_id=replace_target_ap_id,
         )
         predicted: list[PredictedEvalPoint] = []
         for point in eval_points:
@@ -683,6 +771,28 @@ def _grid_search_topn(
         reverse=True,
     )
     return scored[:n]
+
+
+def _aps_for_candidate(
+    *,
+    existing_aps: list[AccessPoint],
+    candidate_ap: AccessPoint,
+    recommendation_mode: str,
+    replace_target_ap_id: str | None,
+) -> list[AccessPoint]:
+    if recommendation_mode == "add":
+        return existing_aps + [candidate_ap]
+    # replace without a target is the legacy "evaluate candidate AP only" mode.
+    if not replace_target_ap_id:
+        return [candidate_ap]
+    kept = [ap for ap in existing_aps if ap.name != replace_target_ap_id]
+    if len(kept) == len(existing_aps):
+        logger.warning(
+            "AP replacement target %s not found; evaluating candidate only.",
+            replace_target_ap_id,
+        )
+        return [candidate_ap]
+    return kept + [candidate_ap]
 
 
 def compute_ap_recommendation_metrics(

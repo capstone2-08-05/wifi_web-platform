@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { CheckCircle2, Loader2, Sparkles } from 'lucide-react';
+import { Ban, CheckCircle2, Loader2, MapPin, Sparkles, Target } from 'lucide-react';
 import type { HttpError } from '@/api/client';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
@@ -20,8 +20,9 @@ import {
   AP_DEFAULT_Z_M,
   buildApRecommendationPayload,
   normalizeRecommendations,
-  validSelectionBBoxes,
-  type MeterBBox,
+  validRecommendationAreas,
+  type ApRecommendationArea,
+  type ApRecommendationAreaType,
 } from '@/features/ap-recommendation/recommendation-utils';
 import type { ApRecommendationResult } from '@/types/ap-recommendation';
 import { cn } from '@/lib/utils';
@@ -35,6 +36,43 @@ const PROGRESS_STEPS = [
 ] as const;
 
 const CARD_BORDER = 'border-[#E5EAF2]';
+
+const AREA_TYPE_OPTIONS: Array<{
+  type: ApRecommendationAreaType;
+  label: string;
+  hint: string;
+  className: string;
+  icon: typeof MapPin;
+}> = [
+  {
+    type: 'candidate',
+    label: '설치 가능 영역',
+    hint: 'AP 후보 생성',
+    className: 'border-blue-200 bg-blue-50 text-blue-700',
+    icon: MapPin,
+  },
+  {
+    type: 'priority',
+    label: '우선 평가 영역',
+    hint: 'weight 1.0',
+    className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    icon: Target,
+  },
+  {
+    type: 'lowPriority',
+    label: '낮은 우선순위 영역',
+    hint: 'weight 0.2',
+    className: 'border-amber-200 bg-amber-50 text-amber-700',
+    icon: Target,
+  },
+  {
+    type: 'excluded',
+    label: '제외 영역',
+    hint: '평가 제외',
+    className: 'border-red-200 bg-red-50 text-red-700',
+    icon: Ban,
+  },
+];
 
 export default function MobileAppPage() {
   const floorId = useAppStore((s) => s.selectedFloorId);
@@ -77,7 +115,8 @@ export default function MobileAppPage() {
     return apsFromRfRunRequest(latestRfRun?.request_json as Record<string, unknown> | undefined);
   }, [apLayoutsQuery.data, latestRfRun?.request_json]);
 
-  const [selectionBBoxes, setSelectionBBoxes] = useState<MeterBBox[]>([]);
+  const [selectedAreas, setSelectedAreas] = useState<ApRecommendationArea[]>([]);
+  const [activeAreaType, setActiveAreaType] = useState<ApRecommendationAreaType>('candidate');
   const [recommendations, setRecommendations] = useState<ApRecommendationResult[]>([]);
   const [selectedRank, setSelectedRank] = useState<number | null>(null);
   const [savedRank, setSavedRank] = useState<number | null>(null);
@@ -90,13 +129,13 @@ export default function MobileAppPage() {
     if (recommendMutation.isPending) return 'loading';
     if (recommendMutation.isError) return 'error';
     if (recommendations.length > 0) return 'success';
-    if (validSelectionBBoxes(selectionBBoxes).length > 0) return 'areaSelected';
+    if (validRecommendationAreas(selectedAreas).length > 0) return 'areaSelected';
     return 'idle';
   }, [
     recommendMutation.isPending,
     recommendMutation.isError,
     recommendations.length,
-    selectionBBoxes,
+    selectedAreas,
   ]);
 
   const activeStep = useMemo(() => {
@@ -107,8 +146,8 @@ export default function MobileAppPage() {
     return 1;
   }, [pageStatus, selectedRank, savedRank]);
 
-  const handleSelectionChange = (bboxes: MeterBBox[]) => {
-    setSelectionBBoxes(validSelectionBBoxes(bboxes));
+  const handleAreasChange = (areas: ApRecommendationArea[]) => {
+    setSelectedAreas(validRecommendationAreas(areas));
     setRecommendations([]);
     setSelectedRank(null);
     setSavedRank(null);
@@ -121,12 +160,16 @@ export default function MobileAppPage() {
       setPageError('도면 정보를 불러올 수 없습니다.');
       return;
     }
-    const validBBoxes = validSelectionBBoxes(selectionBBoxes);
-    if (validBBoxes.length === 0) return;
+    const validAreas = validRecommendationAreas(selectedAreas);
+    const candidateAreas = validAreas.filter((area) => area.type === 'candidate');
+    if (candidateAreas.length === 0) {
+      setPageError('설치 가능 영역을 먼저 선택해 주세요.');
+      return;
+    }
 
     const payload = buildApRecommendationPayload({
       sceneVersionId,
-      bboxes: validBBoxes,
+      areas: validAreas,
       existingAps,
       txPowerDbm: DEFAULT_TX_POWER_DBM,
     });
@@ -188,7 +231,9 @@ export default function MobileAppPage() {
   };
 
   const canRecommend =
-    !!sceneVersionId && validSelectionBBoxes(selectionBBoxes).length > 0 && !recommendMutation.isPending;
+    !!sceneVersionId &&
+    validRecommendationAreas(selectedAreas).some((area) => area.type === 'candidate') &&
+    !recommendMutation.isPending;
 
   const sceneLoading =
     versionsQuery.isLoading ||
@@ -268,8 +313,9 @@ export default function MobileAppPage() {
                 sceneVersion={versionDetail}
                 backgroundImageUrl={backgroundImageUrl}
                 existingAps={existingAps}
-                selectionBBoxes={selectionBBoxes}
-                onSelectionChange={handleSelectionChange}
+                selectedAreas={selectedAreas}
+                activeAreaType={activeAreaType}
+                onAreasChange={handleAreasChange}
                 recommendations={recommendations}
                 selectedRecommendationRank={selectedRank}
                 disabled={recommendMutation.isPending || createLayout.isPending}
@@ -293,7 +339,17 @@ export default function MobileAppPage() {
               'border',
             )}
           >
-            <ProgressStepper activeStep={activeStep} pageStatus={pageStatus} />
+            <AreaControls
+              activeAreaType={activeAreaType}
+              areas={selectedAreas}
+              onTypeChange={setActiveAreaType}
+              onRemoveArea={(id) =>
+                handleAreasChange(selectedAreas.filter((area) => area.id !== id))
+              }
+            />
+            <div className="mt-5 border-t border-[#E5EAF2] pt-5">
+              <ProgressStepper activeStep={activeStep} pageStatus={pageStatus} />
+            </div>
           </div>
         </div>
 
@@ -321,7 +377,7 @@ export default function MobileAppPage() {
                     : '추천 결과가 여기에 표시됩니다'}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  도면에서 우선 개선 영역을 드래그한 뒤 「최적 배치 추천」을 눌러주세요.
+                  도면에서 설치 가능 영역을 먼저 지정한 뒤 「최적 배치 추천」을 눌러주세요.
                 </p>
               </div>
             ) : (
@@ -353,9 +409,9 @@ function getStatusHint(
 ): string | null {
   switch (pageStatus) {
     case 'idle':
-      return '도면 위에서 우선 개선할 영역을 드래그하여 선택하세요.';
+      return '도면 위에서 설치 가능 영역을 먼저 드래그하여 선택하세요.';
     case 'areaSelected':
-      return '영역이 선택되었습니다. 우측 상단 「최적 배치 추천」 버튼을 눌러주세요.';
+      return '필요하면 우선 평가·낮은 우선순위·제외 영역을 추가한 뒤 추천을 실행하세요.';
     case 'success':
       return savedRank != null
         ? '추천 위치가 AP 배치로 저장되었습니다.'
@@ -365,6 +421,92 @@ function getStatusHint(
     default:
       return null;
   }
+}
+
+function AreaControls({
+  activeAreaType,
+  areas,
+  onTypeChange,
+  onRemoveArea,
+}: {
+  activeAreaType: ApRecommendationAreaType;
+  areas: ApRecommendationArea[];
+  onTypeChange: (type: ApRecommendationAreaType) => void;
+  onRemoveArea: (id: string) => void;
+}) {
+  const validAreas = validRecommendationAreas(areas);
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+        {AREA_TYPE_OPTIONS.map((option) => {
+          const Icon = option.icon;
+          const active = activeAreaType === option.type;
+          return (
+            <button
+              key={option.type}
+              type="button"
+              onClick={() => onTypeChange(option.type)}
+              className={cn(
+                'flex min-h-16 items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors',
+                active
+                  ? `${option.className} ring-2 ring-offset-1`
+                  : 'border-[#E5EAF2] bg-white text-muted-foreground hover:bg-muted/50',
+              )}
+            >
+              <Icon className="h-4 w-4 shrink-0" />
+              <span className="min-w-0">
+                <span className="block text-xs font-semibold leading-tight">{option.label}</span>
+                <span className="mt-0.5 block text-[11px] leading-tight opacity-80">
+                  {option.hint}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="grid gap-2 lg:grid-cols-4">
+        {AREA_TYPE_OPTIONS.map((option) => {
+          const items = validAreas.filter((area) => area.type === option.type);
+          return (
+            <div key={option.type} className="rounded-lg border border-[#E5EAF2] p-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-foreground">{option.label}</p>
+                <span className="text-[11px] text-muted-foreground">{items.length}</span>
+              </div>
+              <div className="mt-2 space-y-1.5">
+                {items.length === 0 ? (
+                  <p className="text-[11px] text-muted-foreground">선택 없음</p>
+                ) : (
+                  items.map((area, index) => (
+                    <div
+                      key={area.id}
+                      className="flex items-center justify-between gap-2 rounded-md bg-muted/40 px-2 py-1.5"
+                    >
+                      <span className="text-[11px] text-muted-foreground">
+                        #{index + 1} {formatBBox(area.bbox)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onRemoveArea(area.id)}
+                        className="rounded px-1.5 text-xs font-semibold text-red-600 hover:bg-red-50"
+                      >
+                        삭제
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function formatBBox(bbox: ApRecommendationArea['bbox']): string {
+  return `${bbox.x_min.toFixed(1)},${bbox.y_min.toFixed(1)}-${bbox.x_max.toFixed(1)},${bbox.y_max.toFixed(1)}`;
 }
 
 function EmptyState({ message }: { message: string }) {

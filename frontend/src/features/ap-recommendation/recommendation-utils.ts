@@ -30,6 +30,18 @@ export interface MeterBBox {
   y_max: number;
 }
 
+export type ApRecommendationAreaType =
+  | 'candidate'
+  | 'priority'
+  | 'lowPriority'
+  | 'excluded';
+
+export interface ApRecommendationArea {
+  id: string;
+  type: ApRecommendationAreaType;
+  bbox: MeterBBox;
+}
+
 const MIN_SELECTION_M = 0.2;
 
 /** normalizeRect 결과 → MeterBBox. */
@@ -58,6 +70,12 @@ export function validSelectionBBoxes(bboxes: MeterBBox[] | null | undefined): Me
   return (bboxes ?? []).filter(isValidSelectionBBox);
 }
 
+export function validRecommendationAreas(
+  areas: ApRecommendationArea[] | null | undefined,
+): ApRecommendationArea[] {
+  return (areas ?? []).filter((area) => isValidSelectionBBox(area.bbox));
+}
+
 export function unionMeterBBoxes(bboxes: MeterBBox[]): MeterBBox | null {
   const valid = validSelectionBBoxes(bboxes);
   if (valid.length === 0) return null;
@@ -72,25 +90,57 @@ export function unionMeterBBoxes(bboxes: MeterBBox[]): MeterBBox | null {
 /** POST /ap-recommendation 요청 본문 조립 (백엔드 default 필드는 생략). */
 export function buildApRecommendationPayload(params: {
   sceneVersionId: UUID;
-  bboxes: MeterBBox[];
+  bboxes?: MeterBBox[];
+  areas?: ApRecommendationArea[];
   existingAps: { id: string; x_m: number; y_m: number }[];
   txPowerDbm?: number;
 }): ApRecommendationRequest {
-  const bboxes = validSelectionBBoxes(params.bboxes);
-  const union = unionMeterBBoxes(bboxes);
-  if (!union) {
-    throw new Error('At least one valid target bbox is required.');
+  const areas = validRecommendationAreas(params.areas);
+  const legacyBboxes = validSelectionBBoxes(params.bboxes);
+  const candidateBBoxes =
+    areas.length > 0
+      ? areas.filter((area) => area.type === 'candidate').map((area) => area.bbox)
+      : legacyBboxes;
+  const priorityZones = areas
+    .filter((area) => area.type === 'priority' || area.type === 'lowPriority')
+    .map((area) => ({
+      ...area.bbox,
+      label: area.type === 'priority' ? '우선 평가 영역' : '낮은 우선순위 영역',
+      weight: area.type === 'priority' ? 1.0 : 0.2,
+    }));
+  const excludedZones = areas
+    .filter((area) => area.type === 'excluded')
+    .map((area) => area.bbox);
+  const evaluationBBoxes =
+    areas.length > 0
+      ? areas
+          .filter((area) => area.type === 'priority' || area.type === 'lowPriority')
+          .map((area) => area.bbox)
+      : [];
+  const legacyUnion = unionMeterBBoxes(legacyBboxes);
+
+  if (candidateBBoxes.length === 0) {
+    throw new Error('At least one installable candidate area is required.');
   }
-  return {
+  const request: ApRecommendationRequest = {
     scene_version_id: params.sceneVersionId,
-    x_min: union.x_min,
-    x_max: union.x_max,
-    y_min: union.y_min,
-    y_max: union.y_max,
-    candidate_bboxes: bboxes,
-    target_bboxes: bboxes,
+    candidate_bboxes: candidateBBoxes,
+    evaluation_bboxes: evaluationBBoxes,
+    priority_zones: priorityZones,
+    excluded_zones: excludedZones,
+    default_unzoned_weight: 0.2,
+    calibration_policy: 'transfer_only',
+    candidate_tx_power_dbm: params.txPowerDbm,
     existing_aps: mapToExistingAps(params.existingAps, params.txPowerDbm),
   };
+  if (legacyUnion) {
+    request.x_min = legacyUnion.x_min;
+    request.x_max = legacyUnion.x_max;
+    request.y_min = legacyUnion.y_min;
+    request.y_max = legacyUnion.y_max;
+    request.target_bboxes = legacyBboxes;
+  }
+  return request;
 }
 
 /** 응답 → UI 표시용 배열로 normalize. */

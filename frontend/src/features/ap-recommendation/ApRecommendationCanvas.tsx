@@ -16,8 +16,9 @@ import {
   isValidSelectionBBox,
   meterBBoxFromRect,
   normalizeRect,
-  validSelectionBBoxes,
-  type MeterBBox,
+  validRecommendationAreas,
+  type ApRecommendationArea,
+  type ApRecommendationAreaType,
 } from './recommendation-utils';
 
 export interface CanvasExistingAp {
@@ -32,6 +33,36 @@ const DRAG_THRESHOLD_M = 0.15;
 /** viewBox 너비 비율 — 도면 스케일과 무관하게 화면에서 읽기 쉬운 라벨 크기 */
 const CANVAS_LABEL_VB_RATIO = 0.018;
 
+const AREA_STYLE: Record<
+  ApRecommendationAreaType,
+  { label: string; fill: string; stroke: string; badge: string }
+> = {
+  candidate: {
+    label: '설치 가능 영역',
+    fill: 'rgb(37 99 235 / 0.18)',
+    stroke: 'rgb(37 99 235)',
+    badge: 'oklch(0.55 0.22 254)',
+  },
+  priority: {
+    label: '우선 평가 영역',
+    fill: 'rgb(22 163 74 / 0.18)',
+    stroke: 'rgb(22 163 74)',
+    badge: 'oklch(0.62 0.18 145)',
+  },
+  lowPriority: {
+    label: '낮은 우선순위 영역',
+    fill: 'rgb(234 179 8 / 0.20)',
+    stroke: 'rgb(202 138 4)',
+    badge: 'oklch(0.69 0.17 82)',
+  },
+  excluded: {
+    label: '제외 영역',
+    fill: 'rgb(239 68 68 / 0.16)',
+    stroke: 'rgb(220 38 38)',
+    badge: 'oklch(0.62 0.21 25)',
+  },
+};
+
 function canvasLabelFontM(viewBoxW: number): number {
   return viewBoxW * CANVAS_LABEL_VB_RATIO;
 }
@@ -40,8 +71,9 @@ interface Props {
   sceneVersion: SceneVersion | null | undefined;
   backgroundImageUrl?: string | null;
   existingAps: CanvasExistingAp[];
-  selectionBBoxes: MeterBBox[];
-  onSelectionChange: (bboxes: MeterBBox[]) => void;
+  selectedAreas: ApRecommendationArea[];
+  activeAreaType: ApRecommendationAreaType;
+  onAreasChange: (areas: ApRecommendationArea[]) => void;
   recommendations: ApRecommendationResult[];
   selectedRecommendationRank: number | null;
   disabled?: boolean;
@@ -92,8 +124,9 @@ function computeViewBox(
 export function ApRecommendationCanvas({
   sceneVersion,
   backgroundImageUrl,
-  selectionBBoxes,
-  onSelectionChange,
+  selectedAreas,
+  activeAreaType,
+  onAreasChange,
   recommendations,
   selectedRecommendationRank,
   disabled = false,
@@ -162,30 +195,37 @@ export function ApRecommendationCanvas({
     const rect = clampRectToBounds(normalizeRect(drag.start, drag.current), sceneBounds);
     setDrag(null);
     if (rect.w < DRAG_THRESHOLD_M || rect.h < DRAG_THRESHOLD_M) {
-      onSelectionChange([]);
       return;
     }
     const bbox = clampMeterBBox(meterBBoxFromRect(rect), sceneBounds);
     if (isValidSelectionBBox(bbox)) {
-      onSelectionChange([...selectionBBoxes, bbox]);
+      onAreasChange([
+        ...selectedAreas,
+        {
+          id: `${activeAreaType}-${Date.now()}-${selectedAreas.length}`,
+          type: activeAreaType,
+          bbox,
+        },
+      ]);
     }
   };
 
   const dragRect = drag
     ? clampRectToBounds(normalizeRect(drag.start, drag.current), sceneBounds)
     : null;
-  const clampedSelectionBBoxes = validSelectionBBoxes(selectionBBoxes).map((bbox) =>
-    clampMeterBBox(bbox, sceneBounds),
-  );
+  const clampedAreas = validRecommendationAreas(selectedAreas).map((area) => ({
+    ...area,
+    bbox: clampMeterBBox(area.bbox, sceneBounds),
+  }));
   const showDragPreview =
     dragRect && (dragRect.w >= DRAG_THRESHOLD_M || dragRect.h >= DRAG_THRESHOLD_M);
   const labelFontM = canvasLabelFontM(vb.w);
   const selectionBadgeH = labelFontM * 1.55;
-  const selectionBadgeW = labelFontM * 8.2;
+  const selectionBadgeW = labelFontM * 11.6;
   const removeButtonR = labelFontM * 0.7;
 
-  const removeSelectionBBox = (index: number) => {
-    onSelectionChange(selectionBBoxes.filter((_, idx) => idx !== index));
+  const removeSelectedArea = (id: string) => {
+    onAreasChange(selectedAreas.filter((area) => area.id !== id));
   };
 
   return (
@@ -252,68 +292,72 @@ export function ApRecommendationCanvas({
 
         {/* 선택 영역 — clamp된 좌표, clipPath 밖(배지가 상단에서 잘리지 않도록) */}
         <g>
-          {clampedSelectionBBoxes.map((bbox, idx) => (
-            <g key={`${bbox.x_min}-${bbox.y_min}-${bbox.x_max}-${bbox.y_max}-${idx}`}>
-              <rect
-                x={bbox.x_min}
-                y={bbox.y_min}
-                width={bbox.x_max - bbox.x_min}
-                height={bbox.y_max - bbox.y_min}
-                fill="rgb(37 99 235 / 0.22)"
-                stroke="rgb(37 99 235)"
-                strokeWidth="1.5"
-                vectorEffect="non-scaling-stroke"
-              />
-              <rect
-                x={bbox.x_min}
-                y={bbox.y_min - selectionBadgeH}
-                width={selectionBadgeW}
-                height={selectionBadgeH}
-                fill="oklch(0.55 0.22 254)"
-              />
-              <text
-                x={bbox.x_min + labelFontM * 0.45}
-                y={bbox.y_min - selectionBadgeH * 0.38}
-                fontSize={labelFontM * 0.92}
-                fontWeight="600"
-                fill="white"
-                pointerEvents="none"
-                style={{ userSelect: 'none' }}
-              >
-                우선 개선 영역
-              </text>
-              <g
-                className="cursor-pointer"
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  removeSelectionBBox(idx);
-                }}
-              >
-                <circle
-                  cx={bbox.x_max}
-                  cy={bbox.y_min}
-                  r={removeButtonR}
-                  fill="oklch(0.62 0.21 25)"
-                  stroke="white"
+          {clampedAreas.map((area) => {
+            const bbox = area.bbox;
+            const style = AREA_STYLE[area.type];
+            return (
+              <g key={area.id}>
+                <rect
+                  x={bbox.x_min}
+                  y={bbox.y_min}
+                  width={bbox.x_max - bbox.x_min}
+                  height={bbox.y_max - bbox.y_min}
+                  fill={style.fill}
+                  stroke={style.stroke}
                   strokeWidth="1.5"
                   vectorEffect="non-scaling-stroke"
                 />
+                <rect
+                  x={bbox.x_min}
+                  y={bbox.y_min - selectionBadgeH}
+                  width={selectionBadgeW}
+                  height={selectionBadgeH}
+                  fill={style.badge}
+                />
                 <text
-                  x={bbox.x_max}
-                  y={bbox.y_min}
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  fontSize={labelFontM}
-                  fontWeight="700"
+                  x={bbox.x_min + labelFontM * 0.45}
+                  y={bbox.y_min - selectionBadgeH * 0.38}
+                  fontSize={labelFontM * 0.92}
+                  fontWeight="600"
                   fill="white"
                   pointerEvents="none"
                   style={{ userSelect: 'none' }}
                 >
-                  ×
+                  {style.label}
                 </text>
+                <g
+                  className="cursor-pointer"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    removeSelectedArea(area.id);
+                  }}
+                >
+                  <circle
+                    cx={bbox.x_max}
+                    cy={bbox.y_min}
+                    r={removeButtonR}
+                    fill="oklch(0.62 0.21 25)"
+                    stroke="white"
+                    strokeWidth="1.5"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                  <text
+                    x={bbox.x_max}
+                    y={bbox.y_min}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fontSize={labelFontM}
+                    fontWeight="700"
+                    fill="white"
+                    pointerEvents="none"
+                    style={{ userSelect: 'none' }}
+                  >
+                    ×
+                  </text>
+                </g>
               </g>
-            </g>
-          ))}
+            );
+          })}
 
           {showDragPreview && dragRect && (
             <rect
@@ -321,8 +365,8 @@ export function ApRecommendationCanvas({
               y={dragRect.y}
               width={dragRect.w}
               height={dragRect.h}
-              fill="rgb(37 99 235 / 0.18)"
-              stroke="rgb(37 99 235)"
+              fill={AREA_STYLE[activeAreaType].fill}
+              stroke={AREA_STYLE[activeAreaType].stroke}
               strokeWidth="1.5"
               strokeDasharray="4 3"
               vectorEffect="non-scaling-stroke"

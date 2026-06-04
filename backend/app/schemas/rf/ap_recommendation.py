@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ApRecommendationBBox(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     x_min: float
     x_max: float
@@ -18,11 +18,11 @@ class ApRecommendationBBox(BaseModel):
 
 class ApRecommendationZone(ApRecommendationBBox):
     label: str | None = None
-    weight: float = Field(default=1.0, ge=0.0)
+    weight: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class ApRecommendationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     scene_version_id: UUID
 
@@ -34,13 +34,20 @@ class ApRecommendationRequest(BaseModel):
     target_bboxes: list[dict[str, float]] = Field(default_factory=list)
 
     candidate_bboxes: list[ApRecommendationBBox] = Field(default_factory=list)
+    evaluation_bboxes: list[ApRecommendationBBox] = Field(default_factory=list)
     priority_zones: list[ApRecommendationZone] = Field(default_factory=list)
     excluded_zones: list[ApRecommendationBBox] = Field(default_factory=list)
+    default_unzoned_weight: float = Field(default=0.2, ge=0.0, le=1.0)
 
     step_m: float = Field(default=1.0, gt=0.0, le=5.0)
     existing_aps: list[dict[str, Any]] = Field(default_factory=list)
     calibration_run_id: UUID | None = None
+    calibration_policy: Literal["transfer_only", "best_params_only", "combined"] = (
+        "transfer_only"
+    )
     recommendation_mode: Literal["add", "replace"] = "add"
+    replace_target_ap_id: str | None = None
+    candidate_tx_power_dbm: float = 20.0
     coverage_threshold_dbm: float = -67.0
     weak_zone_threshold_dbm: float = -67.0
 
@@ -73,8 +80,11 @@ class ApRecommendationCalibrationInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     method: str
+    policy: Literal["transfer_only", "best_params_only", "combined"] = "transfer_only"
     slope: float
     intercept_db: float
+    transfer_applied: bool = False
+    best_params_applied: bool = False
     residual_used: bool = False
     calibration_run_id: UUID | None = None
 
