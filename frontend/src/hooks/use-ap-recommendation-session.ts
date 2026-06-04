@@ -4,87 +4,80 @@ import {
   useApRecommendationStore,
   type ApRecommendationSession,
 } from '@/stores/ap-recommendation-store';
-import type { MeterBBox } from '@/features/ap-recommendation/recommendation-utils';
+import type { ApRecommendationArea } from '@/features/ap-recommendation/recommendation-utils';
 import type { ApRecommendationResult } from '@/types/ap-recommendation';
 import type { UUID } from '@/types/common';
 
-function isPersistedSession(
-  session: ApRecommendationSession | undefined,
-  sceneVersionId: UUID | null,
-): session is ApRecommendationSession {
-  if (!session || session.savedRank == null) return false;
-  if (
-    sceneVersionId &&
-    session.sceneVersionId &&
-    session.sceneVersionId !== sceneVersionId
-  ) {
-    return false;
-  }
-  return true;
+function getStoredSession(sceneVersionId: UUID | null): ApRecommendationSession | null {
+  if (!sceneVersionId) return null;
+  return useApRecommendationStore.getState().byScene[sceneVersionId] ?? null;
 }
 
-/**
- * AP 배치 추천 UI 세션.
- * - 페이지 내 편집: useState (추천만 받고 저장 안 한 상태는 유지하지 않음)
- * - 「이 위치 선택」 저장 성공 후에만 localStorage persist
- */
 export function useApRecommendationSession(
-  floorId: UUID | null,
+  _floorId: UUID | null,
   sceneVersionId: UUID | null,
 ) {
-  const patchFloor = useApRecommendationStore((s) => s.patchFloor);
-  const clearFloor = useApRecommendationStore((s) => s.clearFloor);
+  const patchScene = useApRecommendationStore((s) => s.patchScene);
+  const clearScene = useApRecommendationStore((s) => s.clearScene);
 
-  const [selectionBBox, setSelectionBBox] = useState<MeterBBox | null>(null);
+  const [areas, setAreas] = useState<ApRecommendationArea[]>([]);
   const [recommendations, setRecommendations] = useState<ApRecommendationResult[]>([]);
   const [selectedRank, setSelectedRank] = useState<number | null>(null);
   const [savedRank, setSavedRank] = useState<number | null>(null);
+  const [compareWithMeasurement, setCompareWithMeasurement] = useState(false);
 
   useEffect(() => {
-    const stored = floorId
-      ? useApRecommendationStore.getState().byFloor[floorId]
-      : undefined;
+    const stored = getStoredSession(sceneVersionId);
 
-    if (isPersistedSession(stored, sceneVersionId)) {
-      setSelectionBBox(stored.selectionBBox);
+    if (stored) {
+      setAreas(stored.areas);
       setRecommendations(stored.recommendations);
       setSelectedRank(stored.selectedRank);
       setSavedRank(stored.savedRank);
+      setCompareWithMeasurement(stored.compareWithMeasurement);
       return;
     }
 
-    setSelectionBBox(EMPTY_AP_RECOMMENDATION_SESSION.selectionBBox);
+    setAreas(EMPTY_AP_RECOMMENDATION_SESSION.areas);
     setRecommendations(EMPTY_AP_RECOMMENDATION_SESSION.recommendations);
     setSelectedRank(EMPTY_AP_RECOMMENDATION_SESSION.selectedRank);
     setSavedRank(EMPTY_AP_RECOMMENDATION_SESSION.savedRank);
-  }, [floorId, sceneVersionId]);
+    setCompareWithMeasurement(EMPTY_AP_RECOMMENDATION_SESSION.compareWithMeasurement);
+  }, [sceneVersionId]);
 
-  const persistSavedSession = useCallback(
-    (session: ApRecommendationSession) => {
-      if (!floorId || session.savedRank == null) return;
-      patchFloor(floorId, session);
+  const persistSession = useCallback(
+    (patch: Partial<ApRecommendationSession>) => {
+      if (!sceneVersionId) return;
+      patchScene(sceneVersionId, {
+        sceneVersionId,
+        updatedAt: new Date().toISOString(),
+        ...patch,
+      });
     },
-    [floorId, patchFloor],
+    [patchScene, sceneVersionId],
   );
 
   const resetSession = useCallback(() => {
-    if (floorId) clearFloor(floorId);
-    setSelectionBBox(null);
+    if (sceneVersionId) clearScene(sceneVersionId);
+    setAreas([]);
     setRecommendations([]);
     setSelectedRank(null);
     setSavedRank(null);
-  }, [floorId, clearFloor]);
+    setCompareWithMeasurement(false);
+  }, [clearScene, sceneVersionId]);
 
   return {
-    selectionBBox,
+    areas,
     recommendations,
     selectedRank,
     savedRank,
-    setSelectionBBox,
+    compareWithMeasurement,
+    setAreas,
     setRecommendations,
     setSelectedRank,
     setSavedRank,
-    persistSavedSession,
+    setCompareWithMeasurement,
+    persistSession,
     resetSession,
   };
 }

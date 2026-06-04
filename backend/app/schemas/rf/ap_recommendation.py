@@ -74,6 +74,17 @@ class ApRecommendationItem(BaseModel):
     average_rssi_dbm: float | None = None
     baseline_improvement_score: float | None = None
     baseline_improvement_db: float | None = None
+    prediction_points: list["ApRecommendationPredictionPoint"] = Field(default_factory=list)
+
+
+class ApRecommendationPredictionPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    x: float
+    y: float
+    rssi_dbm: float
+    baseline_rssi_dbm: float | None = None
+    weight: float = 1.0
 
 
 class ApRecommendationCalibrationInfo(BaseModel):

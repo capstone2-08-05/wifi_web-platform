@@ -53,6 +53,13 @@ import {
 
 const EMPTY_MEASUREMENT_SESSIONS: MeasurementSession[] = [];
 const EMPTY_MEASUREMENT_POINTS: ApiPoint[] = [];
+const MEASUREMENT_VIEW_STORAGE_KEY = 'wifang.measurement-view';
+
+interface StoredMeasurementView {
+  sessionId: string | null;
+  sceneVersionId: string | null;
+  mode: MeasurementViewMode;
+}
 
 export default function MeasurementPage() {
   const floorId = useAppStore((s) => s.selectedFloorId);
@@ -79,18 +86,28 @@ export default function MeasurementPage() {
     () => sessions.find((s) => s.id === selectedSessionId) ?? null,
     [sessions, selectedSessionId],
   );
+  const latestMeasuredSession = useMemo(
+    () =>
+      sessions.find((s) => s.status === 'completed') ??
+      sessions.find((s) => s.status === 'in_progress') ??
+      sessions[0] ??
+      null,
+    [sessions],
+  );
   const fallbackSceneVersionId =
     selectedSceneVersionId ??
+    latestMeasuredSession?.scene_version_id ??
     currentVersion?.id ??
-    sessions.find((s) => !!s.scene_version_id)?.scene_version_id ??
     null;
-  const viewingSceneVersionId = selectedSession?.scene_version_id ?? fallbackSceneVersionId;
+  const viewingSceneVersionId =
+    selectedSceneVersionId ?? selectedSession?.scene_version_id ?? fallbackSceneVersionId;
   const sessionsForViewingVersion = useMemo(() => {
     if (!viewingSceneVersionId) return [];
     return sessions.filter((s) => s.scene_version_id === viewingSceneVersionId);
   }, [sessions, viewingSceneVersionId]);
   const selectedSessionBelongsToViewingVersion =
-    !!selectedSession?.scene_version_id &&
+    !!selectedSession &&
+    !!viewingSceneVersionId &&
     selectedSession.scene_version_id === viewingSceneVersionId;
   const activeSession =
     selectedSessionBelongsToViewingVersion
@@ -186,6 +203,18 @@ export default function MeasurementPage() {
   const coverageResidualQuery = useEstimatedCoverage(activeSession?.id ?? null, { method: 'residual_kriging' });
 
   const [mode, setMode] = useState<MeasurementViewMode>('route');
+
+  useEffect(() => {
+    if (!floorId) return;
+    const stored = readStoredMeasurementView(floorId);
+    if (!stored) return;
+
+    if (!requestedSessionId && !requestedSceneVersionId) {
+      setSelectedSessionId(stored.sessionId);
+      setSelectedSceneVersionId(stored.sceneVersionId);
+    }
+    setMode(stored.mode);
+  }, [floorId, requestedSceneVersionId, requestedSessionId]);
 
   const activeCoverage = useMemo(() => {
     // mode 에 맞는 데이터 우선, 없으면 다른 method 데이터로 일시 fallback —
@@ -353,6 +382,11 @@ export default function MeasurementPage() {
     const session = sessions.find((s) => s.id === sessionId) ?? null;
     setSelectedSessionId(sessionId);
     setSelectedSceneVersionId(session?.scene_version_id ?? null);
+    persistMeasurementView(floorId, {
+      sessionId,
+      sceneVersionId: session?.scene_version_id ?? null,
+      mode,
+    });
 
     const next = new URLSearchParams(searchParams);
     next.set('sessionId', sessionId);
@@ -363,6 +397,15 @@ export default function MeasurementPage() {
     }
     next.delete('rfRunId');
     setSearchParams(next, { replace: true });
+  };
+
+  const handleModeChange = (nextMode: MeasurementViewMode) => {
+    setMode(nextMode);
+    persistMeasurementView(floorId, {
+      sessionId: activeSession?.id ?? selectedSessionId,
+      sceneVersionId: activeSceneVersionId,
+      mode: nextMode,
+    });
   };
 
   return (
@@ -393,7 +436,7 @@ export default function MeasurementPage() {
       ) : (
         <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
           <section className="flex min-h-0 flex-col gap-3">
-            <TabBar mode={mode} onChange={setMode} />
+            <TabBar mode={mode} onChange={handleModeChange} />
             <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border bg-background shadow-sm">
               {/* route 모드 범례/측정 방식 뱃지는 캔버스 위에 올려 도면 크기를 시뮬레이션과 맞춘다. */}
               <div className="pointer-events-none absolute left-3 top-3 z-10 flex flex-wrap items-center gap-2">
@@ -757,7 +800,7 @@ function TabBar({
   );
 }
 
-/** dbm 모드일 땐 inferno 그라데이션 + 양 끝/중간 dBm 표시. quality 모드면 기존 3-tier. */
+/** dbm 모드일 땐 jet 무지개 그라데이션 + 양 끝/중간 dBm 표시. quality 모드면 기존 3-tier. */
 function Legend({
   colorMode,
   range,
@@ -1083,6 +1126,55 @@ function DetectedApsCard({ aps }: { aps: DetectedAp[] }) {
       </ul>
     </div>
   );
+}
+
+function readStoredMeasurementView(floorId: string): StoredMeasurementView | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(MEASUREMENT_VIEW_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as {
+      byFloor?: Record<string, Partial<StoredMeasurementView>>;
+    };
+    const value = parsed.byFloor?.[floorId];
+    if (!value) return null;
+    const mode =
+      value.mode === 'heatmap' || value.mode === 'both' || value.mode === 'route'
+        ? value.mode
+        : 'route';
+    return {
+      sessionId: value.sessionId ?? null,
+      sceneVersionId: value.sceneVersionId ?? null,
+      mode,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistMeasurementView(
+  floorId: string | null,
+  view: StoredMeasurementView,
+): void {
+  if (!floorId || typeof window === 'undefined') return;
+  try {
+    const raw = window.localStorage.getItem(MEASUREMENT_VIEW_STORAGE_KEY);
+    const parsed = raw
+      ? (JSON.parse(raw) as { byFloor?: Record<string, StoredMeasurementView> })
+      : {};
+    window.localStorage.setItem(
+      MEASUREMENT_VIEW_STORAGE_KEY,
+      JSON.stringify({
+        ...parsed,
+        byFloor: {
+          ...(parsed.byFloor ?? {}),
+          [floorId]: view,
+        },
+      }),
+    );
+  } catch {
+    // Ignore storage failures; URL/query driven navigation still works.
+  }
 }
 
 // ============================================

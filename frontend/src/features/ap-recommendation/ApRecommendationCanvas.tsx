@@ -1,6 +1,5 @@
 import { useMemo, useRef, useState } from 'react';
 import { parseGeometry, type Coord } from '@/features/editor/geometry-utils';
-import { loadCachedViewBox } from '@/features/editor/viewbox-cache';
 import {
   deriveImageExtent,
   useImageNaturalDimensions,
@@ -8,6 +7,7 @@ import {
 import type { ApRecommendationResult } from '@/types/ap-recommendation';
 import type { DraftObject, DraftOpening, DraftWall, SceneVersion } from '@/types/scene';
 import { cn } from '@/lib/utils';
+import { dbmToHeatmapColor } from '@/lib/rssi-colormap';
 import {
   clampCoord,
   clampMeterBBox,
@@ -38,25 +38,19 @@ const AREA_STYLE: Record<
   { label: string; fill: string; stroke: string; badge: string }
 > = {
   candidate: {
-    label: '설치 가능 영역',
+    label: '설치 가능한 곳',
     fill: 'rgb(37 99 235 / 0.18)',
     stroke: 'rgb(37 99 235)',
     badge: 'oklch(0.55 0.22 254)',
   },
   priority: {
-    label: '우선 평가 영역',
+    label: '집중구간',
     fill: 'rgb(22 163 74 / 0.18)',
     stroke: 'rgb(22 163 74)',
     badge: 'oklch(0.62 0.18 145)',
   },
-  lowPriority: {
-    label: '낮은 우선순위 영역',
-    fill: 'rgb(234 179 8 / 0.20)',
-    stroke: 'rgb(202 138 4)',
-    badge: 'oklch(0.69 0.17 82)',
-  },
   excluded: {
-    label: '제외 영역',
+    label: '계산에서 제외',
     fill: 'rgb(239 68 68 / 0.16)',
     stroke: 'rgb(220 38 38)',
     badge: 'oklch(0.62 0.21 25)',
@@ -76,6 +70,13 @@ interface Props {
   onAreasChange: (areas: ApRecommendationArea[]) => void;
   recommendations: ApRecommendationResult[];
   selectedRecommendationRank: number | null;
+  heatmapMode?: 'prediction' | 'measurement';
+  measurementHeatmap?: {
+    url?: string | null;
+    bounds: { min_x: number; min_y: number; max_x: number; max_y: number };
+    rssiRange?: { min: number; max: number };
+    source?: 'measurement' | 'simulation';
+  } | null;
   disabled?: boolean;
 }
 
@@ -129,6 +130,8 @@ export function ApRecommendationCanvas({
   onAreasChange,
   recommendations,
   selectedRecommendationRank,
+  heatmapMode = 'prediction',
+  measurementHeatmap,
   disabled = false,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -145,11 +148,9 @@ export function ApRecommendationCanvas({
   );
 
   const vb = useMemo(() => {
-    const cached = loadCachedViewBox(sceneVersion?.floor_id ?? null);
-    if (cached) return cached;
     if (imageExtent) return computeViewBox(sceneVersion, imageExtent);
     return computeViewBox(sceneVersion, null);
-  }, [sceneVersion?.floor_id, sceneVersion, imageExtent]);
+  }, [sceneVersion, imageExtent]);
 
   const sceneBounds = useMemo(
     () => computeSceneBounds(sceneVersion, imageExtent),
@@ -217,11 +218,19 @@ export function ApRecommendationCanvas({
     ...area,
     bbox: clampMeterBBox(area.bbox, sceneBounds),
   }));
+  const selectedRecommendation = useMemo(
+    () => recommendations.find((rec) => rec.rank === selectedRecommendationRank) ?? null,
+    [recommendations, selectedRecommendationRank],
+  );
+  const predictionCells = useMemo(
+    () => buildPredictionCells(selectedRecommendation?.prediction_points ?? []),
+    [selectedRecommendation],
+  );
   const showDragPreview =
     dragRect && (dragRect.w >= DRAG_THRESHOLD_M || dragRect.h >= DRAG_THRESHOLD_M);
   const labelFontM = canvasLabelFontM(vb.w);
   const selectionBadgeH = labelFontM * 1.55;
-  const selectionBadgeW = labelFontM * 11.6;
+  const selectionBadgeW = labelFontM * 8.4;
   const removeButtonR = labelFontM * 0.7;
 
   const removeSelectedArea = (id: string) => {
@@ -267,6 +276,39 @@ export function ApRecommendationCanvas({
               opacity={0.35}
               pointerEvents="none"
               crossOrigin="anonymous"
+            />
+          )}
+
+          {heatmapMode === 'prediction' && predictionCells && (
+            <g opacity={0.62} pointerEvents="none">
+              {predictionCells.points.map((point, idx) => (
+                <rect
+                  key={`ap-rec-pred-${idx}`}
+                  x={point.x - predictionCells.cellW / 2}
+                  y={point.y - predictionCells.cellH / 2}
+                  width={predictionCells.cellW}
+                  height={predictionCells.cellH}
+                  fill={dbmToHeatmapColor(
+                    point.rssi_dbm,
+                    predictionCells.range.min,
+                    predictionCells.range.max,
+                  )}
+                />
+              ))}
+            </g>
+          )}
+
+          {heatmapMode === 'measurement' && measurementHeatmap?.url && (
+            <image
+              href={measurementHeatmap.url}
+              xlinkHref={measurementHeatmap.url}
+              x={measurementHeatmap.bounds.min_x}
+              y={measurementHeatmap.bounds.min_y}
+              width={measurementHeatmap.bounds.max_x - measurementHeatmap.bounds.min_x}
+              height={measurementHeatmap.bounds.max_y - measurementHeatmap.bounds.min_y}
+              preserveAspectRatio="none"
+              opacity={0.62}
+              pointerEvents="none"
             />
           )}
 
@@ -558,4 +600,36 @@ function RecommendationMarker({
       </text>
     </g>
   );
+}
+
+function buildPredictionCells(points: ApRecommendationResult['prediction_points']) {
+  const valid = points.filter(
+    (point) =>
+      Number.isFinite(point.x) &&
+      Number.isFinite(point.y) &&
+      Number.isFinite(point.rssi_dbm),
+  );
+  if (valid.length === 0) return null;
+  const xs = [...new Set(valid.map((point) => point.x))].sort((a, b) => a - b);
+  const ys = [...new Set(valid.map((point) => point.y))].sort((a, b) => a - b);
+  const cellW = minPositiveDelta(xs) ?? 1;
+  const cellH = minPositiveDelta(ys) ?? cellW;
+  const values = valid.map((point) => point.rssi_dbm);
+  const min = Math.min(-90, Math.min(...values));
+  const max = Math.max(-30, Math.max(...values));
+  return {
+    points: valid,
+    cellW,
+    cellH,
+    range: { min, max },
+  };
+}
+
+function minPositiveDelta(values: number[]): number | null {
+  let best = Infinity;
+  for (let i = 1; i < values.length; i += 1) {
+    const delta = values[i] - values[i - 1];
+    if (delta > 1e-6 && delta < best) best = delta;
+  }
+  return Number.isFinite(best) ? best : null;
 }

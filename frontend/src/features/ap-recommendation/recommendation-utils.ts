@@ -33,7 +33,6 @@ export interface MeterBBox {
 export type ApRecommendationAreaType =
   | 'candidate'
   | 'priority'
-  | 'lowPriority'
   | 'excluded';
 
 export interface ApRecommendationArea {
@@ -102,11 +101,11 @@ export function buildApRecommendationPayload(params: {
       ? areas.filter((area) => area.type === 'candidate').map((area) => area.bbox)
       : legacyBboxes;
   const priorityZones = areas
-    .filter((area) => area.type === 'priority' || area.type === 'lowPriority')
+    .filter((area) => area.type === 'priority')
     .map((area) => ({
       ...area.bbox,
-      label: area.type === 'priority' ? '우선 평가 영역' : '낮은 우선순위 영역',
-      weight: area.type === 'priority' ? 1.0 : 0.2,
+      label: '집중구간',
+      weight: 1.0,
     }));
   const excludedZones = areas
     .filter((area) => area.type === 'excluded')
@@ -114,7 +113,7 @@ export function buildApRecommendationPayload(params: {
   const evaluationBBoxes =
     areas.length > 0
       ? areas
-          .filter((area) => area.type === 'priority' || area.type === 'lowPriority')
+          .filter((area) => area.type === 'priority')
           .map((area) => area.bbox)
       : [];
   const legacyUnion = unionMeterBBoxes(legacyBboxes);
@@ -164,6 +163,7 @@ export function normalizeRecommendations(
     average_rssi_dbm: item.average_rssi_dbm,
     baseline_improvement_score: item.baseline_improvement_score,
     baseline_improvement_db: item.baseline_improvement_db,
+    prediction_points: item.prediction_points ?? [],
   }));
 }
 
@@ -407,7 +407,7 @@ export function getRecommendationReason(
 
   if (rec.rank === 1) {
     parts.push(
-      '우선 개선 영역·도면 평가 지점에서 음영 구역을 줄이고 예측 신호가 가장 잘 닿는 위치입니다.',
+      '집중구간과 도면 평가 지점에서 음영 구역을 줄이고 예측 신호가 가장 잘 닿는 위치입니다.',
     );
     if (bbox && isNearBboxEdge(rec, bbox)) {
       parts.push('선택 영역 가장자리 근처입니다.');

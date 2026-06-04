@@ -57,6 +57,15 @@ export interface ApRecommendationItem {
   average_rssi_dbm?: number | null;
   baseline_improvement_score?: number | null;
   baseline_improvement_db?: number | null;
+  prediction_points?: ApRecommendationPredictionPoint[];
+}
+
+export interface ApRecommendationPredictionPoint {
+  x: number;
+  y: number;
+  rssi_dbm: number;
+  baseline_rssi_dbm?: number | null;
+  weight?: number;
 }
 
 export interface ApRecommendationCalibrationInfo {
@@ -99,4 +108,5 @@ export interface ApRecommendationResult {
   average_rssi_dbm?: number | null;
   baseline_improvement_score?: number | null;
   baseline_improvement_db?: number | null;
+  prediction_points: ApRecommendationPredictionPoint[];
 }

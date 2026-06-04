@@ -1,22 +1,19 @@
 /**
- * RSSI heatmap colormap — warm thermal (Wikipedia-style).
- * Weak → deep navy → blue → teal → green → yellow (peak warmth) → orange → red.
- * Strong signal appears as bright yellow/amber rather than dark red.
+ * RSSI heatmap colormap — matplotlib/OpenCV jet style.
+ * Weak → blue, medium → cyan/green/yellow, strong → red.
  */
 
 /** RGB tuples at t = 0 (weakest) … 1 (strongest) */
 export const RSSI_HEATMAP_STOPS_RGB: ReadonlyArray<readonly [number, number, number]> = [
-  [30,  80, 235],  // bright blue       (very weak)
-  [0,  140, 255],  // royal blue
-  [0,  210, 255],  // sky blue / cyan
-  [0,  240, 190],  // teal
-  [30, 240,  70],  // green
-  [160, 240,   0], // yellow-green
-  [255, 235,   0], // bright yellow
-  [255, 160,   0], // amber
-  [255,  55,   0], // orange-red
-  [235,   0,   0], // bright red
-  [195,   0,   0], // medium red        (very strong)
+  [0, 0, 128],
+  [0, 0, 255],
+  [0, 128, 255],
+  [0, 255, 255],
+  [128, 255, 128],
+  [255, 255, 0],
+  [255, 128, 0],
+  [255, 0, 0],
+  [128, 0, 0],
 ];
 
 export const RSSI_HEATMAP_GRADIENT_CSS = buildHeatmapGradientCss();

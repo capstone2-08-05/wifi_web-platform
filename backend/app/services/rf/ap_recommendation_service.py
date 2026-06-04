@@ -20,6 +20,7 @@ from app.schemas.rf.ap_recommendation import (
     ApRecommendationBBox,
     ApRecommendationCalibrationInfo,
     ApRecommendationItem,
+    ApRecommendationPredictionPoint,
     ApRecommendationRequest,
     ApRecommendationResponse,
 )
@@ -193,8 +194,8 @@ def recommend_ap_location(
     )
 
     recommendations = [
-        _to_response_item(i + 1, x, y, metrics)
-        for i, (x, y, metrics) in enumerate(top_results)
+        _to_response_item(i + 1, x, y, metrics, predicted)
+        for i, (x, y, metrics, predicted) in enumerate(top_results)
     ]
 
     return ApRecommendationResponse(
@@ -224,6 +225,7 @@ def _to_response_item(
     x: float,
     y: float,
     metrics: CandidateMetrics,
+    prediction_points: list[PredictedEvalPoint],
 ) -> ApRecommendationItem:
     return ApRecommendationItem(
         rank=rank,
@@ -240,6 +242,16 @@ def _to_response_item(
         average_rssi_dbm=round(metrics.average_rssi_dbm, 2),
         baseline_improvement_score=_round_optional(metrics.baseline_improvement_score),
         baseline_improvement_db=_round_optional(metrics.baseline_improvement_db),
+        prediction_points=[
+            ApRecommendationPredictionPoint(
+                x=round(p.x, 3),
+                y=round(p.y, 3),
+                rssi_dbm=round(p.candidate_rssi_dbm, 2),
+                baseline_rssi_dbm=_round_optional(p.baseline_rssi_dbm, 2),
+                weight=round(p.weight, 3),
+            )
+            for p in prediction_points
+        ],
     )
 
 
@@ -724,8 +736,8 @@ def _grid_search_topn(
     coverage_threshold_dbm: float,
     weak_zone_threshold_dbm: float,
     n: int,
-) -> list[tuple[float, float, CandidateMetrics]]:
-    scored: list[tuple[float, float, CandidateMetrics]] = []
+) -> list[tuple[float, float, CandidateMetrics, list[PredictedEvalPoint]]]:
+    scored: list[tuple[float, float, CandidateMetrics, list[PredictedEvalPoint]]] = []
 
     for cx, cy in candidates:
         test_ap = AccessPoint(
@@ -759,7 +771,7 @@ def _grid_search_topn(
             coverage_threshold_dbm=coverage_threshold_dbm,
             weak_zone_threshold_dbm=weak_zone_threshold_dbm,
         )
-        scored.append((cx, cy, metrics))
+        scored.append((cx, cy, metrics, predicted))
 
     scored.sort(
         key=lambda t: (
