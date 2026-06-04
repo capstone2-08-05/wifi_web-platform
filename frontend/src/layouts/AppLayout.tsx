@@ -1,5 +1,4 @@
-import { useState } from 'react';
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import {
   LayoutGrid,
   Map,
@@ -8,14 +7,12 @@ import {
   Activity,
   Settings,
   Wifi,
-  QrCode,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ProjectSelector } from '@/features/header/ProjectSelector';
 import { FloorSelector } from '@/features/header/FloorSelector';
 import { ProfileMenu } from '@/features/header/ProfileMenu';
 import { InferenceModeToggle } from '@/features/header/InferenceModeToggle';
-import { MobileConnectModal } from '@/features/mobile/MobileConnectModal';
 
 const NAV = [
   { to: '/dashboard', label: '대시보드', icon: LayoutGrid },
@@ -26,7 +23,7 @@ const NAV = [
 ] as const;
 
 export function AppLayout() {
-  const [mobileConnectOpen, setMobileConnectOpen] = useState(false);
+  const location = useLocation();
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background">
@@ -81,24 +78,21 @@ export function AppLayout() {
           </div>
           <div className="flex items-center gap-2">
             <InferenceModeToggle />
-            <button
-              type="button"
-              onClick={() => setMobileConnectOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-sm font-medium text-foreground/80 shadow-sm transition-colors hover:bg-accent"
-            >
-              <QrCode className="h-4 w-4" />
-              모바일 앱 연결
-            </button>
             <ProfileMenu />
           </div>
         </header>
 
         <main className="flex-1 overflow-hidden bg-background">
-          <Outlet />
+          <div
+            key={location.key}
+            className="h-full"
+            style={{ animation: 'page-enter 0.45s cubic-bezier(0.16, 1, 0.3, 1) both' }}
+          >
+            <Outlet />
+          </div>
         </main>
       </div>
 
-      <MobileConnectModal open={mobileConnectOpen} onClose={() => setMobileConnectOpen(false)} />
     </div>
   );
 }

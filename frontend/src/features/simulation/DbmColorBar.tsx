@@ -1,22 +1,13 @@
 import { useState } from 'react';
 import { ChevronDown } from 'lucide-react';
+import { RSSI_HEATMAP_GRADIENT_CSS } from '@/lib/rssi-colormap';
 import { cn } from '@/lib/utils';
 
 /**
  * RSSI dBm → 색 그라데이션 + tick 라벨 colorbar.
  *
- * matplotlib horizontal colorbar 스타일 — gradient 아래에 tick 들이 정렬돼서
- * "이 색 = 이 dBm" 한눈에 매핑. 시뮬/측정 페이지 모두에서 같은 visual language.
- *
- * inferno cmap 11 stops — Sionna heatmap PNG, MeasurementCanvas 측정점 색, 본 컴포넌트
- * 모두 동일 stop 사용 (HeatmapColorLegend, MeasurementCanvas 와 동기화).
+ * matplotlib `jet` cmap — Sionna/GP heatmap PNG, MeasurementCanvas, 본 컴포넌트 동기화.
  */
-
-const INFERNO_GRADIENT =
-  'linear-gradient(to right, ' +
-  '#000004 0%, #160b39 10%, #420a68 20%, #6a176e 30%, ' +
-  '#932667 40%, #bc3754 50%, #dd513a 60%, #f37819 70%, ' +
-  '#fca50a 80%, #f6d746 90%, #fcffa4 100%)';
 
 const DBM_QUALITY_LABELS = [
   { dbm: -30, label: '매우 강함' },
@@ -82,7 +73,7 @@ export function DbmColorBar({
           {/* gradient bar */}
           <div
             className="h-3 w-full rounded-sm border border-border/60"
-            style={{ backgroundImage: INFERNO_GRADIENT }}
+            style={{ backgroundImage: RSSI_HEATMAP_GRADIENT_CSS }}
           />
           {/* tick marks — gradient 바로 아래 short vertical line + 값 */}
           <div className="relative h-4 w-full">

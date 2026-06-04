@@ -97,7 +97,7 @@ export default function SimulationPage() {
     setPickedRunId(id);
   };
 
-  const createRfRun = useCreateRfRun();
+  const createRfRun = useCreateRfRun(floorId, { page_size: 20 });
   const rfRunPoll = useRfRun(activeRunId);
   const rfMapsQuery = useRfMaps(activeRunId, rfRunPoll.isSucceeded);
   const activeRunSceneVersionId = rfRunPoll.rfRun?.scene_version_id ?? null;
@@ -235,27 +235,27 @@ export default function SimulationPage() {
   const activeMapMetrics = rfMapsQuery.data?.[0]?.metrics_json;
   const history: SimulationHistoryItem[] = useMemo(
     () =>
-      pastRuns
-        .filter((r) => r.status === 'succeeded')
-        .map((r) => {
-          // rf_run.metrics_json 은 `{ radio_map: { rss_dbm, coverage_summary, ... }, ... }` 형태로
-          // 한 단계 nested. parseMetrics 는 top-level 키만 찾으므로 radio_map 도 같이 풀어 넘김.
-          // active 일 땐 RfMap.metrics_json (flat) 도 함께 — 그쪽이 더 풍부할 수 있음.
-          const radioMap = (r.metrics_json?.['radio_map'] ?? null) as
-            | Record<string, unknown>
-            | null;
-          const sources: Array<Record<string, unknown> | undefined> = [r.metrics_json];
-          if (radioMap) sources.push(radioMap);
-          if (r.id === activeRunId && activeMapMetrics) sources.push(activeMapMetrics);
-          const m = parseMetrics(...sources);
-          return {
-            id: r.id,
-            createdAt: r.created_at,
-            avgRssiDbm: m.avgRssiDbm,
-            coveragePercent: m.coveragePercent,
-            active: r.id === activeRunId,
-          };
-        }),
+      pastRuns.map((r) => {
+        const isTerminal = r.status === 'succeeded' || r.status === 'failed';
+        // rf_run.metrics_json 은 `{ radio_map: { rss_dbm, coverage_summary, ... }, ... }` 형태로
+        // 한 단계 nested. parseMetrics 는 top-level 키만 찾으므로 radio_map 도 같이 풀어 넘김.
+        // active 일 땐 RfMap.metrics_json (flat) 도 함께 — 그쪽이 더 풍부할 수 있음.
+        const radioMap = (r.metrics_json?.['radio_map'] ?? null) as
+          | Record<string, unknown>
+          | null;
+        const sources: Array<Record<string, unknown> | undefined> = [r.metrics_json];
+        if (radioMap) sources.push(radioMap);
+        if (r.id === activeRunId && activeMapMetrics) sources.push(activeMapMetrics);
+        const m = isTerminal ? parseMetrics(...sources) : { avgRssiDbm: null, coveragePercent: null };
+        return {
+          id: r.id,
+          createdAt: r.created_at,
+          status: r.status,
+          avgRssiDbm: m.avgRssiDbm,
+          coveragePercent: m.coveragePercent,
+          active: r.id === activeRunId,
+        };
+      }),
     [pastRuns, activeRunId, activeMapMetrics],
   );
 
@@ -685,7 +685,7 @@ function SimulationVisualization({ state }: { state: SimulationState }) {
         <Loader2 className="h-7 w-7 animate-spin text-blue-600" />
         <p className="text-sm font-medium text-slate-800">RF 시뮬레이션 진행 중</p>
         <p className="max-w-sm text-xs leading-relaxed text-slate-500">
-          서버에서 결과를 계산하는 동안 잠시만 기다려주세요. 최대 약 15분이 소요될 수 있습니다.
+          서버에서 결과를 계산하는 동안 잠시만 기다려주세요.
         </p>
       </div>
     );

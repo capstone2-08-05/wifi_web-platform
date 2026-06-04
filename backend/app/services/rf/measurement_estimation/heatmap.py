@@ -1,9 +1,15 @@
 """GP 보간 결과 → matplotlib heatmap PNG → S3 업로드.
 
 mean heatmap (예측 RSSI) 과 uncertainty heatmap (표준편차) 두 개 PNG 생성.
-mean 은 jet/viridis 같은 신호 강도 컬러맵, uncertainty 는 흑백 / hot 컬러맵 사용.
+mean 은 warm-thermal 컬러맵 (frontend rssi-colormap.ts 와 동일 palette),
+uncertainty 는 흑백 계열 사용.
 """
 from __future__ import annotations
+from .gp_estimator import CoverageEstimate
+from app.services import _s3
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 
 import io
 import logging
@@ -12,11 +18,26 @@ import uuid
 import matplotlib
 
 matplotlib.use("Agg")  # 서버 환경 — GUI backend 비활성
-import matplotlib.pyplot as plt
-import numpy as np
 
-from app.services import _s3
-from .gp_estimator import CoverageEstimate
+# frontend rssi-colormap.ts 의 RSSI_HEATMAP_STOPS_RGB 와 동일한 stops.
+# t=0 (weak) → medium blue, t=1 (strong) → medium-bright red.
+_RSSI_CMAP = mcolors.LinearSegmentedColormap.from_list(
+    "wifi_thermal",
+    [
+        np.array([30,  80, 235]) / 255,
+        np.array([ 0, 140, 255]) / 255,
+        np.array([ 0, 210, 255]) / 255,
+        np.array([ 0, 240, 190]) / 255,
+        np.array([30, 240,  70]) / 255,
+        np.array([160, 240,   0]) / 255,
+        np.array([255, 235,   0]) / 255,
+        np.array([255, 160,   0]) / 255,
+        np.array([255,  55,   0]) / 255,
+        np.array([235,   0,   0]) / 255,
+        np.array([195,   0,   0]) / 255,
+    ],
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -112,21 +133,20 @@ def render_and_upload(
         (mean_s3_uri, uncertainty_s3_uri) — s3:// 형식.
     """
     overlay = (
-        [(p[0], p[1]) for p in measurement_points] if measurement_points else None
+        [(p[0], p[1])
+         for p in measurement_points] if measurement_points else None
     )
 
     mean = estimate.mean_grid
     std = estimate.std_grid
 
     # mean 색 범위 — _resolve_mean_color_limits 가 narrow spread / NaN / empty 안전 처리.
-    # cmap='inferno' — Sionna RT heatmap, frontend Legend/측정점 그라데이션과 동일 palette.
-    # (이전엔 jet 라서 frontend 측정점 inferno 와 색 mismatch 발생.)
     mean_vmin, mean_vmax = _resolve_mean_color_limits(mean)
     mean_png = _render_to_png(
         mean,
         estimate.xs,
         estimate.ys,
-        cmap="inferno",
+        cmap=_RSSI_CMAP,
         vmin=mean_vmin,
         vmax=mean_vmax,
         title=f"Estimated RSSI Coverage (GP, N={estimate.input_point_count})",

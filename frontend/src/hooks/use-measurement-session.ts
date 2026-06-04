@@ -4,12 +4,17 @@ import type { UUID } from '@/types/common';
 
 // §10.4 — 백엔드 GET 엔드포인트 구현 완료 (PR #77).
 
-export function useFloorMeasurementSessions(floorId: UUID | null) {
+export function useFloorMeasurementSessions(
+  floorId: UUID | null,
+  options?: { refetchInterval?: number | false },
+) {
   return useQuery({
     queryKey: ['measurement-sessions', floorId] as const,
     queryFn: () => measurementSessionApi.listByFloor(floorId as UUID),
     enabled: !!floorId,
     staleTime: 30_000,
+    refetchInterval: options?.refetchInterval ?? false,
+    refetchIntervalInBackground: false,
   });
 }
 

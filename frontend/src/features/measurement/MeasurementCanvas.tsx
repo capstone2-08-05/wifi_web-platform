@@ -19,6 +19,7 @@ import {
   CANVAS_OBJECT_STROKE,
   CANVAS_WINDOW_STROKE,
 } from '@/lib/canvas-scene-colors';
+import { dbmToHeatmapColor } from '@/lib/rssi-colormap';
 
 export type MeasurementPointQuality = 'good' | 'warning' | 'poor';
 
@@ -140,38 +141,6 @@ const QUALITY_HEATMAP_RGBA: Record<MeasurementPointQuality, string> = {
   warning: 'rgba(250, 204, 21, 0.45)',
   poor: 'rgba(248, 113, 113, 0.6)',
 };
-
-// matplotlib inferno cmap stops — Sionna heatmap 과 동일 visual language.
-// HeatmapColorLegend.tsx 와 동기화 유지.
-const INFERNO_STOPS = [
-  [0, 0, 4],
-  [22, 11, 57],
-  [66, 10, 104],
-  [106, 23, 110],
-  [147, 38, 103],
-  [188, 55, 84],
-  [221, 81, 58],
-  [243, 120, 25],
-  [252, 165, 10],
-  [246, 215, 70],
-  [252, 255, 164],
-] as const;
-
-/** dBm 값 → inferno cmap RGB. min/max 범위로 정규화 후 stops 사이 선형 보간. */
-function dbmToInfernoColor(dbm: number, min: number, max: number): string {
-  if (!Number.isFinite(dbm) || max <= min) return 'rgb(255, 255, 255)';
-  const t = Math.max(0, Math.min(1, (dbm - min) / (max - min)));
-  const scaled = t * (INFERNO_STOPS.length - 1);
-  const lo = Math.floor(scaled);
-  const hi = Math.min(INFERNO_STOPS.length - 1, lo + 1);
-  const frac = scaled - lo;
-  const c0 = INFERNO_STOPS[lo];
-  const c1 = INFERNO_STOPS[hi];
-  const r = Math.round(c0[0] + frac * (c1[0] - c0[0]));
-  const g = Math.round(c0[1] + frac * (c1[1] - c0[1]));
-  const b = Math.round(c0[2] + frac * (c1[2] - c0[2]));
-  return `rgb(${r}, ${g}, ${b})`;
-}
 
 /**
  * 실측/진단 캔버스. 확정 버전 도형 위에 측정 경로(line + 색상 dot) 와/또는
@@ -371,7 +340,7 @@ export function MeasurementCanvas({
                     y={bounds.min_y + rowIdx * cellH}
                     width={cellW}
                     height={cellH}
-                    fill={dbmToInfernoColor(value, range.min, range.max)}
+                    fill={dbmToHeatmapColor(value, range.min, range.max)}
                   />
                 );
               }),
@@ -387,6 +356,7 @@ export function MeasurementCanvas({
             height={estimatedHeatmap.bounds.max_y - estimatedHeatmap.bounds.min_y}
             preserveAspectRatio="none"
             opacity={0.65}
+            style={{ filter: 'contrast(0.65) saturate(1.4) brightness(1.15)' }}
             pointerEvents="none"
             onError={() => {
               console.warn(
@@ -439,7 +409,7 @@ export function MeasurementCanvas({
           sortedPoints.map((p) => {
             const fill =
               effectiveColorMode === 'dbm'
-                ? dbmToInfernoColor(
+                ? dbmToHeatmapColor(
                     pointRssiByOrder?.get(p.id) ?? Number.NaN,
                     dbmMin,
                     dbmMax,

@@ -1,11 +1,12 @@
 import { useState } from 'react';
-import { ArrowLeftRight, ChevronDown, History } from 'lucide-react';
+import { ArrowLeftRight, ChevronDown, History, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export interface SimulationHistoryItem {
   id: string;
   /** RF Run.created_at (ISO) — 카드 제목·실행 시점 표시용. */
   createdAt: string;
+  status?: string;
   avgRssiDbm: number | null;
   coveragePercent: number | null;
   active?: boolean;
@@ -107,37 +108,50 @@ function HistoryCard({
   isBest: boolean;
   onSelect?: (id: string) => void;
 }) {
-  const status = getCoverageStatus(item.coveragePercent);
+  const runStatus = getRunStatus(item.status);
+  const coverageStatus = getCoverageStatus(item.coveragePercent);
   const title = formatExecutionLabel(item.createdAt);
   const shortId = item.id.slice(0, 6);
+  const isRunning = item.status === 'pending' || item.status === 'running';
 
   return (
     <button
       type="button"
       onClick={() => onSelect?.(item.id)}
-      disabled={!onSelect}
+      disabled={!onSelect || isRunning}
       className={cn(
-        'relative w-full rounded-md border border-slate-200 bg-white p-2.5 text-left transition-colors disabled:cursor-default',
-        isBest && 'border-l-4 border-l-blue-500 pl-2',
-        item.active && 'border-blue-300 bg-blue-50/60',
-        !item.active && 'hover:border-slate-300',
+        'relative w-full rounded-md border bg-white p-2.5 text-left transition-colors disabled:cursor-default',
+        isBest && !item.active && 'border-blue-400',
+        !isBest && 'border-slate-200',
+        item.active && 'border-blue-400 bg-blue-50/60',
+        !item.active && !isRunning && 'hover:border-slate-300',
       )}
     >
       <div className="flex items-start justify-between gap-2">
         <span className="text-[13px] font-medium text-slate-800">{title}</span>
-        {isBest ? (
+        {runStatus ? (
+          <span
+            className={cn(
+              'inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 text-xs',
+              runStatus.badgeClass,
+            )}
+          >
+            {isRunning && <Loader2 className="h-3 w-3 animate-spin" aria-hidden />}
+            {runStatus.label}
+          </span>
+        ) : isBest ? (
           <span className="shrink-0 rounded border border-blue-100 bg-blue-50 px-2 py-0.5 text-xs text-blue-600">
             최고
           </span>
         ) : (
-          status && (
+          coverageStatus && (
             <span
               className={cn(
                 'shrink-0 rounded border px-1.5 py-0.5 text-xs',
-                status.badgeClass,
+                coverageStatus.badgeClass,
               )}
             >
-              {status.label}
+              {coverageStatus.label}
             </span>
           )
         )}
@@ -193,6 +207,22 @@ function HistoryCardSkeleton() {
   );
 }
 
+function getRunStatus(status: string | undefined): CoverageStatus | null {
+  if (status === 'running' || status === 'pending') {
+    return {
+      label: '실행 중',
+      badgeClass: 'border-blue-100 bg-blue-50 text-blue-600',
+    };
+  }
+  if (status === 'failed') {
+    return {
+      label: '실패',
+      badgeClass: 'border-red-100 bg-red-50 text-red-600',
+    };
+  }
+  return null;
+}
+
 /** 커버리지 ≥70% 양호 · ≥40% 일부 개선 필요 · 그 미만 개선 필요 */
 function getCoverageStatus(coverage: number | null): CoverageStatus | null {
   if (coverage == null) return null;
@@ -216,7 +246,9 @@ function getCoverageStatus(coverage: number | null): CoverageStatus | null {
 
 /** 커버리지 최대 → 동률이면 평균 신호 세기(dBm)가 더 높은(덜 음수) 항목. */
 function findBestResultId(items: SimulationHistoryItem[]): string | null {
-  const ranked = items.filter((item) => item.coveragePercent != null);
+  const ranked = items.filter(
+    (item) => item.status === 'succeeded' && item.coveragePercent != null,
+  );
   if (ranked.length === 0) return null;
 
   let best = ranked[0];

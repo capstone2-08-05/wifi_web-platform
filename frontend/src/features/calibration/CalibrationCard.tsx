@@ -12,6 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { dbmToHeatmapColor } from '@/lib/rssi-colormap';
 import type {
   CalibrationEvaluationResponse,
   CalibrationRun,
@@ -33,6 +34,7 @@ const SPACE_TYPE_OPTIONS: { value: SpaceType; label: string }[] = [
 export type CalibrationGate =
   | 'no_measurement'
   | 'insufficient_points'
+  | 'outside_sim_area'
   | 'no_simulation'
   | 'ready';
 
@@ -375,6 +377,21 @@ function CalibrationGateNotice({
     );
   }
 
+  if (gate === 'outside_sim_area') {
+    return (
+      <div className="mt-3 flex gap-2.5 rounded-xl border border-amber-200/80 bg-amber-50 px-3 py-2.5">
+        <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+        <div className="min-w-0 space-y-1">
+          <p className="text-xs font-medium text-foreground">측정 위치가 도면 밖입니다</p>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            {disabledReason ??
+              '모바일 앱에서 도면 벽 안쪽의 시작 위치를 지정하고, 건물 안을 따라 다시 측정해주세요.'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="mt-3 flex gap-2.5 rounded-xl border border-slate-200/80 bg-slate-50 px-3 py-2.5">
       <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />
@@ -481,17 +498,17 @@ function CalibrationEvaluationPanel({
     'metric_point_source' in evaluation.evaluation.split
       ? String((evaluation.evaluation.split as Record<string, unknown>).metric_point_source)
       : 'reference';
+  const comparisonLabelKo = formatComparisonPointSource(comparisonLabel);
   const frequencyText = formatFrequencyCheck(evaluation);
   const fmt = (v: unknown, digits = 1) =>
     typeof v === 'number' && Number.isFinite(v) ? v.toFixed(digits) : '--';
   return (
     <section className="mt-3 space-y-3 rounded-lg border bg-muted/30 p-3">
       <div>
-        <p className="text-[11px] font-semibold text-foreground">
-          Reference comparison 기준
-        </p>
+        <p className="text-[11px] font-semibold text-foreground">참조 비교 기준</p>
         <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-          Metrics use {comparisonLabel} points as the measured comparison data. Reference maps are interpolated measurements, not absolute ground truth.
+          지표는 {comparisonLabelKo} 포인트를 실측 비교 데이터로 사용합니다. 참조맵은 측정값을
+          보간한 결과이며, 절대적인 정답(ground truth)이 아닙니다.
         </p>
         {frequencyText && (
           <p className="mt-1 rounded-md border bg-background px-2 py-1 text-[10px] leading-relaxed text-muted-foreground">
@@ -506,7 +523,7 @@ function CalibrationEvaluationPanel({
         className="inline-flex w-full items-center justify-center gap-1 rounded-md border bg-background px-2 py-1.5 text-[11px] font-medium hover:bg-accent"
       >
         <Maximize2 className="h-3 w-3" />
-        Detail view
+        자세히 보기
       </button>
       {onAddReferenceMeasurement && (
         <button
@@ -535,10 +552,10 @@ function CalibrationEvaluationPanel({
 
       <div className="rounded-md border bg-background p-2 text-[11px]">
         <div className="grid grid-cols-4 gap-2 font-semibold text-muted-foreground">
-          <span>Metric</span>
-          <span>Before</span>
-          <span>After</span>
-          <span>Improvement</span>
+          <span>지표</span>
+          <span>보정 전</span>
+          <span>보정 후</span>
+          <span>개선</span>
         </div>
         <MetricRow
           label="MAE"
@@ -559,18 +576,18 @@ function CalibrationEvaluationPanel({
 
       <details className="rounded-md border bg-background text-[11px]">
         <summary className="cursor-pointer px-3 py-2 font-medium">
-          Reference comparison errors ({comparisonPoints.length})
+          참조 비교 오차 ({comparisonPoints.length}개)
         </summary>
         <div className="max-h-48 overflow-auto">
           <table className="w-full min-w-[520px] text-left">
             <thead className="sticky top-0 bg-background text-muted-foreground">
               <tr>
-                <th className="px-2 py-1">Point</th>
-                <th className="px-2 py-1">Measured</th>
-                <th className="px-2 py-1">Baseline</th>
-                <th className="px-2 py-1">Calibrated</th>
-                <th className="px-2 py-1">Before</th>
-                <th className="px-2 py-1">After</th>
+                <th className="px-2 py-1">포인트</th>
+                <th className="px-2 py-1">실측</th>
+                <th className="px-2 py-1">보정 전</th>
+                <th className="px-2 py-1">보정 후</th>
+                <th className="px-2 py-1">보정 전 오차</th>
+                <th className="px-2 py-1">보정 후 오차</th>
               </tr>
             </thead>
             <tbody>
@@ -637,6 +654,7 @@ function CalibrationEvaluationDetailModal({
     'metric_point_source' in evaluation.evaluation.split
       ? String((evaluation.evaluation.split as Record<string, unknown>).metric_point_source)
       : 'reference';
+  const comparisonLabelKo = formatComparisonPointSource(comparisonLabel);
   const frequencyText = formatFrequencyCheck(evaluation);
   const fmt = (v: unknown, digits = 1) =>
     typeof v === 'number' && Number.isFinite(v) ? v.toFixed(digits) : '--';
@@ -652,9 +670,10 @@ function CalibrationEvaluationDetailModal({
       >
         <header className="flex items-center justify-between gap-3 border-b px-5 py-3">
           <div>
-            <h2 className="text-base font-semibold">3-way RSSI map comparison</h2>
+            <h2 className="text-base font-semibold">3-way RSSI 맵 비교</h2>
             <p className="text-xs text-muted-foreground">
-              Same floorplan, grid, bounds, and RSSI color scale. Metrics use {comparisonLabel} points as measured comparison data.
+              동일 도면·격자·범위·색상 스케일 기준. 지표는 {comparisonLabelKo} 포인트를 실측
+              비교 데이터로 사용합니다.
             </p>
             {frequencyText && (
               <p className="mt-1 text-xs text-muted-foreground">{frequencyText}</p>
@@ -677,7 +696,7 @@ function CalibrationEvaluationDetailModal({
               type="button"
               onClick={onClose}
               className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-accent"
-              aria-label="Close"
+              aria-label="닫기"
             >
               <X className="h-4 w-4" />
             </button>
@@ -702,15 +721,15 @@ function CalibrationEvaluationDetailModal({
 
           <div className="mt-4 grid gap-4 lg:grid-cols-[24rem_1fr]">
             <div className="rounded-lg border bg-muted/20 p-4 text-sm">
-              <p className="font-semibold">Comparison metrics</p>
+              <p className="font-semibold">비교 지표</p>
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                 MAE는 각 측정 지점의 평균 오차입니다. RMSE는 큰 오차를 더 크게 반영해서, 보정 후에도 크게 틀린 구간이 남아 있는지 보여줍니다.
               </p>
               <div className="mt-3 grid grid-cols-4 gap-2 text-xs font-semibold text-muted-foreground">
-                <span>Metric</span>
-                <span>Before</span>
-                <span>After</span>
-                <span>Improvement</span>
+                <span>지표</span>
+                <span>보정 전</span>
+                <span>보정 후</span>
+                <span>개선</span>
               </div>
               <MetricRow
                 label="MAE"
@@ -727,19 +746,19 @@ function CalibrationEvaluationDetailModal({
               <div className="mt-4 flex flex-wrap gap-3 text-xs text-muted-foreground">
                 <span className="inline-flex items-center gap-1">
                   <span className="h-2.5 w-2.5 rounded-full bg-[#0f766e]" />
-                  calibration
+                  보정용
                 </span>
                 <span className="inline-flex items-center gap-1">
                   <span className="h-0 w-0 border-x-[5px] border-b-[9px] border-x-transparent border-b-[#dc2626]" />
-                  comparison
+                  비교용
                 </span>
               </div>
             </div>
 
             <div className="rounded-lg border bg-background p-4 text-xs">
               <div className="mb-3 flex items-center justify-between gap-3">
-                <p className="font-semibold">Point error chart</p>
-                <p className="text-muted-foreground">Before vs after, dB</p>
+                <p className="font-semibold">포인트별 오차</p>
+                <p className="text-muted-foreground">보정 전 vs 보정 후 (dB)</p>
               </div>
               <ErrorBarChart points={comparisonPoints} />
             </div>
@@ -747,18 +766,18 @@ function CalibrationEvaluationDetailModal({
 
           <div className="mt-4 rounded-lg border bg-background text-xs">
               <div className="border-b px-4 py-3 font-semibold">
-                Reference comparison errors ({comparisonPoints.length})
+                참조 비교 오차 ({comparisonPoints.length}개)
               </div>
               <div className="max-h-72 overflow-auto">
                 <table className="w-full min-w-[640px] text-left">
                   <thead className="sticky top-0 bg-background text-muted-foreground">
                     <tr>
-                      <th className="px-3 py-2">Point</th>
-                      <th className="px-3 py-2">Measured</th>
-                      <th className="px-3 py-2">Baseline Pred</th>
-                      <th className="px-3 py-2">Calibrated Pred</th>
-                      <th className="px-3 py-2">Before Error</th>
-                      <th className="px-3 py-2">After Error</th>
+                      <th className="px-3 py-2">포인트</th>
+                      <th className="px-3 py-2">실측</th>
+                      <th className="px-3 py-2">보정 전 예측</th>
+                      <th className="px-3 py-2">보정 후 예측</th>
+                      <th className="px-3 py-2">보정 전 오차</th>
+                      <th className="px-3 py-2">보정 후 오차</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -829,11 +848,11 @@ function MiniRssiMap({
     <div className={size === 'large' ? 'rounded-lg border bg-background p-3' : 'rounded-md border bg-background p-2'}>
       <div className="mb-2 flex items-center justify-between gap-2">
         <p className={size === 'large' ? 'truncate text-sm font-semibold' : 'truncate text-[11px] font-semibold'}>
-          {map.label}
+          {formatEvaluationMapLabel(map.label)}
         </p>
         {size === 'large' && (
           <span className="text-[11px] text-muted-foreground">
-            {colorScale.min_dbm} to {colorScale.max_dbm} dBm
+            {colorScale.min_dbm} ~ {colorScale.max_dbm} dBm
           </span>
         )}
       </div>
@@ -923,15 +942,15 @@ function pointTooltip(
   kind: 'calibration' | 'comparison',
 ): string {
   const pointName = `P${String(index + 1).padStart(2, '0')}`;
-  const purpose = kind === 'calibration' ? 'calibration' : 'comparison';
+  const purpose = kind === 'calibration' ? '보정용' : '비교용';
   const lines = [
     `${pointName} (${purpose})`,
-    `Measured RSSI: ${formatTooltipNumber(point.rssi_dbm, 'dBm')}`,
-    `Baseline pred: ${formatTooltipNumber(point.baseline_pred_dbm, 'dBm')}`,
-    `Calibrated pred: ${formatTooltipNumber(point.calibrated_pred_dbm, 'dBm')}`,
-    `Before error: ${formatTooltipNumber(point.baseline_error_db, 'dB')}`,
-    `After error: ${formatTooltipNumber(point.calibrated_error_db, 'dB')}`,
-    `Position: ${formatTooltipNumber(point.x_m, 'm')}, ${formatTooltipNumber(point.y_m, 'm')}`,
+    `실측 RSSI: ${formatTooltipNumber(point.rssi_dbm, 'dBm')}`,
+    `보정 전 예측: ${formatTooltipNumber(point.baseline_pred_dbm, 'dBm')}`,
+    `보정 후 예측: ${formatTooltipNumber(point.calibrated_pred_dbm, 'dBm')}`,
+    `보정 전 오차: ${formatTooltipNumber(point.baseline_error_db, 'dB')}`,
+    `보정 후 오차: ${formatTooltipNumber(point.calibrated_error_db, 'dB')}`,
+    `위치: ${formatTooltipNumber(point.x_m, 'm')}, ${formatTooltipNumber(point.y_m, 'm')}`,
   ];
   return lines.join('\n');
 }
@@ -974,7 +993,7 @@ function ErrorBarChart({
     ]),
   );
   if (visible.length === 0) {
-    return <p className="text-muted-foreground">No comparison points available.</p>;
+    return <p className="text-muted-foreground">비교할 포인트가 없습니다.</p>;
   }
   return (
     <div className="max-h-72 space-y-2 overflow-auto pr-1">
@@ -1006,12 +1025,12 @@ function ErrorBarChart({
       })}
       {points.length > visible.length && (
         <p className="pt-1 text-[11px] text-muted-foreground">
-          Showing first {visible.length} of {points.length} points. Full values are in the table below.
+          {points.length}개 중 상위 {visible.length}개만 표시합니다. 전체 값은 아래 표에서 확인하세요.
         </p>
       )}
       <div className="flex gap-3 pt-1 text-[11px] text-muted-foreground">
-        <span className="inline-flex items-center gap-1"><span className="h-2 w-4 rounded bg-rose-500" /> before</span>
-        <span className="inline-flex items-center gap-1"><span className="h-2 w-4 rounded bg-emerald-500" /> after</span>
+        <span className="inline-flex items-center gap-1"><span className="h-2 w-4 rounded bg-rose-500" /> 보정 전</span>
+        <span className="inline-flex items-center gap-1"><span className="h-2 w-4 rounded bg-emerald-500" /> 보정 후</span>
       </div>
     </div>
   );
@@ -1021,6 +1040,29 @@ function errorColor(errorDb: number): string {
   if (errorDb <= 3) return '#10b981';
   if (errorDb <= 7) return '#f59e0b';
   return '#ef4444';
+}
+
+function formatComparisonPointSource(source: string): string {
+  switch (source.toLowerCase()) {
+    case 'reference':
+      return '참조';
+    case 'validation':
+      return '검증';
+    case 'calibration':
+      return '보정';
+    case 'evaluation':
+      return '평가';
+    default:
+      return source;
+  }
+}
+
+function formatEvaluationMapLabel(label: string): string {
+  const lower = label.toLowerCase();
+  if (lower.includes('baseline')) return '보정 전 시뮬레이션';
+  if (lower.includes('calibrated')) return '보정 후 시뮬레이션';
+  if (lower.includes('measured reference') || lower.includes('reference map')) return '실측 참조맵';
+  return label;
 }
 
 function formatFrequencyCheck(evaluation: CalibrationEvaluationResponse): string | null {
@@ -1041,22 +1083,7 @@ function formatFrequencyCheck(evaluation: CalibrationEvaluationResponse): string
 }
 
 function rssiColor(value: number, min: number, max: number): string {
-  const t = Math.max(0, Math.min(1, (value - min) / Math.max(max - min, 1)));
-  const stops = [
-    [12, 7, 134],
-    [75, 3, 161],
-    [125, 3, 168],
-    [203, 71, 119],
-    [248, 149, 64],
-    [240, 249, 33],
-  ];
-  const pos = t * (stops.length - 1);
-  const i = Math.min(stops.length - 2, Math.floor(pos));
-  const local = pos - i;
-  const a = stops[i];
-  const b = stops[i + 1];
-  const rgb = a.map((v, idx) => Math.round(v + (b[idx] - v) * local));
-  return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+  return dbmToHeatmapColor(value, min, max);
 }
 
 function extractEvaluationResponse(run: CalibrationRun | null): CalibrationEvaluationResponse | null {
