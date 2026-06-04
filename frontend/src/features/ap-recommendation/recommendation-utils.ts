@@ -87,6 +87,7 @@ export function buildApRecommendationPayload(params: {
     x_max: union.x_max,
     y_min: union.y_min,
     y_max: union.y_max,
+    candidate_bboxes: bboxes,
     target_bboxes: bboxes,
     existing_aps: mapToExistingAps(params.existingAps, params.txPowerDbm),
   };
@@ -103,6 +104,16 @@ export function normalizeRecommendations(
     recommended_y: item.recommended_y,
     score: item.score,
     candidates_evaluated: response.candidates_evaluated,
+    coverage_score: item.coverage_score,
+    coverage_ratio: item.coverage_ratio,
+    weak_zone_improvement_score: item.weak_zone_improvement_score,
+    weak_zone_improvement_db: item.weak_zone_improvement_db,
+    bottom_10_percent_score: item.bottom_10_percent_score,
+    bottom_10_percent_rssi_dbm: item.bottom_10_percent_rssi_dbm,
+    average_rssi_score: item.average_rssi_score,
+    average_rssi_dbm: item.average_rssi_dbm,
+    baseline_improvement_score: item.baseline_improvement_score,
+    baseline_improvement_db: item.baseline_improvement_db,
   }));
 }
 
