@@ -14,7 +14,7 @@ import {
 import { useMemo, useEffect } from 'react';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
-import { useCreateRfRun, useFloorRfRuns, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
+import { useCreateRfRun, useDeleteRfRun, useFloorRfRuns, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
 import { useRfMapImageUrl } from '@/hooks/use-rf-map-image-url';
 import { useAssetDownloadUrl } from '@/hooks/use-assets';
 import { useLocalFloorplanImage, linkFloorImageToAsset } from '@/hooks/use-local-floorplan-image';
@@ -104,6 +104,7 @@ export default function SimulationPage() {
   };
 
   const createRfRun = useCreateRfRun(floorId, { page_size: 20 });
+  const deleteRfRun = useDeleteRfRun(floorId);
   const rfRunPoll = useRfRun(activeRunId);
   const rfMapsQuery = useRfMaps(activeRunId, rfRunPoll.isSucceeded);
   const activeRunSceneVersionId = rfRunPoll.rfRun?.scene_version_id ?? null;
@@ -380,6 +381,10 @@ export default function SimulationPage() {
               isLoading={pastRunsQuery.isLoading}
               showCompareButton={false}
               onSelect={(id) => setActiveRunId(id)}
+              onDelete={(id) => {
+                if (id === activeRunId) setActiveRunId(null);
+                deleteRfRun.mutate(id);
+              }}
             />
             {canvasSceneVersionId && (
               <Link

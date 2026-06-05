@@ -152,6 +152,16 @@ def get_rf_run(db: Session, rf_run_id: UUID, user: User) -> RfRunResponse:
     return _to_response(_get_owned_rf_run(db, rf_run_id, user))
 
 
+def delete_rf_run(db: Session, rf_run_id: UUID, user: User) -> None:
+    rr = _get_owned_rf_run(db, rf_run_id, user)
+    try:
+        db.delete(rr)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
 def list_by_floor(
     db: Session,
     floor_id: UUID,
