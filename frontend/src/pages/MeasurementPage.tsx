@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   ChevronRight,
   Clock,
+  Loader2,
   MapPin,
   Smartphone,
   TrendingUp,
@@ -988,15 +989,56 @@ function LegendDot({ color, label }: { color: string; label: string }) {
 
 function CanvasEmptyOverlay({ loading }: { loading: boolean }) {
   return (
-    <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-      <div className="pointer-events-auto max-w-sm rounded-xl border bg-background/95 px-5 py-4 text-center shadow-sm backdrop-blur">
-        <p className="text-sm font-semibold">
-          {loading ? '측정 데이터 불러오는 중...' : '측정 데이터가 없습니다'}
-        </p>
-        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-          상단의 "새로운 측정 시작" 또는 헤더의 "모바일 앱 연결" 로 측정을 진행하면
-          여기에 결과가 표시됩니다.
-        </p>
+    <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6 pb-20">
+      <div
+        className={cn(
+          'pointer-events-auto w-full max-w-md -translate-y-6 animate-panel-rise',
+          'rounded-2xl border border-sky-200/90 bg-sky-50/95 px-6 py-5 shadow-md backdrop-blur-sm',
+        )}
+      >
+        <div className="flex items-start gap-4">
+          <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-sky-100 text-sky-600">
+            {loading ? (
+              <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
+            ) : (
+              <MapPin className="h-5 w-5" aria-hidden />
+            )}
+          </span>
+          <div className="min-w-0 space-y-4 text-left">
+            <div className="space-y-2">
+              <p className="text-base font-semibold leading-relaxed text-sky-950">
+                {loading ? '측정 데이터를 불러오는 중' : '아직 측정 데이터가 없어요'}
+              </p>
+              <p className="text-xs leading-relaxed text-sky-900/75">
+                {loading
+                  ? '잠시만 기다려주세요.'
+                  : '모바일로 도면 위를 걸으며 측정하면 결과가 이곳에 표시됩니다.'}
+              </p>
+            </div>
+            {!loading && (
+              <ol className="space-y-2.5 text-xs leading-relaxed text-sky-900/80">
+                <li className="flex items-center gap-2.5">
+                  <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white text-[10px] font-bold text-sky-700 ring-1 ring-sky-200">
+                    1
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <Smartphone className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                    헤더에서 모바일 앱 연결
+                  </span>
+                </li>
+                <li className="flex items-center gap-2.5">
+                  <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white text-[10px] font-bold text-sky-700 ring-1 ring-sky-200">
+                    2
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <Activity className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                    상단에서 새로운 측정 시작
+                  </span>
+                </li>
+              </ol>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
