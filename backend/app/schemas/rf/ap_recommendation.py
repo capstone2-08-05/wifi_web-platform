@@ -56,6 +56,17 @@ class ApRecommendationRequest(BaseModel):
     shadow_threshold_dbm: float = Field(default=-80.0)
     shadow_penalty: float = Field(default=100.0)
     n_recommendations: int = Field(default=3, ge=1, le=10)
+    # 멀티 AP 추천 — 한 번에 설치할 AP 수
+    n_aps: int = Field(default=1, ge=1, le=5)
+
+
+class ApRecommendationApPosition(BaseModel):
+    """멀티 AP 세트 내 개별 AP 위치."""
+    model_config = ConfigDict(extra="forbid")
+
+    ap_index: int
+    x: float
+    y: float
 
 
 class ApRecommendationItem(BaseModel):
@@ -65,6 +76,8 @@ class ApRecommendationItem(BaseModel):
     recommended_x: float
     recommended_y: float
     score: float
+    # 멀티 AP일 때 전체 위치 목록 (n_aps=1이면 1개)
+    ap_positions: list[ApRecommendationApPosition] = Field(default_factory=list)
     coverage_score: float | None = None
     coverage_ratio: float | None = None
     weak_zone_improvement_score: float | None = None

@@ -144,6 +144,7 @@ export default function MobileAppPage() {
   const [recommendations, setRecommendations] = useState<ApRecommendationResult[]>([]);
   const [selectedRank, setSelectedRank] = useState<number | null>(null);
   const [savedRank, setSavedRank] = useState<number | null>(null);
+  const [nAps, setNAps] = useState(1);
   const [compareWithMeasurement, setCompareWithMeasurement] = useState(false);
   const [verificationRunId, setVerificationRunId] = useState<string | null>(null);
   const [verificationRank, setVerificationRank] = useState<number | null>(null);
@@ -458,6 +459,7 @@ export default function MobileAppPage() {
       areas: validAreas,
       existingAps,
       txPowerDbm: DEFAULT_TX_POWER_DBM,
+      nAps,
     });
 
     if (import.meta.env.DEV) {
@@ -663,6 +665,26 @@ export default function MobileAppPage() {
             </p>
           </div>
           <div className="flex shrink-0 flex-col items-stretch gap-1.5 sm:items-end">
+            <div className="flex items-center gap-2 sm:justify-end">
+              <span className="text-[12px] text-slate-500">설치할 AP 수</span>
+              <div className="flex gap-1">
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setNAps(n)}
+                    className={cn(
+                      'h-7 w-7 rounded-md text-[12px] font-semibold transition-colors',
+                      nAps === n
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200',
+                    )}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
             <button
               type="button"
               onClick={handleRecommend}
@@ -1355,6 +1377,13 @@ function RecommendationCard({
   onPreview: () => void;
   onSelect: () => void;
 }) {
+  const RANK_STYLES = [
+    { border: 'border-emerald-300', badge: 'bg-emerald-500', selectedBorder: 'border-emerald-400 ring-1 ring-emerald-300' },
+    { border: 'border-blue-300',    badge: 'bg-blue-500',    selectedBorder: 'border-blue-400 ring-1 ring-blue-300' },
+    { border: 'border-orange-300',  badge: 'bg-orange-500',  selectedBorder: 'border-orange-400 ring-1 ring-orange-300' },
+  ];
+  const style = RANK_STYLES[(rec.rank - 1) % RANK_STYLES.length];
+
   return (
     <article
       role="button"
@@ -1368,17 +1397,19 @@ function RecommendationCard({
       }}
       className={cn(
         'cursor-pointer rounded-xl border bg-white p-4 transition-colors',
-        saved || selected ? 'border-emerald-300 shadow-sm' : 'border-[#E5EAF2]',
+        saved || selected ? `${style.selectedBorder} shadow-sm` : 'border-[#E5EAF2]',
       )}
     >
       <div className="flex items-start gap-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-sm font-bold text-white">
+        <div className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', style.badge)}>
           {rec.rank}
         </div>
         <div className="min-w-0 flex-1">
           <h3 className="text-sm font-bold text-foreground">{rec.rank}순위 추천</h3>
           <p className="mt-1 text-xs text-muted-foreground">
-            위치 X {rec.recommended_x.toFixed(0)}m / Y {rec.recommended_y.toFixed(0)}m
+            {rec.ap_positions && rec.ap_positions.length > 1
+              ? rec.ap_positions.map((p) => `AP${p.ap_index} (${p.x.toFixed(0)}m, ${p.y.toFixed(0)}m)`).join(' · ')
+              : `위치 X ${rec.recommended_x.toFixed(0)}m / Y ${rec.recommended_y.toFixed(0)}m`}
           </p>
           <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
             우선 평가 영역에 가장 잘 닿는 위치
