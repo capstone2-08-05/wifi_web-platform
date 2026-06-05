@@ -1722,22 +1722,33 @@ function readStoredMeasurementView(floorId: string | null): StoredMeasurementVie
   }
 }
 
-function computeZoneCoverage(
+function avg(vals: number[]): number | null {
+  if (vals.length === 0) return null;
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+function computeZoneMetrics(
   points: ApRecommendationPredictionPoint[],
   bbox: { x_min: number; x_max: number; y_min: number; y_max: number },
-): { before: number | null; after: number } {
+): {
+  beforeCoverage: number | null;
+  afterCoverage: number;
+  beforeRssi: number | null;
+  afterRssi: number | null;
+} {
   const inside = points.filter(
     (p) => p.x >= bbox.x_min && p.x <= bbox.x_max && p.y >= bbox.y_min && p.y <= bbox.y_max,
   );
-  if (inside.length === 0) return { before: null, after: 0 };
-  const after = inside.filter((p) => p.rssi_dbm >= COVERAGE_THRESHOLD_DBM).length / inside.length;
+  if (inside.length === 0) return { beforeCoverage: null, afterCoverage: 0, beforeRssi: null, afterRssi: null };
+  const afterCoverage = inside.filter((p) => p.rssi_dbm >= COVERAGE_THRESHOLD_DBM).length / inside.length;
+  const afterRssi = avg(inside.map((p) => p.rssi_dbm));
   const withBaseline = inside.filter((p) => p.baseline_rssi_dbm != null);
-  const before =
+  const beforeCoverage =
     withBaseline.length > 0
-      ? withBaseline.filter((p) => (p.baseline_rssi_dbm ?? -200) >= COVERAGE_THRESHOLD_DBM).length /
-        withBaseline.length
+      ? withBaseline.filter((p) => (p.baseline_rssi_dbm ?? -200) >= COVERAGE_THRESHOLD_DBM).length / withBaseline.length
       : null;
-  return { before, after };
+  const beforeRssi = withBaseline.length > 0 ? avg(withBaseline.map((p) => p.baseline_rssi_dbm!)) : null;
+  return { beforeCoverage, afterCoverage, beforeRssi, afterRssi };
 }
 
 function ZoneImprovementPanel({
@@ -1757,32 +1768,51 @@ function ZoneImprovementPanel({
       </p>
       <div className="flex flex-col gap-2">
         {priorityZones.map((zone, i) => {
-          const { before, after } = computeZoneCoverage(
+          const { beforeCoverage, afterCoverage, beforeRssi, afterRssi } = computeZoneMetrics(
             recommendation.prediction_points,
             zone.bbox,
           );
-          const afterPct = Math.round(after * 100);
-          const beforePct = before != null ? Math.round(before * 100) : null;
-          const diff = beforePct != null ? afterPct - beforePct : null;
+          const afterPct = Math.round(afterCoverage * 100);
+          const beforePct = beforeCoverage != null ? Math.round(beforeCoverage * 100) : null;
+          const coverageDiff = beforePct != null ? afterPct - beforePct : null;
+          const rssiDiff = beforeRssi != null && afterRssi != null ? afterRssi - beforeRssi : null;
 
           return (
             <div key={zone.id} className="rounded-lg bg-white px-3 py-2.5 shadow-sm">
-              <p className="mb-1.5 text-[12px] font-medium text-slate-600">
-                우선 영역 {i + 1}
-              </p>
-              <div className="flex items-center gap-2">
-                {beforePct != null && (
-                  <>
-                    <span className="text-[13px] text-slate-400">{beforePct}%</span>
-                    <span className="text-slate-300">→</span>
-                  </>
-                )}
-                <span className="text-[14px] font-bold text-blue-700">{afterPct}%</span>
-                <span className="text-[12px] text-slate-500">잘 터지는 구역</span>
+              <p className="mb-2 text-[12px] font-medium text-slate-600">우선 영역 {i + 1}</p>
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="w-20 text-[11px] text-slate-400">잘 터지는 구역</span>
+                  {beforePct != null && (
+                    <><span className="text-[12px] text-slate-400">{beforePct}%</span>
+                    <span className="text-slate-300">→</span></>
+                  )}
+                  <span className="text-[13px] font-bold text-blue-700">{afterPct}%</span>
+                  {coverageDiff != null && coverageDiff !== 0 && (
+                    <span className={`text-[11px] font-medium ${coverageDiff > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                      ({coverageDiff > 0 ? '+' : ''}{coverageDiff}%p)
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-20 text-[11px] text-slate-400">평균 신호</span>
+                  {beforeRssi != null && (
+                    <><span className="text-[12px] text-slate-400">{beforeRssi.toFixed(1)} dBm</span>
+                    <span className="text-slate-300">→</span></>
+                  )}
+                  {afterRssi != null && (
+                    <span className="text-[13px] font-bold text-blue-700">{afterRssi.toFixed(1)} dBm</span>
+                  )}
+                  {rssiDiff != null && rssiDiff !== 0 && (
+                    <span className={`text-[11px] font-medium ${rssiDiff > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                      ({rssiDiff > 0 ? '+' : ''}{rssiDiff.toFixed(1)})
+                    </span>
+                  )}
+                </div>
               </div>
-              {diff != null && diff !== 0 && (
-                <p className={`mt-1 text-[12px] font-medium ${diff > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                  {diff > 0 ? '✅' : '⚠️'} {Math.abs(diff)}%p {diff > 0 ? '더 넓어져요' : '줄어들어요'}
+              {coverageDiff != null && coverageDiff !== 0 && (
+                <p className={`mt-1.5 text-[12px] font-medium ${coverageDiff > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                  {coverageDiff > 0 ? '✅' : '⚠️'} {Math.abs(coverageDiff)}%p {coverageDiff > 0 ? '더 넓어져요' : '줄어들어요'}
                 </p>
               )}
             </div>
