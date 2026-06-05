@@ -1045,6 +1045,12 @@ export default function MobileAppPage() {
                     onSelect={() => handleSelectRecommendation(rec)}
                   />
                 ))}
+                {selectedRecommendation && selectedRecommendation.prediction_points.length > 0 && (
+                  <ZoneImprovementPanel
+                    recommendation={selectedRecommendation}
+                    areas={selectedAreas}
+                  />
+                )}
               </div>
             )}
           </div>
@@ -1714,6 +1720,79 @@ function readStoredMeasurementView(floorId: string | null): StoredMeasurementVie
   } catch {
     return null;
   }
+}
+
+const COVERAGE_THRESHOLD_DBM = -67;
+
+function computeZoneCoverage(
+  points: ApRecommendationPredictionPoint[],
+  bbox: { x_min: number; x_max: number; y_min: number; y_max: number },
+): { before: number | null; after: number } {
+  const inside = points.filter(
+    (p) => p.x >= bbox.x_min && p.x <= bbox.x_max && p.y >= bbox.y_min && p.y <= bbox.y_max,
+  );
+  if (inside.length === 0) return { before: null, after: 0 };
+  const after = inside.filter((p) => p.rssi_dbm >= COVERAGE_THRESHOLD_DBM).length / inside.length;
+  const withBaseline = inside.filter((p) => p.baseline_rssi_dbm != null);
+  const before =
+    withBaseline.length > 0
+      ? withBaseline.filter((p) => (p.baseline_rssi_dbm ?? -200) >= COVERAGE_THRESHOLD_DBM).length /
+        withBaseline.length
+      : null;
+  return { before, after };
+}
+
+function ZoneImprovementPanel({
+  recommendation,
+  areas,
+}: {
+  recommendation: ApRecommendationResult;
+  areas: ApRecommendationArea[];
+}) {
+  const priorityZones = areas.filter((a) => a.type === 'priority');
+  if (priorityZones.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-4">
+      <p className="mb-3 text-[13px] font-semibold text-blue-900">
+        우선 평가 영역별 개선 효과
+      </p>
+      <div className="flex flex-col gap-2">
+        {priorityZones.map((zone, i) => {
+          const { before, after } = computeZoneCoverage(
+            recommendation.prediction_points,
+            zone.bbox,
+          );
+          const afterPct = Math.round(after * 100);
+          const beforePct = before != null ? Math.round(before * 100) : null;
+          const diff = beforePct != null ? afterPct - beforePct : null;
+
+          return (
+            <div key={zone.id} className="rounded-lg bg-white px-3 py-2.5 shadow-sm">
+              <p className="mb-1.5 text-[12px] font-medium text-slate-600">
+                우선 영역 {i + 1}
+              </p>
+              <div className="flex items-center gap-2">
+                {beforePct != null && (
+                  <>
+                    <span className="text-[13px] text-slate-400">{beforePct}%</span>
+                    <span className="text-slate-300">→</span>
+                  </>
+                )}
+                <span className="text-[14px] font-bold text-blue-700">{afterPct}%</span>
+                <span className="text-[12px] text-slate-500">잘 터지는 구역</span>
+              </div>
+              {diff != null && diff !== 0 && (
+                <p className={`mt-1 text-[12px] font-medium ${diff > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                  {diff > 0 ? '✅' : '⚠️'} {Math.abs(diff)}%p {diff > 0 ? '더 넓어져요' : '줄어들어요'}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function RecommendationCard({
