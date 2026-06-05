@@ -729,14 +729,25 @@ export function DraftSceneCanvas({
   // 같은 floor 면 viewBox 유지 → 확정 전후로 객체 크기 일정.
   const [prevFloorId, setPrevFloorId] = useState(draft.floor_id);
   const [prevExtent, setPrevExtent] = useState(imageExtent);
+  const [prevScaleRatio, setPrevScaleRatio] = useState<number | null>(
+    (draft.summary_json as Record<string, unknown> | null)?.['scale_ratio_m_per_px'] as number | null ?? null,
+  );
   if (prevFloorId !== draft.floor_id) {
     setPrevFloorId(draft.floor_id);
     setPrevExtent(imageExtent);
+    setPrevScaleRatio((draft.summary_json as Record<string, unknown> | null)?.['scale_ratio_m_per_px'] as number | null ?? null);
     setVb(imageExtent ? computeViewBox(draft, imageExtent) : resolveInitialViewBox(draft));
   } else if (prevExtent !== imageExtent) {
     // 이미지 로드 완료 시 viewBox 를 union 으로 한 번 업데이트.
     setPrevExtent(imageExtent);
     if (imageExtent) setVb(computeViewBox(draft, imageExtent));
+  } else {
+    // scale 변경 시 wall 좌표가 바뀌므로 viewBox 재계산.
+    const currentScale = (draft.summary_json as Record<string, unknown> | null)?.['scale_ratio_m_per_px'] as number | null ?? null;
+    if (currentScale !== prevScaleRatio) {
+      setPrevScaleRatio(currentScale);
+      setVb(computeViewBox(draft, imageExtent));
+    }
   }
 
   // 핸들 크기는 현재 도형의 자연 크기에 비례 — viewBox 가 고정돼도 사용자가 그룹
