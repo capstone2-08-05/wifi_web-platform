@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowLeftRight, ChevronDown, History, Loader2 } from 'lucide-react';
+import { ArrowLeftRight, ChevronDown, History, Loader2, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export interface SimulationHistoryItem {
@@ -17,6 +17,7 @@ interface Props {
   isLoading?: boolean;
   showCompareButton?: boolean;
   onSelect?: (id: string) => void;
+  onDelete?: (id: string) => void;
 }
 
 type CoverageStatus = {
@@ -24,7 +25,7 @@ type CoverageStatus = {
   badgeClass: string;
 };
 
-export function SimulationHistory({ items, isLoading, showCompareButton, onSelect }: Props) {
+export function SimulationHistory({ items, isLoading, showCompareButton, onSelect, onDelete }: Props) {
   const [expanded, setExpanded] = useState(true);
   const bestId = findBestResultId(items);
 
@@ -80,6 +81,7 @@ export function SimulationHistory({ items, isLoading, showCompareButton, onSelec
                   item={item}
                   isBest={item.id === bestId}
                   onSelect={onSelect}
+                  onDelete={onDelete}
                 />
               </li>
             ))}
@@ -103,10 +105,12 @@ function HistoryCard({
   item,
   isBest,
   onSelect,
+  onDelete,
 }: {
   item: SimulationHistoryItem;
   isBest: boolean;
   onSelect?: (id: string) => void;
+  onDelete?: (id: string) => void;
 }) {
   const runStatus = getRunStatus(item.status);
   const coverageStatus = getCoverageStatus(item.coveragePercent);
@@ -115,18 +119,20 @@ function HistoryCard({
   const isRunning = item.status === 'pending' || item.status === 'running';
 
   return (
-    <button
-      type="button"
-      onClick={() => onSelect?.(item.id)}
-      disabled={!onSelect || isRunning}
-      className={cn(
-        'relative w-full rounded-md border bg-white p-2.5 text-left transition-colors disabled:cursor-default',
-        isBest && !item.active && 'border-blue-400',
-        !isBest && 'border-slate-200',
-        item.active && 'border-blue-400 bg-blue-50/60',
-        !item.active && !isRunning && 'hover:border-slate-300',
-      )}
-    >
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => onSelect?.(item.id)}
+        disabled={!onSelect || isRunning}
+        className={cn(
+          'relative w-full rounded-md border bg-white p-2.5 text-left transition-colors disabled:cursor-default',
+          isBest && !item.active && 'border-blue-400',
+          !isBest && 'border-slate-200',
+          item.active && 'border-blue-400 bg-blue-50/60',
+          !item.active && !isRunning && 'hover:border-slate-300',
+          onDelete && 'pr-8',
+        )}
+      >
       <div className="flex items-start justify-between gap-2">
         <span className="text-[13px] font-medium text-slate-800">{title}</span>
         {runStatus ? (
@@ -175,6 +181,17 @@ function HistoryCard({
         </p>
       </div>
     </button>
+      {onDelete && !isRunning && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onDelete(item.id); }}
+          className="absolute right-1.5 top-1.5 rounded p-0.5 text-slate-300 hover:bg-red-50 hover:text-red-400 transition-colors"
+          title="삭제"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </div>
   );
 }
 

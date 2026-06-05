@@ -32,6 +32,14 @@ export interface ApRecommendationRequest {
   weak_zone_threshold_dbm?: number;
   shadow_threshold_dbm?: number;
   shadow_penalty?: number;
+  n_aps?: number;
+}
+
+/** 멀티 AP 세트 내 개별 AP 위치. */
+export interface ApRecommendationApPosition {
+  ap_index: number;
+  x: number;
+  y: number;
 }
 
 export interface MeterBBox {
@@ -52,6 +60,7 @@ export interface ApRecommendationItem {
   recommended_x: number;
   recommended_y: number;
   score: number;
+  ap_positions?: ApRecommendationApPosition[];
   coverage_score?: number | null;
   coverage_ratio?: number | null;
   weak_zone_improvement_score?: number | null;
@@ -104,6 +113,7 @@ export interface ApRecommendationResult {
   recommended_x: number;
   recommended_y: number;
   score: number;
+  ap_positions?: ApRecommendationApPosition[];
   candidates_evaluated: number;
   coverage_score?: number | null;
   coverage_ratio?: number | null;
