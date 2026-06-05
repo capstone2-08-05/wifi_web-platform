@@ -602,7 +602,17 @@ def _greedy_multi_ap(
             result_sets.append((ap_set, metrics, predicted))
 
     result_sets.sort(key=lambda t: t[1].final_score, reverse=True)
-    return result_sets[:n_sets]
+
+    # 순서 무관 중복 제거 — (AP1, AP2)와 (AP2, AP1)은 같은 세트로 처리
+    seen: set[frozenset[tuple[float, float]]] = set()
+    deduped = []
+    for ap_set, metrics, predicted in result_sets:
+        key = frozenset((round(x, 2), round(y, 2)) for x, y in ap_set)
+        if key not in seen:
+            seen.add(key)
+            deduped.append((ap_set, metrics, predicted))
+
+    return deduped[:n_sets]
 
 
 def _round_optional(value: float | None, digits: int = 4) -> float | None:
