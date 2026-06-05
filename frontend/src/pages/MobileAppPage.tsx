@@ -1722,8 +1722,6 @@ function readStoredMeasurementView(floorId: string | null): StoredMeasurementVie
   }
 }
 
-const COVERAGE_THRESHOLD_DBM = -67;
-
 function computeZoneCoverage(
   points: ApRecommendationPredictionPoint[],
   bbox: { x_min: number; x_max: number; y_min: number; y_max: number },
