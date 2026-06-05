@@ -942,7 +942,14 @@ def _build_room_mask(
         ]
         drawer.polygon(pixel_pts, fill=255)
 
-    return np.array(img) > 0
+    mask = np.array(img) > 0
+
+    # room 폴리곤이 전체 그리드 면적의 30% 미만 커버하면 무효 — 도면 분석이 불완전한 경우
+    # room mask 를 쓰면 오히려 대부분의 유효 구역이 숨겨지므로 None 반환해 fallback.
+    if mask.sum() < mask.size * 0.30:
+        return None
+
+    return mask
 
 
 def _get_rssi_cmap():
