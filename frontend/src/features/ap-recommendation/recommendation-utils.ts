@@ -94,6 +94,7 @@ export function buildApRecommendationPayload(params: {
   areas?: ApRecommendationArea[];
   existingAps: { id: string; x_m: number; y_m: number }[];
   txPowerDbm?: number;
+  nAps?: number;
 }): ApRecommendationRequest {
   const areas = validRecommendationAreas(params.areas);
   const legacyBboxes = validSelectionBBoxes(params.bboxes);
@@ -132,6 +133,7 @@ export function buildApRecommendationPayload(params: {
     calibration_policy: 'transfer_only',
     candidate_tx_power_dbm: params.txPowerDbm,
     existing_aps: mapToExistingAps(params.existingAps, params.txPowerDbm),
+    ...(params.nAps && params.nAps > 1 ? { n_aps: params.nAps } : {}),
   };
   if (legacyUnion) {
     request.x_min = legacyUnion.x_min;
@@ -165,6 +167,7 @@ export function normalizeRecommendations(
     baseline_improvement_score: item.baseline_improvement_score,
     baseline_improvement_db: item.baseline_improvement_db,
     prediction_points: item.prediction_points ?? [],
+    ap_positions: item.ap_positions,
   }));
 }
 

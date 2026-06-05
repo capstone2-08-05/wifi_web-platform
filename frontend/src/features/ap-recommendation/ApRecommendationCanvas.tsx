@@ -346,14 +346,22 @@ export function ApRecommendationCanvas({
             <ObjectShape key={o.id} object={o} />
           ))}
 
-          {recommendations.map((rec) => (
-            <RecommendationMarker
-              key={rec.rank}
-              rec={rec}
-              selected={selectedRecommendationRank === rec.rank}
-              labelFontM={labelFontM}
-            />
-          ))}
+          {[...recommendations]
+            .sort((a, b) => {
+              // 선택된 순위를 맨 위에 (마지막 렌더 = SVG 최상단)
+              if (a.rank === selectedRecommendationRank) return 1;
+              if (b.rank === selectedRecommendationRank) return -1;
+              // 나머지는 역순 (낮은 순위일수록 위에 — 1순위가 가장 마지막)
+              return b.rank - a.rank;
+            })
+            .map((rec) => (
+              <RecommendationMarker
+                key={rec.rank}
+                rec={rec}
+                selected={selectedRecommendationRank === rec.rank}
+                labelFontM={labelFontM}
+              />
+            ))}
         </g>
 
         {/* 선택 영역 — clamp된 좌표, clipPath 밖(배지가 상단에서 잘리지 않도록) */}
@@ -583,45 +591,65 @@ function RecommendationMarker({
   labelFontM: number;
 }) {
   const r = RECOMMEND_RADIUS_M;
-  const fill = selected ? 'oklch(0.62 0.19 145)' : 'oklch(0.72 0.19 145)';
+
+  // 순위별 색상 — 선택 시 진하게, 비선택 시 연하게
+  const RANK_COLORS: Record<number, { base: string; dim: string; label: string }> = {
+    1: { base: 'oklch(0.55 0.20 145)', dim: 'oklch(0.72 0.18 145)', label: 'oklch(0.28 0.10 145)' },  // 초록
+    2: { base: 'oklch(0.55 0.20 260)', dim: 'oklch(0.72 0.18 260)', label: 'oklch(0.28 0.10 260)' },  // 파랑
+    3: { base: 'oklch(0.55 0.20 50)',  dim: 'oklch(0.72 0.18 50)',  label: 'oklch(0.28 0.10 50)'  },  // 주황
+  };
+  const color = RANK_COLORS[rec.rank] ?? RANK_COLORS[1];
+  const fill = selected ? color.base : color.dim;
+  const labelColor = color.label;
+
+  // 멀티 AP일 때 ap_positions 전체 표시, 단일 AP면 recommended_x/y 사용
+  const positions =
+    rec.ap_positions && rec.ap_positions.length > 0
+      ? rec.ap_positions.map((p) => ({ x: p.x, y: p.y, index: p.ap_index }))
+      : [{ x: rec.recommended_x, y: rec.recommended_y, index: 1 }];
+
   return (
     <g pointerEvents="none">
-      <circle
-        cx={rec.recommended_x}
-        cy={rec.recommended_y}
-        r={r}
-        fill={fill}
-        stroke="white"
-        strokeWidth="2"
-        vectorEffect="non-scaling-stroke"
-      />
-      <text
-        x={rec.recommended_x}
-        y={rec.recommended_y}
-        textAnchor="middle"
-        dominantBaseline="middle"
-        fontSize={Math.max(r * 0.75, labelFontM * 0.85)}
-        fontWeight="700"
-        fill="white"
-        style={{ userSelect: 'none' }}
-      >
-        {rec.rank}
-      </text>
-      <text
-        x={rec.recommended_x}
-        y={rec.recommended_y + r + labelFontM * 1.05}
-        textAnchor="middle"
-        dominantBaseline="middle"
-        fontSize={labelFontM}
-        fontWeight="700"
-        fill="oklch(0.28 0.1 145)"
-        stroke="white"
-        strokeWidth={labelFontM * 0.12}
-        paintOrder="stroke fill"
-        style={{ userSelect: 'none' }}
-      >
-        추천 {rec.rank}
-      </text>
+      {positions.map((pos) => (
+        <g key={pos.index}>
+          <circle
+            cx={pos.x}
+            cy={pos.y}
+            r={r}
+            fill={fill}
+            stroke="white"
+            strokeWidth="2"
+            vectorEffect="non-scaling-stroke"
+          />
+          <text
+            x={pos.x}
+            y={pos.y}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            fontSize={Math.max(r * 0.75, labelFontM * 0.85)}
+            fontWeight="700"
+            fill="white"
+            style={{ userSelect: 'none' }}
+          >
+            {positions.length > 1 ? `${rec.rank}-${pos.index}` : rec.rank}
+          </text>
+          <text
+            x={pos.x}
+            y={pos.y + r + labelFontM * 1.05}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            fontSize={labelFontM}
+            fontWeight="700"
+            fill={labelColor}
+            stroke="white"
+            strokeWidth={labelFontM * 0.12}
+            paintOrder="stroke fill"
+            style={{ userSelect: 'none' }}
+          >
+            {positions.length > 1 ? `추천${rec.rank} AP${pos.index}` : `추천 ${rec.rank}`}
+          </text>
+        </g>
+      ))}
     </g>
   );
 }

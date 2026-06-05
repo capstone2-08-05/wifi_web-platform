@@ -23,6 +23,7 @@ from app.models.scene_version import SceneVersion
 from app.models.user import User
 from app.schemas.pagination import PaginatedResponse
 from app.schemas.rf.ap_recommendation import (
+    ApRecommendationApPosition,
     ApRecommendationBBox,
     ApRecommendationCalibrationInfo,
     ApRecommendationItem,
@@ -174,37 +175,64 @@ def recommend_ap_location(
         transfer=rssi_transfer,
     )
 
+    n_aps = max(1, request.n_aps)
+
     logger.info(
-        "AP recommendation start: scene=%s candidates=%d eval=%d weighted=%d existing_aps=%d calibration=%s",
+        "AP recommendation start: scene=%s candidates=%d eval=%d weighted=%d existing_aps=%d n_aps=%d calibration=%s",
         sv.id,
         len(candidates),
         len(raw_eval_points),
         len(weighted_points),
         len(existing_aps),
+        n_aps,
         rssi_transfer.method,
     )
 
-    top_results = _grid_search_topn(
-        candidates=candidates,
-        eval_points=weighted_points,
-        existing_aps=existing_aps,
-        walls=walls,
-        params=params,
-        transfer=rssi_transfer,
-        recommendation_mode=request.recommendation_mode,
-        replace_target_ap_id=request.replace_target_ap_id,
-        candidate_tx_power_dbm=request.candidate_tx_power_dbm,
-        coverage_threshold_dbm=request.coverage_threshold_dbm
-        or _DEFAULT_COVERAGE_THRESHOLD_DBM,
-        weak_zone_threshold_dbm=request.weak_zone_threshold_dbm
-        or _DEFAULT_WEAK_ZONE_THRESHOLD_DBM,
-        n=request.n_recommendations,
-    )
+    coverage_threshold = request.coverage_threshold_dbm or _DEFAULT_COVERAGE_THRESHOLD_DBM
+    weak_zone_threshold = request.weak_zone_threshold_dbm or _DEFAULT_WEAK_ZONE_THRESHOLD_DBM
 
-    recommendations = [
-        _to_response_item(i + 1, x, y, metrics, predicted)
-        for i, (x, y, metrics, predicted) in enumerate(top_results)
-    ]
+    if n_aps == 1:
+        top_results = _grid_search_topn(
+            candidates=candidates,
+            eval_points=weighted_points,
+            existing_aps=existing_aps,
+            walls=walls,
+            params=params,
+            transfer=rssi_transfer,
+            recommendation_mode=request.recommendation_mode,
+            replace_target_ap_id=request.replace_target_ap_id,
+            candidate_tx_power_dbm=request.candidate_tx_power_dbm,
+            coverage_threshold_dbm=coverage_threshold,
+            weak_zone_threshold_dbm=weak_zone_threshold,
+            n=request.n_recommendations,
+        )
+        recommendations = [
+            _to_response_item(i + 1, x, y, metrics, predicted, ap_positions=[(x, y)])
+            for i, (x, y, metrics, predicted) in enumerate(top_results)
+        ]
+    else:
+        top_sets = _greedy_multi_ap(
+            n_aps=n_aps,
+            n_sets=request.n_recommendations,
+            candidates=candidates,
+            eval_points=weighted_points,
+            existing_aps=existing_aps,
+            walls=walls,
+            params=params,
+            transfer=rssi_transfer,
+            candidate_tx_power_dbm=request.candidate_tx_power_dbm,
+            coverage_threshold_dbm=coverage_threshold,
+            weak_zone_threshold_dbm=weak_zone_threshold,
+        )
+        recommendations = [
+            _to_response_item(
+                i + 1,
+                ap_set[0][0], ap_set[0][1],
+                metrics, predicted,
+                ap_positions=ap_set,
+            )
+            for i, (ap_set, metrics, predicted) in enumerate(top_sets)
+        ]
 
     response = ApRecommendationResponse(
         recommendations=recommendations,
@@ -423,6 +451,11 @@ def _item_row_to_schema(row: ApRecommendationItemRow) -> ApRecommendationItem:
             for p in (row.prediction_points_json or [])
             if isinstance(p, dict)
         ],
+        ap_positions=[
+            ApRecommendationApPosition(**p)
+            for p in (metrics.get("ap_positions") or [])
+            if isinstance(p, dict)
+        ],
     )
 
 
@@ -442,12 +475,18 @@ def _to_response_item(
     y: float,
     metrics: CandidateMetrics,
     prediction_points: list[PredictedEvalPoint],
+    ap_positions: list[tuple[float, float]] | None = None,
 ) -> ApRecommendationItem:
+    positions = [
+        ApRecommendationApPosition(ap_index=i + 1, x=round(px, 3), y=round(py, 3))
+        for i, (px, py) in enumerate(ap_positions or [(x, y)])
+    ]
     return ApRecommendationItem(
         rank=rank,
         recommended_x=round(x, 3),
         recommended_y=round(y, 3),
         score=round(metrics.final_score, 4),
+        ap_positions=positions,
         coverage_score=round(metrics.coverage_score, 4),
         coverage_ratio=round(metrics.coverage_ratio, 4),
         weak_zone_improvement_score=_round_optional(metrics.weak_zone_improvement_score),
@@ -469,6 +508,101 @@ def _to_response_item(
             for p in prediction_points
         ],
     )
+
+
+def _greedy_multi_ap(
+    *,
+    n_aps: int,
+    n_sets: int,
+    candidates: list[tuple[float, float]],
+    eval_points: list[WeightedEvalPoint],
+    existing_aps: list[AccessPoint],
+    walls: list[WallSegment],
+    params: CalibrationParams,
+    transfer: RssiTransfer,
+    candidate_tx_power_dbm: float,
+    coverage_threshold_dbm: float,
+    weak_zone_threshold_dbm: float,
+) -> list[tuple[list[tuple[float, float]], CandidateMetrics, list[PredictedEvalPoint]]]:
+    """Greedy 방식으로 n_aps개 AP 세트를 n_sets개 생성.
+
+    각 세트는 다음 방식으로 생성:
+      1st AP: 단일 AP 탐색 상위 n_sets개 중 하나를 시작점으로
+      2nd~nth AP: 이전까지 배치된 AP 고정 후 추가 효과 최대 위치 탐색
+    """
+    # 1단계: 1번 AP 후보 상위 n_sets개 추출
+    top_first = _grid_search_topn(
+        candidates=candidates,
+        eval_points=eval_points,
+        existing_aps=existing_aps,
+        walls=walls,
+        params=params,
+        transfer=transfer,
+        recommendation_mode="add",
+        replace_target_ap_id=None,
+        candidate_tx_power_dbm=candidate_tx_power_dbm,
+        coverage_threshold_dbm=coverage_threshold_dbm,
+        weak_zone_threshold_dbm=weak_zone_threshold_dbm,
+        n=n_sets,
+    )
+
+    result_sets: list[tuple[list[tuple[float, float]], CandidateMetrics, list[PredictedEvalPoint]]] = []
+
+    for first_x, first_y, _, _ in top_first:
+        ap_set: list[tuple[float, float]] = [(first_x, first_y)]
+        current_aps = existing_aps + [
+            AccessPoint(name=f"rec_{i+1}", x=px, y=py, tx_power_dbm=candidate_tx_power_dbm)
+            for i, (px, py) in enumerate(ap_set)
+        ]
+
+        # 2번째 AP부터 greedy 추가
+        for _ in range(n_aps - 1):
+            next_results = _grid_search_topn(
+                candidates=[c for c in candidates if c not in ap_set],
+                eval_points=eval_points,
+                existing_aps=current_aps,
+                walls=walls,
+                params=params,
+                transfer=transfer,
+                recommendation_mode="add",
+                replace_target_ap_id=None,
+                candidate_tx_power_dbm=candidate_tx_power_dbm,
+                coverage_threshold_dbm=coverage_threshold_dbm,
+                weak_zone_threshold_dbm=weak_zone_threshold_dbm,
+                n=1,
+            )
+            if not next_results:
+                break
+            nx, ny, _, _ = next_results[0]
+            ap_set.append((nx, ny))
+            current_aps.append(
+                AccessPoint(name=f"rec_{len(ap_set)}", x=nx, y=ny, tx_power_dbm=candidate_tx_power_dbm)
+            )
+
+        # 최종 세트 전체 점수 계산
+        final_results = _grid_search_topn(
+            candidates=[ap_set[-1]],
+            eval_points=eval_points,
+            existing_aps=existing_aps + [
+                AccessPoint(name=f"rec_{i+1}", x=px, y=py, tx_power_dbm=candidate_tx_power_dbm)
+                for i, (px, py) in enumerate(ap_set[:-1])
+            ],
+            walls=walls,
+            params=params,
+            transfer=transfer,
+            recommendation_mode="add",
+            replace_target_ap_id=None,
+            candidate_tx_power_dbm=candidate_tx_power_dbm,
+            coverage_threshold_dbm=coverage_threshold_dbm,
+            weak_zone_threshold_dbm=weak_zone_threshold_dbm,
+            n=1,
+        )
+        if final_results:
+            _, _, metrics, predicted = final_results[0]
+            result_sets.append((ap_set, metrics, predicted))
+
+    result_sets.sort(key=lambda t: t[1].final_score, reverse=True)
+    return result_sets[:n_sets]
 
 
 def _round_optional(value: float | None, digits: int = 4) -> float | None:
