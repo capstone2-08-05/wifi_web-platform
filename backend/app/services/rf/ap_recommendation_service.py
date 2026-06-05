@@ -4,9 +4,12 @@ from __future__ import annotations
 import logging
 import math
 from decimal import Decimal
-from dataclasses import dataclass
-from typing import Any, Literal
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
+
+if TYPE_CHECKING:
+    import numpy as np
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -91,6 +94,10 @@ class RssiTransfer:
     transfer_applied: bool = False
     residual_enabled: bool = False
     residual_weight: float = 0.0
+    # 공간 잔차 보정 그리드 (GP 보간 결과)
+    residual_grid: "np.ndarray | None" = None
+    residual_xs: "np.ndarray | None" = None
+    residual_ys: "np.ndarray | None" = None
 
 
 @dataclass
@@ -137,6 +144,16 @@ def recommend_ap_location(
         request.calibration_policy,
     )
     rssi_transfer = _transfer_from_run(selected_calibration_run, request.calibration_policy)
+
+    # 실측 데이터가 있으면 spatial residual 보정 추가
+    rssi_transfer = _compute_residual_transfer(
+        db,
+        floor_id=str(sv.floor_id),
+        scene_version_id=str(sv.id),
+        transfer=rssi_transfer,
+        residual_weight=0.5,
+    )
+
     existing_aps = _parse_existing_aps(request.existing_aps)
     _validate_replace_target(request, existing_aps)
 
@@ -247,7 +264,7 @@ def recommend_ap_location(
             intercept_db=round(rssi_transfer.intercept_db, 6),
             transfer_applied=rssi_transfer.transfer_applied,
             best_params_applied=best_params_applied,
-            residual_used=False,
+            residual_used=rssi_transfer.residual_enabled,
             calibration_run_id=UUID(str(selected_calibration_run.id))
             if selected_calibration_run is not None
             else None,
@@ -1030,6 +1047,156 @@ def _find_rssi_transfer_metrics(metrics_json: dict[str, Any]) -> dict[str, Any] 
     return None
 
 
+def _compute_residual_transfer(
+    db: Session,
+    floor_id: str,
+    scene_version_id: str,
+    transfer: RssiTransfer,
+    residual_weight: float = 0.5,
+) -> RssiTransfer:
+    """실측 데이터와 Sionna 예측으로 spatial residual map 계산 후 transfer에 추가.
+
+    1. 최신 completed 측정 세션에서 실측 RSSI 로드
+    2. Sionna radio_map에서 각 측정점의 예측값 bilinear 보간
+    3. (실측 - linear_corrected_pred) = 잔차 계산
+    4. GP로 잔차를 dense grid로 보간
+    5. RssiTransfer에 residual grid 추가 후 반환
+
+    측정 데이터나 Sionna 결과가 없으면 원래 transfer 그대로 반환.
+    """
+    import numpy as np
+    from app.core.geom import wkb_to_geojson
+    from app.models.measurement_point import MeasurementPoint
+    from app.models.measurement_session import MeasurementSession
+    from app.models.rf_run import RfRun
+
+    # 1) 최신 completed 측정 세션 + 포인트 로드
+    session = db.execute(
+        select(MeasurementSession)
+        .where(
+            MeasurementSession.floor_id == floor_id,
+            MeasurementSession.status == "completed",
+        )
+        .order_by(MeasurementSession.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if session is None:
+        return transfer
+
+    meas_rows = db.execute(
+        select(MeasurementPoint).where(
+            MeasurementPoint.session_id == session.id,
+            MeasurementPoint.rssi_dbm.isnot(None),
+        )
+    ).scalars().all()
+    if len(meas_rows) < 3:
+        return transfer
+
+    meas_pts: list[tuple[float, float, float]] = []
+    for p in meas_rows:
+        gj = wkb_to_geojson(p.point_geom)
+        coords = (gj or {}).get("coordinates") or []
+        if len(coords) >= 2:
+            meas_pts.append((float(coords[0]), float(coords[1]), float(p.rssi_dbm)))
+
+    # 2) Sionna radio_map 로드
+    rf_run = db.execute(
+        select(RfRun)
+        .where(
+            RfRun.floor_id == floor_id,
+            RfRun.status.in_(["done", "completed", "succeeded"]),
+        )
+        .order_by(RfRun.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if rf_run is None:
+        return transfer
+
+    radio_map = (rf_run.metrics_json or {}).get("radio_map") or {}
+    values = radio_map.get("values_dbm")
+    bounds = radio_map.get("bounds_m") or {}
+    if not isinstance(values, list) or not values:
+        return transfer
+
+    try:
+        sim_grid = np.asarray(values, dtype=np.float64)
+    except Exception:
+        return transfer
+    if sim_grid.ndim != 2 or sim_grid.size == 0:
+        return transfer
+
+    H, W = sim_grid.shape
+    min_x = float(bounds.get("min_x", 0.0))
+    max_x = float(bounds.get("max_x", float(W)))
+    min_y = float(bounds.get("min_y", 0.0))
+    max_y = float(bounds.get("max_y", float(H)))
+    if max_x <= min_x or max_y <= min_y:
+        return transfer
+
+    sim_xs = np.linspace(min_x, max_x, W)
+    sim_ys = np.linspace(min_y, max_y, H)
+
+    # 3) 측정점마다 잔차 계산
+    residual_pts: list[tuple[float, float, float]] = []
+    for mx, my, actual in meas_pts:
+        ix = int(np.searchsorted(sim_xs, mx, side="right")) - 1
+        iy = int(np.searchsorted(sim_ys, my, side="right")) - 1
+        ix = min(max(ix, 0), W - 2)
+        iy = min(max(iy, 0), H - 2)
+        tx = (mx - sim_xs[ix]) / (sim_xs[ix + 1] - sim_xs[ix] + 1e-9)
+        ty = (my - sim_ys[iy]) / (sim_ys[iy + 1] - sim_ys[iy] + 1e-9)
+        sionna_pred = (
+            sim_grid[iy,     ix    ] * (1 - tx) * (1 - ty)
+            + sim_grid[iy,     ix + 1] * tx       * (1 - ty)
+            + sim_grid[iy + 1, ix    ] * (1 - tx) * ty
+            + sim_grid[iy + 1, ix + 1] * tx       * ty
+        )
+        if not math.isfinite(sionna_pred) or sionna_pred < -200:
+            continue
+        corrected_pred = apply_rssi_transfer(float(sionna_pred), transfer)
+        residual = actual - corrected_pred
+        residual_pts.append((mx, my, residual))
+
+    if len(residual_pts) < 3:
+        return transfer
+
+    # 4) GP로 잔차 보간
+    try:
+        from app.services.rf.measurement_estimation.gp_estimator import estimate_coverage
+        from app.services.rf.calibration_worker.path_loss import Measurement as M
+
+        gp_input = [(x, y, r) for x, y, r in residual_pts]
+        estimate = estimate_coverage(
+            gp_input,
+            bounds=(min_x, min_y, max_x, max_y),
+            grid_resolution_m=1.0,
+        )
+        residual_grid = estimate.mean_grid
+        residual_xs = estimate.xs
+        residual_ys = estimate.ys
+    except Exception as exc:
+        logger.warning("Residual GP failed (%s) — skipping residual correction", exc)
+        return transfer
+
+    logger.info(
+        "Residual correction computed: %d measurement points → grid %s",
+        len(residual_pts), residual_grid.shape,
+    )
+
+    return RssiTransfer(
+        slope=transfer.slope,
+        intercept_db=transfer.intercept_db,
+        method=transfer.method + "+residual",
+        calibration_run_id=transfer.calibration_run_id,
+        transfer_applied=True,
+        residual_enabled=True,
+        residual_weight=residual_weight,
+        residual_grid=residual_grid,
+        residual_xs=residual_xs,
+        residual_ys=residual_ys,
+    )
+
+
 def _finite_float(value: Any, default: float) -> float:
     try:
         parsed = float(value)
@@ -1089,8 +1256,54 @@ def _attach_baseline_rssi(
         point.baseline_rssi_dbm = apply_rssi_transfer(raw, transfer)
 
 
-def apply_rssi_transfer(raw_pred: float, transfer: RssiTransfer) -> float:
-    return transfer.slope * raw_pred + transfer.intercept_db
+def apply_rssi_transfer(
+    raw_pred: float,
+    transfer: RssiTransfer,
+    x: float | None = None,
+    y: float | None = None,
+) -> float:
+    corrected = transfer.slope * raw_pred + transfer.intercept_db
+    if (
+        transfer.residual_enabled
+        and transfer.residual_grid is not None
+        and transfer.residual_xs is not None
+        and transfer.residual_ys is not None
+        and x is not None
+        and y is not None
+    ):
+        residual = _interpolate_residual(
+            x, y,
+            transfer.residual_grid,
+            transfer.residual_xs,
+            transfer.residual_ys,
+        )
+        corrected += residual * transfer.residual_weight
+    return corrected
+
+
+def _interpolate_residual(
+    x: float, y: float,
+    grid: "np.ndarray",
+    xs: "np.ndarray",
+    ys: "np.ndarray",
+) -> float:
+    """residual grid에서 (x, y) 위치의 값을 bilinear interpolation으로 추출."""
+    import numpy as np
+    if x < xs[0] or x > xs[-1] or y < ys[0] or y > ys[-1]:
+        return 0.0
+    ix = int(np.searchsorted(xs, x, side="right")) - 1
+    iy = int(np.searchsorted(ys, y, side="right")) - 1
+    ix = min(max(ix, 0), len(xs) - 2)
+    iy = min(max(iy, 0), len(ys) - 2)
+    tx = (x - xs[ix]) / (xs[ix + 1] - xs[ix] + 1e-9)
+    ty = (y - ys[iy]) / (ys[iy + 1] - ys[iy] + 1e-9)
+    val = (
+        grid[iy,     ix    ] * (1 - tx) * (1 - ty)
+        + grid[iy,     ix + 1] * tx       * (1 - ty)
+        + grid[iy + 1, ix    ] * (1 - tx) * ty
+        + grid[iy + 1, ix + 1] * tx       * ty
+    )
+    return float(val) if math.isfinite(float(val)) else 0.0
 
 
 def _as_measurement(point: WeightedEvalPoint) -> Measurement:
@@ -1130,7 +1343,7 @@ def _grid_search_topn(
         predicted: list[PredictedEvalPoint] = []
         for point in eval_points:
             raw = predict_rssi_best_ap(eval_aps, _as_measurement(point), walls, params)
-            calibrated = apply_rssi_transfer(raw, transfer)
+            calibrated = apply_rssi_transfer(raw, transfer, x=point.x, y=point.y)
             predicted.append(
                 PredictedEvalPoint(
                     x=point.x,
