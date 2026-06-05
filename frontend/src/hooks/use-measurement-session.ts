@@ -33,11 +33,19 @@ export function useMeasurementSession(sessionId: UUID | null) {
  * 탭 백그라운드일 땐 안 돎 (`refetchIntervalInBackground: false`) — 불필요한 트래픽 차단.
  * 세션 완료 후엔 새 포인트가 안 들어오지만 단순함 위해 polling 유지 (트래픽 미미).
  */
-export function useMeasurementPoints(sessionId: UUID | null, pageSize = 500) {
+export function useMeasurementPoints(
+  sessionId: UUID | null,
+  pageSize = 500,
+  apBssid?: string | null,
+) {
   return useQuery({
-    queryKey: ['measurement-points', sessionId, pageSize] as const,
+    queryKey: ['measurement-points', sessionId, pageSize, apBssid ?? null] as const,
     queryFn: () =>
-      measurementSessionApi.listPoints(sessionId as UUID, { page: 1, page_size: pageSize }),
+      measurementSessionApi.listPoints(sessionId as UUID, {
+        page: 1,
+        page_size: pageSize,
+        ap_bssid: apBssid ?? undefined,
+      }),
     enabled: !!sessionId,
     retry: false,
     refetchInterval: sessionId ? 5_000 : false,
@@ -69,16 +77,22 @@ export function useDetectedAps(sessionId: UUID | null) {
  */
 export function useEstimatedCoverage(
   sessionId: UUID | null,
-  options?: { resolutionM?: number; method?: 'gp_only' | 'residual_kriging' | 'auto' },
+  options?: {
+    resolutionM?: number;
+    method?: 'gp_only' | 'residual_kriging' | 'auto';
+    apBssid?: string | null;
+  },
 ) {
   const resolutionM = options?.resolutionM ?? 0.5;
   const method = options?.method ?? 'auto';
+  const apBssid = options?.apBssid ?? null;
   return useQuery({
-    queryKey: ['estimated-coverage', sessionId, resolutionM, method] as const,
+    queryKey: ['estimated-coverage', sessionId, resolutionM, method, apBssid] as const,
     queryFn: () =>
       measurementSessionApi.getEstimatedCoverage(sessionId as UUID, {
         resolution_m: resolutionM,
         method,
+        ap_bssid: apBssid ?? undefined,
       }),
     enabled: !!sessionId,
     retry: false,

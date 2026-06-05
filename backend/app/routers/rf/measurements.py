@@ -134,11 +134,12 @@ def list_measurement_points(
     session_id: str,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=500),
+    ap_bssid: str | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> PaginatedResponse[MeasurementPointResponseDTO]:
     return measurement_service.list_points(
-        db, session_id, current_user, page=page, page_size=page_size
+        db, session_id, current_user, page=page, page_size=page_size, ap_bssid=ap_bssid
     )
 
 
@@ -190,6 +191,7 @@ def estimate_session_coverage(
             "residual_kriging: sim 을 prior 로 측정 residual 만 GP ('통합 분석' 의미)."
         ),
     ),
+    ap_bssid: str | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> EstimatedCoverageResponseDTO:
@@ -197,4 +199,5 @@ def estimate_session_coverage(
         db, session_id, current_user,
         grid_resolution_m=resolution_m,
         method=method,
+        ap_bssid=ap_bssid,
     )

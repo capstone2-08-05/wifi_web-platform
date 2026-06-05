@@ -217,7 +217,8 @@ async def _submit_via_sagemaker(
         db.add(job)
         # request_json.access_points → ApLayout row 들 자동 생성 (#measurement 페이지 표시).
         # 사용자가 시뮬 페이지에서 찍은 AP 좌표를 다른 페이지 (측정/진단) 에서도 보려면 필요.
-        create_ap_layouts_from_request(db, rf_run, access_points)
+        if run_type != "ap_recommendation_verify":
+            create_ap_layouts_from_request(db, rf_run, access_points)
         db.commit()
         db.refresh(rf_run)
         db.refresh(job)

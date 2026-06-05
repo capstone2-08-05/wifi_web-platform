@@ -18,11 +18,13 @@ from app.core.settings import (
 )
 from app.core.geom import wkb_to_geojson
 from app.models.asset import Asset
+from app.models.ap_layout import ApLayout
 from app.models.floor import Floor
 from app.models.measurement_link import MeasurementLink
 from app.models.measurement_point import MeasurementPoint
 from app.models.measurement_session import MeasurementSession
 from app.models.project import Project
+from app.models.rf_run import RfRun
 from app.models.scene_version import SceneVersion
 from app.models.user import User
 from app.schemas.rf.measurement import (
@@ -279,6 +281,118 @@ def _bounds_from_floorplan(floorplan: FloorplanInfoDTO) -> FloorBoundsDTO:
     )
 
 
+def _valid_bounds(bounds: FloorBoundsDTO | None) -> bool:
+    return bool(bounds and bounds.max_x > bounds.min_x and bounds.max_y > bounds.min_y)
+
+
+def _latest_rf_run_for_scene(
+    db: Session, floor_id: str, scene_version_id: str | None
+) -> RfRun | None:
+    filters = [
+        RfRun.floor_id == floor_id,
+        RfRun.status.in_(["done", "completed", "succeeded"]),
+        RfRun.run_type != "ap_recommendation_verify",
+    ]
+    if scene_version_id:
+        filters.append(RfRun.scene_version_id == scene_version_id)
+    return db.execute(
+        select(RfRun).where(*filters).order_by(RfRun.created_at.desc()).limit(1)
+    ).scalar_one_or_none()
+
+
+def _point_xy(point_geom: object) -> tuple[float, float] | None:
+    gj = wkb_to_geojson(point_geom)
+    coords = (gj or {}).get("coordinates")
+    if not isinstance(coords, list) or len(coords) < 2:
+        return None
+    try:
+        return float(coords[0]), float(coords[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def _existing_ap_layouts_for_context(
+    db: Session, floor_id: str, scene_version_id: str | None
+) -> list[dict[str, object]]:
+    """Return AP positions with the measurement context so mobile can draw them.
+
+    Prefer saved ap_layouts for the latest RF run. If no layout rows exist, fall
+    back to the access_points embedded in the run request, which is how older
+    simulation runs exposed AP positions.
+    """
+    layout_filters = [
+        RfRun.floor_id == floor_id,
+        RfRun.run_type != "ap_recommendation_verify",
+    ]
+    if scene_version_id:
+        layout_filters.append(RfRun.scene_version_id == scene_version_id)
+    rf_runs = db.execute(
+        select(RfRun)
+        .where(*layout_filters)
+        .order_by(RfRun.created_at.desc())
+    ).scalars().all()
+
+    for candidate_run in rf_runs:
+        rows = db.execute(
+            select(ApLayout)
+            .where(ApLayout.rf_run_id == candidate_run.id)
+            .order_by(ApLayout.created_at.asc())
+        ).scalars().all()
+        layouts: list[dict[str, object]] = []
+        for row in rows:
+            xy = _point_xy(row.point_geom)
+            if xy is None:
+                continue
+            x, y = xy
+            layouts.append(
+                {
+                    "id": row.id,
+                    "rf_run_id": row.rf_run_id,
+                    "ap_name": row.ap_name,
+                    "x_m": x,
+                    "y_m": y,
+                    "z_m": float(row.z_m) if row.z_m is not None else None,
+                    "power_dbm": float(row.power_dbm) if row.power_dbm is not None else None,
+                    "channel_info_json": row.channel_info_json or {},
+                    "point_geom": {"type": "Point", "coordinates": [x, y]},
+                }
+            )
+        if layouts:
+            return layouts
+
+    rf_run = rf_runs[0] if rf_runs else _latest_rf_run_for_scene(db, floor_id, scene_version_id)
+    if rf_run is None:
+        return []
+
+    raw = (rf_run.request_json or {}).get("access_points")
+    if not isinstance(raw, list):
+        return []
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            continue
+        try:
+            x = float(entry.get("x_m", entry.get("x")))
+            y = float(entry.get("y_m", entry.get("y")))
+        except (TypeError, ValueError):
+            continue
+        ap_id = entry.get("id")
+        label = str(ap_id) if ap_id else f"AP-{index + 1}"
+        layouts.append(
+            {
+                "id": label,
+                "rf_run_id": rf_run.id,
+                "ap_name": label,
+                "x_m": x,
+                "y_m": y,
+                "z_m": entry.get("z_m"),
+                "power_dbm": entry.get("power_dbm"),
+                "channel_info_json": entry.get("channel_info_json") or {},
+                "point_geom": {"type": "Point", "coordinates": [x, y]},
+            }
+        )
+    return layouts
+
+
 def create_measurement_link(
     db: Session,
     floor_id: str,
@@ -401,7 +515,9 @@ def get_measurement_link_context(
     floorplan = _floorplan_info_from_asset(
         db, link.asset_id, link_token=token, base_url=base_url,
     )
-    bounds = _bounds_from_scene_walls(db, link.scene_version_id) or _bounds_from_floorplan(floorplan)
+    floorplan_bounds = _bounds_from_floorplan(floorplan)
+    scene_bounds = _bounds_from_scene_walls(db, link.scene_version_id)
+    bounds = floorplan_bounds if _valid_bounds(floorplan_bounds) else (scene_bounds or floorplan_bounds)
 
     return MeasurementLinkContextResponseDTO(
         token=link.token,
@@ -414,7 +530,9 @@ def get_measurement_link_context(
         coordinate_system=CoordinateSystemDTO(),
         bounds=bounds,
         anchor_points=[],
-        existing_ap_layouts=[],
+        existing_ap_layouts=_existing_ap_layouts_for_context(
+            db, link.floor_id, link.scene_version_id
+        ),
         recommended_measurement_purpose=link.purpose
         if link.purpose in {"calibration", "reference", "validation", "unknown"}
         else "calibration",
@@ -660,20 +778,23 @@ def list_points(
     user: User,
     page: int,
     page_size: int,
+    ap_bssid: str | None = None,
 ) -> PaginatedResponse[MeasurementPointResponseDTO]:
     """§10.4 — 세션 내 측정 포인트 페이지네이션 조회."""
     _load_owned_session(db, session_id, user)
 
+    filters = [MeasurementPoint.session_id == session_id]
+    if ap_bssid:
+        filters.append(func.lower(MeasurementPoint.ap_bssid) == ap_bssid.lower())
+
     total = db.execute(
-        select(func.count(MeasurementPoint.id)).where(
-            MeasurementPoint.session_id == session_id
-        )
+        select(func.count(MeasurementPoint.id)).where(*filters)
     ).scalar() or 0
 
     rows = (
         db.execute(
             select(MeasurementPoint)
-            .where(MeasurementPoint.session_id == session_id)
+            .where(*filters)
             .order_by(MeasurementPoint.step_index.asc().nullslast(), MeasurementPoint.created_at.asc())
             .offset((page - 1) * page_size)
             .limit(page_size)
@@ -781,6 +902,7 @@ def estimate_session_coverage(
     user: User,
     grid_resolution_m: float = 0.5,
     method: str = "auto",
+    ap_bssid: str | None = None,
 ) -> "EstimatedCoverageResponseDTO":
     """§81 — 세션의 측정점들을 GP regression 으로 dense map 추정.
 
@@ -810,16 +932,13 @@ def estimate_session_coverage(
     session_row = _load_owned_session(db, session_id, user)
 
     # 측정점 (rssi 있는 것만) 로드
-    rows = (
-        db.execute(
-            select(MeasurementPoint).where(
-                MeasurementPoint.session_id == session_row.id,
-                MeasurementPoint.rssi_dbm.isnot(None),
-            )
-        )
-        .scalars()
-        .all()
-    )
+    filters = [
+        MeasurementPoint.session_id == session_row.id,
+        MeasurementPoint.rssi_dbm.isnot(None),
+    ]
+    if ap_bssid:
+        filters.append(func.lower(MeasurementPoint.ap_bssid) == ap_bssid.lower())
+    rows = db.execute(select(MeasurementPoint).where(*filters)).scalars().all()
 
     points: list[tuple[float, float, float]] = []
     for r in rows:
@@ -890,11 +1009,20 @@ def estimate_session_coverage(
     # → noise floor 이상 + 비유한값 제외한 셀 들로만 계산.
     grid = estimate.mean_grid
     finite_mask = np.isfinite(grid) & (grid > -120.0)
+    coverage_threshold_dbm = -67.0
+    coverage_ratio = None
+    coverage_score = None
+    average_rssi_dbm = None
+    bottom_10_percent_rssi_dbm = None
     if finite_mask.any():
         valid = grid[finite_mask]
         # p2~p98 percentile — 양 극단 outlier (정상 범위지만 1~2 셀만 튀는 값) 도 제외.
         lo, hi = np.percentile(valid, [2.0, 98.0])
         rmin, rmax, rmean = float(lo), float(hi), float(valid.mean())
+        coverage_ratio = float(np.mean(valid >= coverage_threshold_dbm))
+        coverage_score = coverage_ratio
+        average_rssi_dbm = rmean
+        bottom_10_percent_rssi_dbm = float(np.percentile(valid, 10.0))
     else:
         rmin, rmax, rmean = -90.0, -30.0, -60.0  # fallback
     return EstimatedCoverageResponseDTO(
@@ -908,6 +1036,11 @@ def estimate_session_coverage(
         input_point_count=estimate.input_point_count,
         kernel_repr=estimate.kernel_repr,
         method=estimate.method,
+        coverage_threshold_dbm=coverage_threshold_dbm,
+        coverage_ratio=coverage_ratio,
+        coverage_score=coverage_score,
+        average_rssi_dbm=average_rssi_dbm,
+        bottom_10_percent_rssi_dbm=bottom_10_percent_rssi_dbm,
     )
 
 

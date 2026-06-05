@@ -63,6 +63,7 @@ interface StoredMeasurementView {
   sessionId: string | null;
   sceneVersionId: string | null;
   mode: MeasurementViewMode;
+  apBssid: string | null;
 }
 
 export default function MeasurementPage() {
@@ -118,6 +119,7 @@ export default function MeasurementPage() {
       ? selectedSession
       : sessionsForViewingVersion[0] ?? null;
   const activeSceneVersionId = viewingSceneVersionId;
+  const [selectedApBssid, setSelectedApBssid] = useState<string | null>(null);
   const versionDetailQuery = useSceneVersion(activeSceneVersionId);
   const sceneVersion = versionDetailQuery.data ?? null;
 
@@ -157,7 +159,7 @@ export default function MeasurementPage() {
   const spaceType: SpaceType = spaceTypeOverride ?? currentFloor?.space_type ?? 'unknown';
 
   // 측정 세션. 기본은 최근 세션 자동 선택, 사용자가 '이력 보기' 로 다른 세션 선택 가능.
-  const pointsQuery = useMeasurementPoints(activeSession?.id ?? null);
+  const pointsQuery = useMeasurementPoints(activeSession?.id ?? null, 500, selectedApBssid);
   const points = pointsQuery.data?.items ?? EMPTY_MEASUREMENT_POINTS;
 
   const canvasPoints = useMemo(() => apiPointsToCanvas(points), [points]);
@@ -172,11 +174,19 @@ export default function MeasurementPage() {
 
   // 가장 최근 succeeded RF Run → AP layouts + RF Map metrics.
   const rfRunsQuery = useFloorRfRuns(floorId, { status: 'succeeded', page_size: 50 });
+  const baselineRfRuns = useMemo(
+    () =>
+      (rfRunsQuery.data?.items ?? []).filter(
+        (r) =>
+          r.run_type !== 'ap_recommendation_verify' &&
+          r.scene_version_id === activeSceneVersionId,
+      ),
+    [activeSceneVersionId, rfRunsQuery.data?.items],
+  );
   const latestRfRun =
-    rfRunsQuery.data?.items?.find(
-      (r) => r.id === requestedRfRunId && r.scene_version_id === activeSceneVersionId,
-    ) ??
-    rfRunsQuery.data?.items?.find((r) => r.scene_version_id === activeSceneVersionId) ??
+    baselineRfRuns.find((r) => r.id === requestedRfRunId) ??
+    baselineRfRuns.find((r) => r.run_type === 'forward') ??
+    baselineRfRuns[0] ??
     null;
   const latestRfRunId = latestRfRun?.id ?? null;
   const apLayoutsQuery = useApLayouts(latestRfRunId);
@@ -189,6 +199,10 @@ export default function MeasurementPage() {
     return apsFromRfRunRequest(latestRfRun?.request_json);
   }, [apLayoutsQuery.data, latestRfRun]);
   const rfMapsQuery = useRfMaps(latestRfRunId, !!latestRfRunId);
+  const predictedHeatmap = useMemo(
+    () => extractPredictedHeatmap(rfMapsQuery.data ?? []),
+    [rfMapsQuery.data],
+  );
   const predictedAvgDbm = useMemo(
     () => extractPredictedAvgDbm(rfMapsQuery.data ?? []),
     [rfMapsQuery.data],
@@ -199,12 +213,26 @@ export default function MeasurementPage() {
   const detectedApsQuery = useDetectedAps(activeSession?.id ?? null);
   const detectedAps = detectedApsQuery.data ?? [];
 
+  useEffect(() => {
+    if (!selectedApBssid || detectedAps.length === 0) return;
+    const stillDetected = detectedAps.some(
+      (ap) => ap.ap_bssid.toLowerCase() === selectedApBssid.toLowerCase(),
+    );
+    if (!stillDetected) setSelectedApBssid(null);
+  }, [detectedAps, selectedApBssid]);
+
   // #81 RSSI 맵 추정 — 탭별로 다른 method 호출 (의미 분리):
   //   '실측 히트맵' (heatmap mode) → gp_only: 측정값만 GP 보간. sim 안 섞임.
   //   '예측·실측 통합' (both mode)  → residual_kriging: sim prior + residual GP.
   // 같은 sessionId 라도 method 다르면 cache 분리 → 탭 전환시 재요청 없이 즉시 표시.
-  const coverageGpOnlyQuery = useEstimatedCoverage(activeSession?.id ?? null, { method: 'gp_only' });
-  const coverageResidualQuery = useEstimatedCoverage(activeSession?.id ?? null, { method: 'residual_kriging' });
+  const coverageGpOnlyQuery = useEstimatedCoverage(activeSession?.id ?? null, {
+    method: 'gp_only',
+    apBssid: selectedApBssid,
+  });
+  const coverageResidualQuery = useEstimatedCoverage(activeSession?.id ?? null, {
+    method: 'residual_kriging',
+    apBssid: selectedApBssid,
+  });
 
   const [mode, setMode] = useState<MeasurementViewMode>('route');
 
@@ -216,11 +244,13 @@ export default function MeasurementPage() {
     if (!requestedSessionId && !requestedSceneVersionId) {
       setSelectedSessionId(stored.sessionId);
       setSelectedSceneVersionId(stored.sceneVersionId);
+      setSelectedApBssid(stored.apBssid);
     }
     setMode(stored.mode);
   }, [floorId, requestedSceneVersionId, requestedSessionId]);
 
   const activeCoverage = useMemo(() => {
+    if (mode === 'prediction') return null;
     // mode 에 맞는 데이터 우선, 없으면 다른 method 데이터로 일시 fallback —
     // 탭 전환 시 한쪽 query 가 아직 loading 이어도 heatmap 깜빡임 없이 유지.
     if (mode === 'both') {
@@ -265,20 +295,8 @@ export default function MeasurementPage() {
     !!activeSceneVersionId &&
     hasEnoughMeasurements;
   const evaluationSessionIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const session of sessions) {
-      if (activeSceneVersionId && session.scene_version_id !== activeSceneVersionId) continue;
-      if (
-        session.measurement_purpose === 'calibration' ||
-        session.measurement_purpose === 'reference' ||
-        session.measurement_purpose === 'validation'
-      ) {
-        ids.add(session.id);
-      }
-    }
-    if (activeSession?.id) ids.add(activeSession.id);
-    return [...ids];
-  }, [activeSession, activeSceneVersionId, sessions]);
+    return activeSession?.id ? [activeSession.id] : [];
+  }, [activeSession?.id]);
   const calibrationDisabledReason = !hasMeasurement
     ? '먼저 측정을 진행해주세요.'
     : !hasEnoughMeasurements
@@ -295,6 +313,7 @@ export default function MeasurementPage() {
         rf_run_id: latestRfRunId,
         scene_version_id: activeSceneVersionId,
         measurement_session_ids: evaluationSessionIds.length > 0 ? evaluationSessionIds : [activeSession.id],
+        ap_bssid: selectedApBssid,
         method: 'affine_rssi_transfer',
         split: { strategy: 'purpose_or_random', holdout_ratio: 0.3, seed: 42 },
         visualization: {
@@ -328,6 +347,7 @@ export default function MeasurementPage() {
       latestRfRunId,
       sessionIds.join(','),
       points.length,
+      selectedApBssid ?? 'all',
     ].join('|');
     if (lastAutoCalibrationKey.current === key) return;
     lastAutoCalibrationKey.current = key;
@@ -337,6 +357,7 @@ export default function MeasurementPage() {
         rf_run_id: latestRfRunId,
         scene_version_id: activeSceneVersionId,
         measurement_session_ids: sessionIds,
+        ap_bssid: selectedApBssid,
         method: 'affine_rssi_transfer',
         split: { strategy: 'purpose_or_random', holdout_ratio: 0.3, seed: 42 },
         visualization: {
@@ -360,6 +381,7 @@ export default function MeasurementPage() {
     activeSceneVersionId,
     evaluationSessionIds,
     points.length,
+    selectedApBssid,
     evaluateCalibration,
   ]);
 
@@ -377,9 +399,15 @@ export default function MeasurementPage() {
   }, [calibrationEvaluation]);
 
   const displayedHeatmap =
-    mode === 'both' && calibratedMainHeatmap ? calibratedMainHeatmap : estimatedHeatmap;
+    mode === 'prediction'
+      ? predictedHeatmap
+      : mode === 'both' && calibratedMainHeatmap
+      ? calibratedMainHeatmap
+      : estimatedHeatmap;
   const displayedRange =
-    mode === 'both' && calibratedMainHeatmap
+    mode === 'prediction' && predictedHeatmap?.rssiRange
+      ? predictedHeatmap.rssiRange
+      : mode === 'both' && calibratedMainHeatmap
       ? calibratedMainHeatmap.rssiRange
       : pointColorRange;
 
@@ -391,6 +419,7 @@ export default function MeasurementPage() {
       sessionId,
       sceneVersionId: session?.scene_version_id ?? null,
       mode,
+      apBssid: selectedApBssid,
     });
 
     const next = new URLSearchParams(searchParams);
@@ -410,6 +439,17 @@ export default function MeasurementPage() {
       sessionId: activeSession?.id ?? selectedSessionId,
       sceneVersionId: activeSceneVersionId,
       mode: nextMode,
+      apBssid: selectedApBssid,
+    });
+  };
+
+  const handleSelectApBssid = (apBssid: string | null) => {
+    setSelectedApBssid(apBssid);
+    persistMeasurementView(floorId, {
+      sessionId: activeSession?.id ?? selectedSessionId,
+      sceneVersionId: activeSceneVersionId,
+      mode,
+      apBssid,
     });
   };
 
@@ -468,14 +508,16 @@ export default function MeasurementPage() {
                   mode={mode}
                   estimatedHeatmap={displayedHeatmap}
                 />
-                {!hasMeasurement && <CanvasEmptyOverlay loading={pointsQuery.isFetching} />}
+                {mode !== 'prediction' && !hasMeasurement && (
+                  <CanvasEmptyOverlay loading={pointsQuery.isFetching} />
+                )}
                 {/* dbm 모드 colorbar — 도면 좌상단. gradient + tick 값 수직 정렬로 "이 색=이 dBm" 직관. */}
                 {mode !== 'route' && displayedRange && (
                   <div className="pointer-events-none absolute left-3 top-3 z-10 w-70">
                     <DbmColorBar
                       vmin={displayedRange.min}
                       vmax={displayedRange.max}
-                      label="실측 RSSI"
+                      label={mode === 'prediction' ? '예측 RSSI' : mode === 'both' ? '통합 RSSI' : '실측 RSSI'}
                     />
                   </div>
                 )}
@@ -515,7 +557,13 @@ export default function MeasurementPage() {
               hasData={hasMeasurement}
               onOpenGuide={() => setActionGuideOpen(true)}
             />
-            {detectedAps.length > 0 && <DetectedApsCard aps={detectedAps} />}
+            {detectedAps.length > 0 && (
+              <DetectedApsCard
+                aps={detectedAps}
+                selectedBssid={selectedApBssid}
+                onSelect={handleSelectApBssid}
+              />
+            )}
           </aside>
         </div>
       )}
@@ -585,6 +633,55 @@ function apsFromRfRunRequest(requestJson: Record<string, unknown> | undefined): 
     out.push({ id, x_m: x, y_m: y, label: id.toUpperCase() });
   });
   return out;
+}
+
+function extractPredictedHeatmap(maps: RfMap[]): {
+  url: string;
+  bounds: { min_x: number; min_y: number; max_x: number; max_y: number };
+  rssiRange?: { min: number; max: number };
+} | null {
+  const map = maps.find((m) => m.map_type === 'heatmap') ?? maps[0] ?? null;
+  if (!map) return null;
+  const url =
+    map.url ??
+    (/^https?:\/\//i.test(map.storage_url ?? '') ? map.storage_url : null);
+  const bounds = parseRfMapBounds(map.bounds_json);
+  if (!url || !bounds) return null;
+  const rssiRange = parseRfMapColorScale(map.metrics_json);
+  return { url, bounds, rssiRange: rssiRange ?? undefined };
+}
+
+function parseRfMapBounds(
+  bounds: Record<string, unknown> | null | undefined,
+): { min_x: number; min_y: number; max_x: number; max_y: number } | null {
+  if (!bounds) return null;
+  const min_x = Number(bounds.min_x);
+  const min_y = Number(bounds.min_y);
+  const max_x = Number(bounds.max_x);
+  const max_y = Number(bounds.max_y);
+  if (
+    !Number.isFinite(min_x) ||
+    !Number.isFinite(min_y) ||
+    !Number.isFinite(max_x) ||
+    !Number.isFinite(max_y) ||
+    max_x <= min_x ||
+    max_y <= min_y
+  ) {
+    return null;
+  }
+  return { min_x, min_y, max_x, max_y };
+}
+
+function parseRfMapColorScale(
+  metrics: Record<string, unknown> | null | undefined,
+): { min: number; max: number } | null {
+  const scale = metrics?.color_scale;
+  if (!scale || typeof scale !== 'object') return null;
+  const raw = scale as Record<string, unknown>;
+  const min = Number(raw.min_dbm ?? raw.min);
+  const max = Number(raw.max_dbm ?? raw.max);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return null;
+  return { min, max };
 }
 
 /** RfMap.metrics_json.rss_dbm.mean 추출 (없으면 옛 avg_rssi_dbm fallback). */
@@ -772,6 +869,7 @@ function sameDay(a: Date, b: Date) {
 
 const TABS: { id: MeasurementViewMode; label: string }[] = [
   { id: 'route', label: '측정 경로 보기' },
+  { id: 'prediction', label: '예측' },
   { id: 'heatmap', label: '실측 히트맵' },
   { id: 'both', label: '예측·실측 통합 분석' },
 ];
@@ -1191,11 +1289,17 @@ function CauseAnalysisCard({
 // 발견된 AP 목록 카드
 // ============================================
 
-function DetectedApsCard({ aps }: { aps: DetectedAp[] }) {
-  // RSSI 강한 순(절댓값 작은 순)으로 정렬.
+function DetectedApsCard({
+  aps,
+  selectedBssid,
+  onSelect,
+}: {
+  aps: DetectedAp[];
+  selectedBssid: string | null;
+  onSelect: (bssid: string | null) => void;
+}) {
   const sorted = useMemo(
-    () =>
-      [...aps].sort((a, b) => (b.rssi_avg ?? -200) - (a.rssi_avg ?? -200)),
+    () => [...aps].sort((a, b) => (b.rssi_avg ?? -200) - (a.rssi_avg ?? -200)),
     [aps],
   );
   return (
@@ -1204,28 +1308,50 @@ function DetectedApsCard({ aps }: { aps: DetectedAp[] }) {
         <Wifi className="h-4 w-4 text-primary" />
         발견된 AP ({sorted.length})
       </h3>
+      <button
+        type="button"
+        onClick={() => onSelect(null)}
+        className={cn(
+          'mt-3 flex w-full items-center justify-between rounded-md border px-2.5 py-1.5 text-xs',
+          selectedBssid == null
+            ? 'border-primary bg-primary/5 text-primary'
+            : 'bg-background text-foreground hover:bg-accent',
+        )}
+      >
+        <span className="font-medium">전체 BSSID</span>
+        <span className="text-[10px] text-muted-foreground">전체 보기</span>
+      </button>
       <ul className="mt-2 space-y-1.5">
-        {sorted.map((ap) => (
-          <li
-            key={ap.ap_bssid}
-            className="flex items-center justify-between gap-2 rounded-md border bg-background px-2.5 py-1.5 text-xs"
-          >
-            <div className="min-w-0">
-              <p className="truncate font-medium">{ap.ap_ssid ?? '(SSID 없음)'}</p>
-              <p className="truncate text-[10px] text-muted-foreground">
-                {ap.ap_bssid}
-                {ap.channel != null && ` · ch ${ap.channel}`}
-                {ap.frequency_mhz != null && ` · ${(ap.frequency_mhz / 1000).toFixed(1)}GHz`}
-              </p>
-            </div>
-            <div className="text-right tabular-nums">
-              <p className="text-xs font-semibold">
-                {ap.rssi_avg != null ? `${ap.rssi_avg.toFixed(0)} dBm` : '—'}
-              </p>
-              <p className="text-[10px] text-muted-foreground">{ap.point_count}회</p>
-            </div>
-          </li>
-        ))}
+        {sorted.map((ap) => {
+          const selected = selectedBssid?.toLowerCase() === ap.ap_bssid.toLowerCase();
+          return (
+            <li key={ap.ap_bssid}>
+              <button
+                type="button"
+                onClick={() => onSelect(ap.ap_bssid)}
+                className={cn(
+                  'flex w-full items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs',
+                  selected ? 'border-primary bg-primary/5' : 'bg-background hover:bg-accent',
+                )}
+              >
+                <div className="min-w-0">
+                  <p className="truncate font-medium">{ap.ap_ssid ?? '(SSID 없음)'}</p>
+                  <p className="truncate text-[10px] text-muted-foreground">
+                    {ap.ap_bssid}
+                    {ap.channel != null && ` · ch ${ap.channel}`}
+                    {ap.frequency_mhz != null && ` · ${(ap.frequency_mhz / 1000).toFixed(1)}GHz`}
+                  </p>
+                </div>
+                <div className="text-right tabular-nums">
+                  <p className="text-xs font-semibold">
+                    {ap.rssi_avg != null ? `${ap.rssi_avg.toFixed(0)} dBm` : '—'}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">{ap.point_count}회</p>
+                </div>
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -1242,13 +1368,17 @@ function readStoredMeasurementView(floorId: string): StoredMeasurementView | nul
     const value = parsed.byFloor?.[floorId];
     if (!value) return null;
     const mode =
-      value.mode === 'heatmap' || value.mode === 'both' || value.mode === 'route'
+      value.mode === 'heatmap' ||
+      value.mode === 'both' ||
+      value.mode === 'route' ||
+      value.mode === 'prediction'
         ? value.mode
         : 'route';
     return {
       sessionId: value.sessionId ?? null,
       sceneVersionId: value.sceneVersionId ?? null,
       mode,
+      apBssid: value.apBssid ?? null,
     };
   } catch {
     return null;

@@ -211,3 +211,8 @@ class EstimatedCoverageResponseDTO(BaseModel):
     input_point_count: int     # GP 학습에 쓴 측정점 개수
     kernel_repr: str           # 학습된 kernel 정보 (디버깅)
     method: str = "gp_only"    # 'gp_only' (sim 없음) | 'residual_kriging' (sim prior 사용)
+    coverage_threshold_dbm: float = -67.0
+    coverage_ratio: float | None = None
+    coverage_score: float | None = None
+    average_rssi_dbm: float | None = None
+    bottom_10_percent_rssi_dbm: float | None = None

@@ -18,7 +18,7 @@ export interface ApRecommendationRequest {
   target_bboxes?: MeterBBox[];
   candidate_bboxes?: MeterBBox[];
   evaluation_bboxes?: MeterBBox[];
-  priority_zones?: Array<MeterBBox & { label?: string | null; weight?: number }>;
+  priority_zones?: ApRecommendationZone[];
   excluded_zones?: MeterBBox[];
   default_unzoned_weight?: number;
   step_m?: number;
@@ -39,6 +39,11 @@ export interface MeterBBox {
   x_max: number;
   y_min: number;
   y_max: number;
+}
+
+export interface ApRecommendationZone extends MeterBBox {
+  label?: string | null;
+  weight: number;
 }
 
 /** POST /ap-recommendation 응답 내 단일 추천 항목. */
@@ -124,7 +129,7 @@ export interface ApRecommendationRun {
   input_areas_json: {
     candidate_bboxes?: MeterBBox[];
     evaluation_bboxes?: MeterBBox[];
-    priority_zones?: Array<MeterBBox & { label?: string | null; weight?: number }>;
+    priority_zones?: ApRecommendationZone[];
     excluded_zones?: MeterBBox[];
     default_unzoned_weight?: number;
   };

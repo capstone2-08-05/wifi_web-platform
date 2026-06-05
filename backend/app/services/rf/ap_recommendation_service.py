@@ -137,6 +137,7 @@ def recommend_ap_location(
     )
     rssi_transfer = _transfer_from_run(selected_calibration_run, request.calibration_policy)
     existing_aps = _parse_existing_aps(request.existing_aps)
+    _validate_replace_target(request, existing_aps)
 
     candidates = _generate_candidates_for_request(request)
     if not candidates:
@@ -912,6 +913,21 @@ def _parse_existing_aps(raw: list[dict]) -> list[AccessPoint]:
             )
         )
     return aps
+
+
+def _validate_replace_target(
+    request: ApRecommendationRequest,
+    existing_aps: list[AccessPoint],
+) -> None:
+    if request.recommendation_mode != "replace" or not request.replace_target_ap_id:
+        return
+    if any(ap.name == request.replace_target_ap_id for ap in existing_aps):
+        return
+    raise AppError(
+        ErrorCode.INVALID_REQUEST_BODY,
+        f"replace_target_ap_id '{request.replace_target_ap_id}' was not found in existing_aps.",
+        400,
+    )
 
 
 def _attach_baseline_rssi(

@@ -84,6 +84,11 @@ export interface EstimatedCoverage {
   uncertainty_max_db: number;
   input_point_count: number;
   kernel_repr: string;
+  coverage_threshold_dbm?: number;
+  coverage_ratio?: number | null;
+  coverage_score?: number | null;
+  average_rssi_dbm?: number | null;
+  bottom_10_percent_rssi_dbm?: number | null;
   /** 추정 방식 — UI 가 "시뮬 기반 보정" vs "단순 GP" 구분 표시. */
   method?: CoverageEstimationMethod;
 }

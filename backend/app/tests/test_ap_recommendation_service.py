@@ -10,6 +10,7 @@ backend_dir = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(backend_dir))
 
 from app.models.calibration_run import CalibrationRun
+from app.core.errors import AppError
 from app.schemas.rf.ap_recommendation import (
     ApRecommendationBBox,
     ApRecommendationRequest,
@@ -24,6 +25,7 @@ from app.services.rf.ap_recommendation_service import (
     _generate_eval_fallback_points,
     _params_from_run,
     _transfer_from_run,
+    _validate_replace_target,
 )
 from app.services.rf.calibration_worker.path_loss import AccessPoint, CalibrationParams, Measurement
 
@@ -212,3 +214,18 @@ def test_add_and_replace_modes_are_explicit():
     assert [ap.name for ap in add] == ["ap1", "ap2", "candidate"]
     assert [ap.name for ap in replace_all] == ["candidate"]
     assert [ap.name for ap in replace_target] == ["ap2", "ap1"]
+
+
+def test_replace_target_id_must_exist_in_existing_aps():
+    request = _request(
+        recommendation_mode="replace",
+        replace_target_ap_id="missing-ap",
+    )
+
+    with pytest.raises(AppError) as exc:
+        _validate_replace_target(
+            request,
+            [AccessPoint(name="ap1", x=0.0, y=0.0)],
+        )
+
+    assert exc.value.status_code == 400
