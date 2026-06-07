@@ -21,4 +21,7 @@ export const sceneVersionApi = {
 
   remove: (versionId: UUID) =>
     api.delete<void>(`/scene-versions/${versionId}`).then((r) => r.data),
+
+  rescale: (versionId: UUID, body: { factor: number; scale_source?: string }) =>
+    api.post<SceneVersion>(`/scene-versions/${versionId}/rescale`, body).then((r) => r.data),
 };

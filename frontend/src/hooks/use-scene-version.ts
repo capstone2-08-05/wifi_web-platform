@@ -145,3 +145,22 @@ export function usePromoteDraft() {
     },
   });
 }
+
+export function useRescaleSceneVersion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { id: UUID; factor: number; scaleSource?: string }) =>
+      sceneVersionApi.rescale(vars.id, {
+        factor: vars.factor,
+        ...(vars.scaleSource ? { scale_source: vars.scaleSource } : {}),
+      }),
+    onSuccess: (data, vars) => {
+      qc.setQueryData(['scene-version', vars.id], data);
+      qc.invalidateQueries({ queryKey: ['scene-version', vars.id] });
+    },
+    onError: (err) => {
+      const e = err as HttpError | null;
+      toast.error('scale 저장 실패', e?.message ?? '잠시 후 다시 시도해주세요.');
+    },
+  });
+}

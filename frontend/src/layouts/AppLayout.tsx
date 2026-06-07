@@ -19,7 +19,7 @@ const NAV = [
   { to: '/editor', label: '공간 편집', icon: Map, step: '01' },
   { to: '/simulation', label: '시뮬레이션', icon: Radio, step: '02' },
   { to: '/measurement', label: '실측/진단', icon: Activity, step: '03' },
-  { to: '/mobile', label: 'AP 배치 추천', icon: Sparkles, step: '04' },
+  { to: '/mobile', label: '공유기 배치 추천', icon: Sparkles, step: '04' },
 ] as const;
 
 export function AppLayout() {

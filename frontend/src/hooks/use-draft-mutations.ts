@@ -43,6 +43,8 @@ interface PatchVars {
   body: AnyDraftEntityPatch;
   /** 토스트 옵션 — 자동 저장(드래그/입력)에선 토스트 노이즈 줄이려고 false */
   silent?: boolean;
+  /** 토스트에 표시할 엔티티 이름 override. opening 의 경우 '문' / '창문' 으로 세분화. */
+  label?: string;
 }
 
 interface DeleteVars {
@@ -166,14 +168,16 @@ export function usePatchDraftEntity() {
     onError: (err, vars, context) => {
       if (context?.snapshot) restoreDrafts(qc, context.snapshot);
       const e = err as HttpError | null;
+      const label = vars.label ?? ENTITY_LABEL[vars.kind];
       toast.error(
-        `${ENTITY_LABEL[vars.kind]} 수정 실패`,
+        `${label} 수정 실패`,
         e?.message ?? '잠시 후 다시 시도해주세요.',
       );
     },
     onSuccess: (_data, vars) => {
       if (!vars.silent) {
-        toast.success(`${ENTITY_LABEL[vars.kind]} 수정 완료`);
+        const label = vars.label ?? ENTITY_LABEL[vars.kind];
+        toast.success(`${label} 수정 완료`);
       }
     },
     onSettled: () => {

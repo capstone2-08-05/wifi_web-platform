@@ -1,15 +1,16 @@
 """Scene Version: promote + 조회 + set-current"""
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.errors import AppError, ErrorCode
-from app.core.geom import wkb_to_geojson
+from app.core.geom import scale_wkb, wkb_to_geojson
 from app.models.floor import Floor
 from app.models.object import SceneObject
 from app.models.opening import Opening
@@ -403,3 +404,111 @@ def delete_version(db: Session, version_id: UUID, user: User) -> None:
     except Exception:
         db.rollback()
         raise
+
+
+def rescale_scene_version(
+    db: Session,
+    version_id: UUID,
+    current_user: User,
+    *,
+    factor: float,
+    scale_source: str | None = None,
+) -> SceneVersionDetailResponse:
+    """확정본 전체를 factor 만큼 비례 재스케일 (scene_draft rescale 과 동일 로직).
+
+    walls.centerline_geom/polygon_geom + metadata(dimension_length/dimension_match),
+    openings.line_geom/polygon_geom + width_m,
+    rooms.polygon_geom/centroid_geom,
+    objects.point_geom + metadata(width_m/height_m) 를 한 트랜잭션으로 갱신.
+    """
+    if not (0.001 <= factor <= 1000.0):
+        raise AppError(
+            ErrorCode.INVALID_REQUEST_BODY,
+            f"factor must be in [0.001, 1000], got {factor}",
+            status_code=400,
+        )
+
+    sv = (
+        db.query(SceneVersion)
+        .join(Floor, SceneVersion.floor_id == Floor.id)
+        .join(Project, Floor.project_id == Project.id)
+        .filter(
+            SceneVersion.id == str(version_id),
+            Project.owner_user_id == current_user.id,
+        )
+        .options(
+            selectinload(SceneVersion.walls),
+            selectinload(SceneVersion.openings),
+            selectinload(SceneVersion.rooms),
+            selectinload(SceneVersion.objects),
+        )
+        .first()
+    )
+    if sv is None:
+        raise AppError(
+            ErrorCode.SCENE_VERSION_NOT_FOUND,
+            "Scene version not found.",
+            status_code=404,
+        )
+
+    if abs(factor - 1.0) < 1e-9:
+        return get_scene_version(db, version_id, current_user)
+
+    f = float(factor)
+
+    for w in sv.walls:
+        if w.centerline_geom is not None:
+            w.centerline_geom = scale_wkb(w.centerline_geom, f)
+        if w.polygon_geom is not None:
+            w.polygon_geom = scale_wkb(w.polygon_geom, f)
+        meta = dict(w.metadata_json or {})
+        dl = meta.get("dimension_length")
+        if isinstance(dl, dict):
+            dl = dict(dl)
+            if isinstance(dl.get("meters"), (int, float)):
+                dl["meters"] = float(dl["meters"]) * f
+            meta["dimension_length"] = dl
+        dm = meta.get("dimension_match")
+        if isinstance(dm, dict):
+            dm = dict(dm)
+            for k in ("parsed_meters", "user_meters"):
+                v = dm.get(k)
+                if isinstance(v, (int, float)):
+                    dm[k] = float(v) * f
+            meta["dimension_match"] = dm
+        w.metadata_json = meta
+
+    for o in sv.openings:
+        if o.line_geom is not None:
+            o.line_geom = scale_wkb(o.line_geom, f)
+        if o.polygon_geom is not None:
+            o.polygon_geom = scale_wkb(o.polygon_geom, f)
+        if o.width_m is not None:
+            o.width_m = (Decimal(o.width_m) * Decimal(str(f))).quantize(Decimal("0.001"))
+
+    for r in sv.rooms:
+        if r.polygon_geom is not None:
+            r.polygon_geom = scale_wkb(r.polygon_geom, f)
+        if r.centroid_geom is not None:
+            r.centroid_geom = scale_wkb(r.centroid_geom, f)
+
+    for ob in sv.objects:
+        if ob.point_geom is not None:
+            ob.point_geom = scale_wkb(ob.point_geom, f)
+        meta = dict(ob.metadata_json or {})
+        for k in ("width_m", "height_m"):
+            v = meta.get(k)
+            if isinstance(v, (int, float)):
+                meta[k] = float(v) * f
+        ob.metadata_json = meta
+
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise AppError(
+            ErrorCode.SCENE_DRAFT_SAVE_FAILED,
+            f"Failed to persist scene version rescale: {exc}",
+            500,
+        ) from exc
+    return get_scene_version(db, version_id, current_user)

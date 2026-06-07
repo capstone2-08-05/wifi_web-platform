@@ -3,6 +3,7 @@ import { parseGeometry, type Coord } from '@/features/editor/geometry-utils';
 import { loadCachedViewBox } from '@/features/editor/viewbox-cache';
 import {
   deriveImageExtent,
+  inferImageExtentFromWallBounds,
   useImageNaturalDimensions,
 } from '@/features/editor/floorplan-image-extent';
 import type {
@@ -135,21 +136,31 @@ export function SimulationCanvas({
   // 있으면 image 는 (0,0)~(extent.w, extent.h) 에 그림 → 벽과 정확히 정렬.
   // 없으면 viewBox 영역에 fit 으로 fallback (정렬은 안 맞아도 결과는 보임).
   const imageDims = useImageNaturalDimensions(backgroundImageUrl ?? null);
-  const imageExtent = useMemo(
-    () =>
-      deriveImageExtent(imageDims, {
-        sourceAssetId: sceneVersion?.source_asset_id ?? null,
-        floorId: sceneVersion?.floor_id ?? null,
-      }),
-    [imageDims, sceneVersion?.source_asset_id, sceneVersion?.floor_id],
-  );
+  const imageExtent = useMemo(() => {
+    // 1순위: 도형 bounds 역추정 — SceneVersion 은 summary 가 없고, rescale 후
+    // localStorage 가 stale 될 수 있으므로 bounds 를 우선 사용.
+    // (bounds = 현재 geometry 좌표에서 직접 계산 → 항상 현재 scale 에 정확)
+    const b = emptyBounds();
+    for (const wall of sceneVersion?.walls ?? []) {
+      const g = parseGeometry(wall.centerline_geom);
+      if (g?.type === 'LineString') for (const [x, y] of g.coordinates) extendBounds(b, x, y);
+    }
+    const fromBounds = inferImageExtentFromWallBounds(imageDims, isFinite(b.minX) ? b : null);
+    if (fromBounds) return fromBounds;
+    // 2순위: localStorage 캐시 (벽 데이터 없거나 guard 실패 시 fallback)
+    return deriveImageExtent(imageDims, {
+      sourceAssetId: sceneVersion?.source_asset_id ?? null,
+      floorId: sceneVersion?.floor_id ?? null,
+    });
+  }, [imageDims, sceneVersion?.source_asset_id, sceneVersion?.floor_id, sceneVersion?.walls]);
 
-  // viewBox: editor/measurement 와 같은 floor 캐시를 우선 사용해 페이지 간 도면 크기를 고정.
-  // 캐시가 없을 때만 image+shape union 으로 계산.
+  // imageExtent 가 있으면 항상 image+shape union 으로 계산 (editor 와 동일한 로직).
+  // 캐시는 imageExtent 없이 저장된 경우 배경 이미지가 clipPath 에 잘리는 문제를 일으킬 수 있어
+  // imageExtent 확보 이후엔 무시.
   const vb = useMemo(() => {
+    if (imageExtent) return computeViewBox(sceneVersion, imageExtent);
     const cached = loadCachedViewBox(sceneVersion?.floor_id ?? null);
     if (cached) return cached;
-    if (imageExtent) return computeViewBox(sceneVersion, imageExtent);
     return computeViewBox(sceneVersion, null);
   }, [sceneId, sceneVersion?.floor_id, imageExtent]);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -603,7 +614,7 @@ const OBJECT_TYPE_LABEL: Record<string, string> = {
   desk: '책상',
   sofa: '소파',
   bed: '침대',
-  ap: 'AP',
+  ap: '공유기',
   furniture: '가구',
   counter: '카운터',
   refrigerator: '냉장고',

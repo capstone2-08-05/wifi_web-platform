@@ -15,6 +15,7 @@ import { useFloorplanJob } from '@/hooks/use-floorplan-job';
 import {
   useFloorVersions,
   usePromoteDraft,
+  useRescaleSceneVersion,
   useSceneVersion,
 } from '@/hooks/use-scene-version';
 import { useAssetDownloadUrl, useFloorAssets } from '@/hooks/use-assets';
@@ -45,6 +46,12 @@ import {
   type GeoJsonGeometry,
 } from '@/features/editor/geometry-utils';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
+import {
+  loadCachedScaleRatio,
+  saveCachedScaleRatio,
+  loadCachedRealWidth,
+  saveCachedRealWidth,
+} from '@/features/editor/floorplan-image-extent';
 import { toast } from '@/stores/toast-store';
 import type { DraftEntityKind } from '@/types/scene';
 import type { HttpError } from '@/api/client';
@@ -74,6 +81,7 @@ export default function EditorPage() {
   const promote = usePromoteDraft();
   const removeDraft = useDeleteSceneDraft();
   const rescaleSceneDraft = useRescaleSceneDraft();
+  const rescaleSceneVersion = useRescaleSceneVersion();
   const patchEntity = usePatchDraftEntity();
   const deleteEntity = useDeleteDraftEntity();
   const createEntity = useCreateDraftEntity();
@@ -306,7 +314,14 @@ export default function EditorPage() {
         });
       }
     }
-    const vars = { kind, id, body, silent: options?.silent };
+    // opening 이면 현재 엔티티의 opening_type 으로 토스트 레이블 결정.
+    let label: string | undefined;
+    if (kind === 'opening') {
+      const op = baseScene?.openings.find((o) => o.id === id);
+      const ot = op?.opening_type;
+      label = ot === 'door' ? '문' : ot === 'window' ? '창문' : '문·창';
+    }
+    const vars = { kind, id, body, silent: options?.silent, label };
     if (isVersionEditing) patchVersionEntity.mutate(vars);
     else patchEntity.mutate(vars);
   };
@@ -604,19 +619,11 @@ export default function EditorPage() {
 
   /**
    * 선택된 벽/문/창의 실측값(m)을 기준으로 도면 전체를 비례 스케일.
-   * - factor = targetMeters / 현재 도형 길이(centerline_geom 또는 line_geom).
-   * - 백엔드 POST /scene-drafts/{id}/rescale 단일 호출 — walls·openings·rooms·objects
-   *   geometry 와 종속 metadata(dimension_length, dimension_match, object size 등)
-   *   + summary.scale_ratio 까지 한 트랜잭션 안에서 ×factor.
-   * - 프론트가 N-PATCH 보내던 패턴을 1요청으로 통합 → 큰 도면에서 네트워크·캐시 폭주 방지.
+   * draft 모드: POST /scene-drafts/{id}/rescale
+   * version 모드: POST /scene-versions/{id}/rescale (동일 로직, 다른 엔드포인트)
    */
   const handleScaleAll = (targetMeters: number) => {
     if (!selectedRef || (selectedRef.kind !== 'wall' && selectedRef.kind !== 'opening')) return;
-    if (isVersionEditing) {
-      toast.error('Scale 보정은 Draft 모드에서만 가능합니다');
-      return;
-    }
-    if (!activeDraft) return;
     if (!Number.isFinite(targetMeters) || targetMeters <= 0) return;
 
     const geomLength = (g: GeoJsonGeometry): number => {
@@ -630,14 +637,14 @@ export default function EditorPage() {
       return len;
     };
 
-    // 소스 엔티티의 현재 길이로 factor 계산
+    // 소스 엔티티의 현재 길이로 factor 계산 — draft/version 공통으로 baseScene 사용.
     let currentLength: number | null = null;
     if (selectedRef.kind === 'wall') {
-      const wall = activeDraft.walls.find((w) => w.id === selectedRef.id);
+      const wall = baseScene?.walls.find((w) => w.id === selectedRef.id);
       const g = parseGeometry(wall?.centerline_geom);
       if (g?.type === 'LineString' && g.coordinates.length >= 2) currentLength = geomLength(g);
     } else {
-      const op = activeDraft.openings.find((o) => o.id === selectedRef.id);
+      const op = baseScene?.openings.find((o) => o.id === selectedRef.id);
       const g = parseGeometry(op?.line_geom);
       if (g?.type === 'LineString' && g.coordinates.length >= 2) {
         currentLength = geomLength(g);
@@ -668,17 +675,42 @@ export default function EditorPage() {
     );
     if (!ok) return;
 
-    rescaleSceneDraft.mutate(
-      { id: activeDraft.id, factor, scaleSource: 'manual_rescale' },
-      {
-        onSuccess: () => {
-          toast.info(
-            '도면 전체를 재스케일했습니다',
-            `${factor.toFixed(3)}× — ${currentLength.toFixed(2)} m → ${targetMeters.toFixed(2)} m`,
-          );
+    const successMsg = () =>
+      toast.info(
+        '도면 전체를 재스케일했습니다',
+        `${factor.toFixed(3)}× — ${currentLength!.toFixed(2)} m → ${targetMeters.toFixed(2)} m`,
+      );
+
+    if (isVersionEditing) {
+      const versionId = versionDetailQuery.data?.id;
+      if (!versionId) return;
+      const vFloorId = versionDetailQuery.data?.floor_id ?? null;
+      const vAssetId = versionDetailQuery.data?.source_asset_id ?? null;
+      rescaleSceneVersion.mutate(
+        { id: versionId, factor, scaleSource: 'manual_rescale' },
+        {
+          onSuccess: () => {
+            // versionToDraftShape 가 summary_json:{} 를 반환하므로 imageExtent 계산이
+            // localStorage 캐시에 의존한다. 캐시 갱신 없이는 배경 이미지 크기가 구 scale
+            // 로 고정돼 벡터와 어긋남 → factor 를 곱해 직접 갱신.
+            for (const key of [vAssetId, vFloorId]) {
+              if (!key) continue;
+              const oldRatio = loadCachedScaleRatio(key);
+              if (oldRatio != null) saveCachedScaleRatio(key, oldRatio * factor);
+              const oldW = loadCachedRealWidth(key);
+              if (oldW != null) saveCachedRealWidth(key, oldW * factor);
+            }
+            successMsg();
+          },
         },
-      },
-    );
+      );
+    } else {
+      if (!activeDraft) return;
+      rescaleSceneDraft.mutate(
+        { id: activeDraft.id, factor, scaleSource: 'manual_rescale' },
+        { onSuccess: successMsg },
+      );
+    }
   };
 
   // 객체 종류 변경

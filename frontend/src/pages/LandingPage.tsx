@@ -44,7 +44,7 @@ const NAV_ITEMS = [
   { step: '01', label: '공간 편집', active: false },
   { step: '02', label: '시뮬레이션', active: true },
   { step: '03', label: '실측/진단', active: false },
-  { step: '04', label: 'AP 배치 추천', active: false },
+  { step: '04', label: '공유기 배치 추천', active: false },
 ];
 
 const STEPS = [
@@ -60,7 +60,7 @@ const STEPS = [
     emoji: '📡',
     icon: Radio,
     title: '시뮬레이션',
-    desc: '도면 위에 AP(공유기)를 자유롭게 배치하고 예상 Wi-Fi 커버리지를 열지도로 확인합니다. 위치를 바꿔가며 최적 배치를 찾아보세요.',
+    desc: '도면 위에 공유기를 자유롭게 배치하고 예상 Wi-Fi 커버리지를 열지도로 확인합니다. 위치를 바꿔가며 최적 배치를 찾아보세요.',
   },
   {
     num: '03',
@@ -73,8 +73,8 @@ const STEPS = [
     num: '04',
     emoji: '✨',
     icon: Sparkles,
-    title: 'AP 배치 추천',
-    desc: '실측 데이터를 분석해 신호가 약한 구역을 찾고, 개선 효과가 가장 큰 AP 설치 위치를 추천합니다.',
+    title: '공유기 배치 추천',
+    desc: '실측 데이터를 분석해 신호가 약한 구역을 찾고, 개선 효과가 가장 큰 공유기 설치 위치를 추천합니다.',
   },
 ];
 
@@ -82,7 +82,7 @@ const STEPS = [
 /* 텍스트 순환 컴포넌트                                                  */
 /* ------------------------------------------------------------------ */
 const CYCLE_ITEMS = [
-  '도면 위에 AP를 배치하고 커버리지를 예측하세요',
+  '도면 위에 공유기를 배치하고 커버리지를 예측하세요',
   '모바일로 실측해 사각지대를 바로 확인하세요',
   'AI가 분석한 최적 공유기 위치를 추천받으세요',
   '실측 데이터로 시뮬레이션 정확도를 높이세요',
@@ -260,8 +260,8 @@ export default function LandingPage() {
                       <div key={i} className="rounded-xl border border-white/70 bg-white/35" />
                     ))}
                   </div>
-                  <div className="absolute left-12 top-9 rounded-full bg-blue-600 px-2 py-0.5 text-[9px] font-bold text-white shadow-md">AP-1</div>
-                  <div className="absolute right-12 top-6 rounded-full bg-blue-600 px-2 py-0.5 text-[9px] font-bold text-white shadow-md">AP-2</div>
+                  <div className="absolute left-12 top-9 rounded-full bg-blue-600 px-2 py-0.5 text-[9px] font-bold text-white shadow-md">공유기1</div>
+                  <div className="absolute right-12 top-6 rounded-full bg-blue-600 px-2 py-0.5 text-[9px] font-bold text-white shadow-md">공유기2</div>
                   <div className="absolute bottom-2.5 left-2.5 right-2.5 rounded-xl bg-white/90 px-3 py-2 backdrop-blur-sm">
                     <div className="flex items-center justify-between text-[9px]">
                       <span className="text-slate-500">커버리지</span>
@@ -276,7 +276,7 @@ export default function LandingPage() {
                 {/* 지표 */}
                 <div className="grid grid-cols-3 gap-2">
                   {[
-                    { label: 'AP 수', value: '2개' },
+                    { label: '공유기 수', value: '2개' },
                     { label: '평균 RSSI', value: '-58 dBm' },
                     { label: '주파수', value: '5 GHz' },
                   ].map((m) => (
