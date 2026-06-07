@@ -1070,16 +1070,26 @@ def _compute_residual_transfer(
     from app.models.measurement_session import MeasurementSession
     from app.models.rf_run import RfRun
 
-    # 1) 최신 completed 측정 세션 + 포인트 로드
+    # 1) 최신 completed 측정 세션 + 포인트 로드 (현재 scene_version 우선, 없으면 같은 층 전체)
     session = db.execute(
         select(MeasurementSession)
         .where(
-            MeasurementSession.floor_id == floor_id,
+            MeasurementSession.scene_version_id == scene_version_id,
             MeasurementSession.status == "completed",
         )
         .order_by(MeasurementSession.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
+    if session is None:
+        session = db.execute(
+            select(MeasurementSession)
+            .where(
+                MeasurementSession.floor_id == floor_id,
+                MeasurementSession.status == "completed",
+            )
+            .order_by(MeasurementSession.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
     if session is None:
         return transfer
 
@@ -1099,16 +1109,26 @@ def _compute_residual_transfer(
         if len(coords) >= 2:
             meas_pts.append((float(coords[0]), float(coords[1]), float(p.rssi_dbm)))
 
-    # 2) Sionna radio_map 로드
+    # 2) Sionna radio_map 로드 (현재 scene_version 우선, 없으면 같은 층 전체)
     rf_run = db.execute(
         select(RfRun)
         .where(
-            RfRun.floor_id == floor_id,
+            RfRun.scene_version_id == scene_version_id,
             RfRun.status.in_(["done", "completed", "succeeded"]),
         )
         .order_by(RfRun.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
+    if rf_run is None:
+        rf_run = db.execute(
+            select(RfRun)
+            .where(
+                RfRun.floor_id == floor_id,
+                RfRun.status.in_(["done", "completed", "succeeded"]),
+            )
+            .order_by(RfRun.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
     if rf_run is None:
         return transfer
 
@@ -1160,6 +1180,15 @@ def _compute_residual_transfer(
     if len(residual_pts) < 3:
         return transfer
 
+    # 포인트 수에 따라 weight 조정 — 적을수록 GP 신뢰도 낮음
+    n_pts = len(residual_pts)
+    if n_pts < 10:
+        effective_weight = residual_weight * 0.5
+    elif n_pts < 20:
+        effective_weight = residual_weight * 0.75
+    else:
+        effective_weight = residual_weight
+
     # 4) GP로 잔차 보간
     try:
         from app.services.rf.measurement_estimation.gp_estimator import estimate_coverage
@@ -1190,7 +1219,7 @@ def _compute_residual_transfer(
         calibration_run_id=transfer.calibration_run_id,
         transfer_applied=True,
         residual_enabled=True,
-        residual_weight=residual_weight,
+        residual_weight=effective_weight,
         residual_grid=residual_grid,
         residual_xs=residual_xs,
         residual_ys=residual_ys,
