@@ -666,7 +666,7 @@ export default function MobileAppPage() {
           </div>
           <div className="flex shrink-0 flex-col items-stretch gap-1.5 sm:items-end">
             <div className="flex items-center gap-2 sm:justify-end">
-              <span className="text-[12px] text-slate-500">설치할 AP 수</span>
+              <span className="text-[12px] text-slate-500">설치할 공유기 수</span>
               <div className="flex gap-1">
                 {[1, 2, 3, 4, 5].map((n) => (
                   <button
@@ -1408,7 +1408,7 @@ function RecommendationCard({
           <h3 className="text-sm font-bold text-foreground">{rec.rank}순위 추천</h3>
           <p className="mt-1 text-xs text-muted-foreground">
             {rec.ap_positions && rec.ap_positions.length > 1
-              ? rec.ap_positions.map((p) => `AP${p.ap_index} (${p.x.toFixed(0)}m, ${p.y.toFixed(0)}m)`).join(' · ')
+              ? rec.ap_positions.map((p) => `공유기${p.ap_index} (${p.x.toFixed(0)}m, ${p.y.toFixed(0)}m)`).join(' · ')
               : `위치 X ${rec.recommended_x.toFixed(0)}m / Y ${rec.recommended_y.toFixed(0)}m`}
           </p>
           <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">

@@ -13,6 +13,7 @@ from app.models.user import User
 from app.schemas.scene.opening import OpeningCreate, OpeningResponse
 from app.schemas.scene.room import RoomCreate, RoomResponse
 from app.schemas.scene.scene_object import ObjectCreate, ObjectResponse
+from app.schemas.scene.scene_draft import SceneDraftRescaleRequest
 from app.schemas.scene.scene_version import (
     PromoteRequest,
     SceneVersionDetailResponse,
@@ -56,6 +57,23 @@ def get_scene_version(
 ) -> SceneVersionDetailResponse:
     return scene_version_service.get_scene_version(
         db, version_id=version_id, user=current_user
+    )
+
+
+@scene_versions_router.post(
+    "/{version_id}/rescale",
+    response_model=SceneVersionDetailResponse,
+    summary="확정본 전체 비례 재스케일 (실측 기반 스케일 보정)",
+)
+def rescale_scene_version(
+    payload: SceneDraftRescaleRequest,
+    version_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SceneVersionDetailResponse:
+    return scene_version_service.rescale_scene_version(
+        db, version_id=version_id, current_user=current_user,
+        factor=payload.factor, scale_source=payload.scale_source,
     )
 
 

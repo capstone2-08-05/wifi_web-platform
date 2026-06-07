@@ -22,6 +22,7 @@ import {
 } from './viewbox-cache';
 import {
   deriveImageExtent as deriveImageExtentShared,
+  inferImageExtentFromWallBounds,
   saveCachedRealWidth,
   saveCachedScaleRatio,
   useImageNaturalDimensions,
@@ -158,9 +159,27 @@ function deriveImageExtent(
     storage?: { real_width_m?: number };
     scale_ratio_m_per_px?: number;
   };
-  return deriveImageExtentShared(imageDims, {
+
+  // 1순위: summary 직접 보유 (draft 모드 — rescale 후 백엔드가 갱신해 반환).
+  const fromSummary = deriveImageExtentShared(imageDims, {
     realWidthM: summary.storage?.real_width_m ?? null,
     scaleRatioMPerPx: summary.scale_ratio_m_per_px ?? null,
+  });
+  if (fromSummary) return fromSummary;
+
+  // 2순위: 도형 bounds 역추정.
+  // version-as-draft 는 summary_json:{} 이므로 여기 도달. rescale 후에도 도형 좌표가
+  // factor 배 되므로 bounds 기반 추정이 현재 scale 에 맞는 imageExtent 를 반환.
+  // (기존 localStorage 캐시가 stale 된 상황도 자동 복구.)
+  const bounds = computeShapeBounds(draft);
+  const fromBounds = inferImageExtentFromWallBounds(
+    imageDims,
+    isFinite(bounds.minX) ? bounds : null,
+  );
+  if (fromBounds) return fromBounds;
+
+  // 3순위: localStorage 캐시 (stale 가능성 있음 — 위 두 경로가 모두 실패했을 때만 사용).
+  return deriveImageExtentShared(imageDims, {
     sourceAssetId: draft.source_asset_id ?? null,
     floorId: draft.floor_id ?? null,
   });
@@ -1088,6 +1107,7 @@ export function DraftSceneCanvas({
             height_m: 2.1,
             source_method: 'user_drawn',
             line_geom: { type: 'LineString', coordinates: [start, pt] },
+            metadata_json: { material: tool === 'door' ? 'itu_wood' : 'itu_glass' },
           });
         }
         setCreating(null);
@@ -2223,7 +2243,7 @@ const OBJECT_TYPE_LABEL: Record<string, string> = {
   desk: '책상',
   sofa: '소파',
   bed: '침대',
-  ap: 'AP',
+  ap: '공유기',
   furniture: '가구',
   counter: '카운터',
   refrigerator: '냉장고',
