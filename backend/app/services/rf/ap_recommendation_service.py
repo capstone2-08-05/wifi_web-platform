@@ -1253,7 +1253,7 @@ def _attach_baseline_rssi(
         return
     for point in points:
         raw = predict_rssi_best_ap(existing_aps, _as_measurement(point), walls, params)
-        point.baseline_rssi_dbm = apply_rssi_transfer(raw, transfer)
+        point.baseline_rssi_dbm = apply_rssi_transfer(raw, transfer, x=point.x, y=point.y)
 
 
 def apply_rssi_transfer(
