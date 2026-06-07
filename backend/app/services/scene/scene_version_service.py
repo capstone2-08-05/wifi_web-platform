@@ -507,7 +507,7 @@ def rescale_scene_version(
     except SQLAlchemyError as exc:
         db.rollback()
         raise AppError(
-            ErrorCode.SCENE_DRAFT_SAVE_FAILED,
+            ErrorCode.SCENE_VERSION_SAVE_FAILED,
             f"Failed to persist scene version rescale: {exc}",
             500,
         ) from exc

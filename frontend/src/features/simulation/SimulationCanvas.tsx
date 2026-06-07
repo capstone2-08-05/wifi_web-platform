@@ -162,7 +162,7 @@ export function SimulationCanvas({
     const cached = loadCachedViewBox(sceneVersion?.floor_id ?? null);
     if (cached) return cached;
     return computeViewBox(sceneVersion, null);
-  }, [sceneId, sceneVersion?.floor_id, imageExtent]);
+  }, [sceneVersion, imageExtent]);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<Coord>([0, 0]);
 
