@@ -416,12 +416,15 @@ def _build_sionna_request_payload(
     """
     walls = [
         {
-            "id": f"w{i}",
+            # scene_json wall 에 id(UUID) 가 있으면 사용, 없으면 순번 fallback.
+            # opening.wall_id 가 이 id 를 참조하므로 반드시 일치해야 함.
+            "id": str(w.get("id") or f"w{i}"),
             "start_xy": [float(w["x1"]), float(w["y1"])],
             "end_xy": [float(w["x2"]), float(w["y2"])],
             "height_m": float(w.get("height") or 2.6),
             "thickness_m": float(w.get("thickness") or 0.12),
             "material_id": str(w.get("material") or "plasterboard"),
+            "sionna_material_key": str(w.get("material") or "plasterboard"),
         }
         for i, w in enumerate(scene_json.get("walls") or [])
     ]
@@ -431,6 +434,20 @@ def _build_sionna_request_payload(
             "polygon_xy": [[float(p[0]), float(p[1])] for p in (r.get("points") or [])],
         }
         for i, r in enumerate(scene_json.get("rooms") or [])
+    ]
+    openings = [
+        {
+            "id": str(op.get("id") or f"op{j}"),
+            "wall_id": str(op["wall_id"]),
+            "center_xy": [float(op["center_xy"][0]), float(op["center_xy"][1])],
+            "width_m": float(op["width_m"]),
+            "height_m": float(op["height_m"]),
+            "bottom_z_m": float(op.get("bottom_z_m") or 0.0),
+            "sionna_material_key": str(op.get("sionna_material_key") or "wood"),
+            "material_id": str(op.get("material_id") or op.get("sionna_material_key") or "wood"),
+        }
+        for j, op in enumerate(scene_json.get("openings") or [])
+        if op.get("wall_id")
     ]
 
     primary_ap = access_points[0]
@@ -455,7 +472,7 @@ def _build_sionna_request_payload(
             "scene_id": scene_version_id,
             "walls": walls,
             "rooms": rooms,
-            "openings": [],
+            "openings": openings,
             "furniture": [],
         },
         "access_point": {

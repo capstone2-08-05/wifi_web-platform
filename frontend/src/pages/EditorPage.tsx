@@ -579,7 +579,7 @@ export default function EditorPage() {
     });
   };
 
-  // 벽 재질 변경
+  // 재질 변경 (벽/개구부/기둥 객체)
   const handleUpdateMaterial = (material: string) => {
     if (!selectedRef) return;
     if (selectedRef.kind === 'wall') {
@@ -589,8 +589,9 @@ export default function EditorPage() {
     if (selectedRef.kind === 'opening' && baseScene) {
       const opening = baseScene.openings.find((o) => o.id === selectedRef.id);
       const meta = (opening?.metadata_json ?? {}) as Record<string, unknown>;
+      // "material" 키 사용 — scene_version_export.py 가 metadata_json["material"] 을 읽음
       runPatch('opening', selectedRef.id, {
-        metadata_json: { ...meta, material_label: material },
+        metadata_json: { ...meta, material },
       });
       return;
     }
@@ -602,6 +603,32 @@ export default function EditorPage() {
         metadata_json: { ...meta, material_label: material },
       });
     }
+  };
+
+  // 모든 문 재질 일괄 변경
+  const handleBulkUpdateDoorMaterial = (material: string) => {
+    if (!baseScene) return;
+    const doors = baseScene.openings.filter((o) => o.opening_type === 'door');
+    doors.forEach((op, i) => {
+      const meta = (op.metadata_json ?? {}) as Record<string, unknown>;
+      runPatch('opening', op.id, { metadata_json: { ...meta, material } }, {
+        skipHistory: i > 0,
+        silent: i < doors.length - 1,
+      });
+    });
+  };
+
+  // 모든 창문 재질 일괄 변경
+  const handleBulkUpdateWindowMaterial = (material: string) => {
+    if (!baseScene) return;
+    const windows = baseScene.openings.filter((o) => o.opening_type === 'window');
+    windows.forEach((op, i) => {
+      const meta = (op.metadata_json ?? {}) as Record<string, unknown>;
+      runPatch('opening', op.id, { metadata_json: { ...meta, material } }, {
+        skipHistory: i > 0,
+        silent: i < windows.length - 1,
+      });
+    });
   };
 
   // 벽 실측 길이 (m) 갱신 — metadata_json.dimension_match.user_meters 에 저장.
@@ -1067,6 +1094,10 @@ export default function EditorPage() {
         onScaleAll={handleScaleAll}
         onUpdateObjectPosition={handleUpdateObjectPosition}
         onUpdateObjectSize={handleResizeObject}
+        onBulkUpdateDoorMaterial={baseScene ? handleBulkUpdateDoorMaterial : undefined}
+        onBulkUpdateWindowMaterial={baseScene ? handleBulkUpdateWindowMaterial : undefined}
+        doorCount={baseScene?.openings.filter((o) => o.opening_type === 'door').length ?? 0}
+        windowCount={baseScene?.openings.filter((o) => o.opening_type === 'window').length ?? 0}
         isSaving={patchEntity.isPending || patchVersionEntity.isPending}
         isDeleting={deleteEntity.isPending || deleteVersionEntity.isPending}
       />

@@ -59,19 +59,17 @@ export function wallRoleLabel(role: string | null | undefined): string {
   return WALL_ROLE_LABELS[key] ?? role ?? '-';
 }
 
-/** 재질(material_label) → 한국어 라벨. value 는 백엔드 enum 그대로 유지. */
+/** 재질(material_label / material_code) → 한국어 라벨. Sionna 유효 재질만 포함. */
 const MATERIAL_LABELS: Record<string, string> = {
   concrete: '콘크리트',
   brick: '벽돌',
   drywall: '석고보드',
-  gypsum_board: '석고보드',
+  plasterboard: '석고보드',  // Sionna 내부 키 (drywall alias)
   glass: '유리',
   wood: '목재',
   metal: '금속',
-  steel: '강철',
-  stone: '석재',
-  plaster: '회벽',
-  tile: '타일',
+  chipboard: '칩보드',
+  ceiling_board: '천장재',
 };
 
 export function materialLabel(material: string | null | undefined): string {

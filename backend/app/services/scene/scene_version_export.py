@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.errors import AppError, ErrorCode
 from app.core.geom import wkb_to_geojson
-from app.models import Room, SceneVersion, Wall
+from app.models import Opening, Room, SceneVersion, Wall
 from app.services.rf.scene_obstacles import column_wall_segments_for_objects, normalize_rf_material
 
 logger = logging.getLogger(__name__)
@@ -52,10 +52,15 @@ MATERIAL_ALIAS: dict[str, str] = {
     "marble": "concrete",   # Sionna 1.0.2 에 marble 없음 → 가장 비슷한 concrete 로
     "plywood": "wood",
     "plastic": "chipboard",
-    "\uc720\ub9ac": "glass",
-    "\ub098\ubb34": "wood",
-    "\ucf58\ud06c\ub9ac\ud2b8": "concrete",
-    "\ud50c\ub77c\uc2a4\ud2f1": "chipboard",
+    # DB material_name (\ud55c\uad6d\uc5b4) \u2192 Sionna key
+    "\uc720\ub9ac": "glass",           # \uc720\ub9ac
+    "\ub098\ubb34": "wood",            # \ub098\ubb34 (\uad6c \ud638\ud658)
+    "\ubaa9\uc7ac": "wood",            # \ubaa9\uc7ac (DB material_name)
+    "\ucf58\ud06c\ub9ac\ud2b8": "concrete",  # \ucf58\ud06c\ub9ac\ud2b8
+    "\ubcbd\ub3cc": "brick",           # \ubcbd\ub3cc
+    "\uc11d\uace0\ubcf4\ub4dc": "plasterboard",  # \uc11d\uace0\ubcf4\ub4dc
+    "\uae08\uc18d": "metal",           # \uae08\uc18d
+    "\ud50c\ub77c\uc2a4\ud2f1": "chipboard",  # \ud50c\ub77c\uc2a4\ud2f1
 }
 SIONNA_FALLBACK = "plasterboard"
 
@@ -86,6 +91,7 @@ def export_scene_version_to_scene_json(
             selectinload(SceneVersion.walls),
             selectinload(SceneVersion.rooms),
             selectinload(SceneVersion.objects),
+            selectinload(SceneVersion.openings),
         )
         .filter(SceneVersion.id == scene_version_id)
         .first()
@@ -106,6 +112,7 @@ def export_scene_version_to_scene_json(
         x2, y2 = line[-1]
         walls_out.append(
             {
+                "id": str(w.id),
                 "x1": float(x1),
                 "y1": float(y1),
                 "x2": float(x2),
@@ -138,6 +145,37 @@ def export_scene_version_to_scene_json(
             continue
         rooms_out.append({"points": [[float(p[0]), float(p[1])] for p in polygon]})
 
+    # 문/창문(opening) — sionna_runtime 이 wall split + opening_box 처리에 사용.
+    # wall_id 는 위 walls_out 의 "id" 필드와 동일한 UUID 여야 매칭됨.
+    DEFAULT_DOOR_MATERIAL = "wood"
+    DEFAULT_WINDOW_MATERIAL = "glass"
+    openings_out: list[dict[str, Any]] = []
+    for op in (sv.openings or []):
+        if not op.wall_id:
+            continue
+        line = _extract_linestring(op.line_geom)
+        if line is None or len(line) < 2:
+            continue
+        # 중심점: LineString 전체 좌표의 평균
+        cx = sum(p[0] for p in line) / len(line)
+        cy = sum(p[1] for p in line) / len(line)
+        # 재질: metadata_json.material 우선, 없으면 opening_type 기반 기본값
+        raw_mat = (op.metadata_json or {}).get("material")
+        default_mat = DEFAULT_DOOR_MATERIAL if op.opening_type == "door" else DEFAULT_WINDOW_MATERIAL
+        sionna_key = _to_sionna_material(raw_mat or default_mat)
+        openings_out.append(
+            {
+                "id": str(op.id),
+                "wall_id": str(op.wall_id),
+                "center_xy": [float(cx), float(cy)],
+                "width_m": float(op.width_m),
+                "height_m": float(op.height_m),
+                "bottom_z_m": float(op.sill_height_m or 0.0),
+                "sionna_material_key": sionna_key,
+                "material_id": sionna_key,
+            }
+        )
+
     if not walls_out:
         # walls 가 0개면 RF 시뮬은 의미가 없음 (장애물 없는 평지 시뮬).
         # 컨테이너가 죽지 않게는 통과시키되 경고만 남김.
@@ -146,7 +184,7 @@ def export_scene_version_to_scene_json(
             scene_version_id,
         )
 
-    return {"walls": walls_out, "rooms": rooms_out}
+    return {"walls": walls_out, "rooms": rooms_out, "openings": openings_out}
 
 
 def _extract_linestring(geom: Any) -> list[tuple[float, float]] | None:
