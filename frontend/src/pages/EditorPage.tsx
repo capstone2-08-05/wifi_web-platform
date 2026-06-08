@@ -605,6 +605,29 @@ export default function EditorPage() {
     }
   };
 
+  // 선택된 벽들 재질 변경 (멀티셀렉트)
+  const handleUpdateSelectedWallMaterial = (material: string) => {
+    const wallRefs = selectedRefs.filter((r) => r.kind === 'wall');
+    wallRefs.forEach((r, i) => {
+      runPatch('wall', r.id, { material_label: material }, {
+        skipHistory: i > 0,
+        silent: i < wallRefs.length - 1,
+      });
+    });
+  };
+
+  // 모든 벽 재질 일괄 변경
+  const handleBulkUpdateWallMaterial = (material: string) => {
+    if (!baseScene) return;
+    const walls = baseScene.walls;
+    walls.forEach((w, i) => {
+      runPatch('wall', w.id, { material_label: material }, {
+        skipHistory: i > 0,
+        silent: i < walls.length - 1,
+      });
+    });
+  };
+
   // 모든 문 재질 일괄 변경
   const handleBulkUpdateDoorMaterial = (material: string) => {
     if (!baseScene) return;
@@ -1094,8 +1117,12 @@ export default function EditorPage() {
         onScaleAll={handleScaleAll}
         onUpdateObjectPosition={handleUpdateObjectPosition}
         onUpdateObjectSize={handleResizeObject}
+        onUpdateSelectedMaterial={selectedRefs.some((r) => r.kind === 'wall') ? handleUpdateSelectedWallMaterial : undefined}
+        selectedWallCount={selectedRefs.filter((r) => r.kind === 'wall').length}
+        onBulkUpdateWallMaterial={baseScene ? handleBulkUpdateWallMaterial : undefined}
         onBulkUpdateDoorMaterial={baseScene ? handleBulkUpdateDoorMaterial : undefined}
         onBulkUpdateWindowMaterial={baseScene ? handleBulkUpdateWindowMaterial : undefined}
+        wallCount={baseScene?.walls.length ?? 0}
         doorCount={baseScene?.openings.filter((o) => o.opening_type === 'door').length ?? 0}
         windowCount={baseScene?.openings.filter((o) => o.opening_type === 'window').length ?? 0}
         isSaving={patchEntity.isPending || patchVersionEntity.isPending}

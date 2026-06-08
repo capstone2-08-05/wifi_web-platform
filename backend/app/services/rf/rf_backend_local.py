@@ -439,6 +439,8 @@ def _build_sionna_request_payload(
         {
             "id": str(op.get("id") or f"op{j}"),
             "wall_id": str(op["wall_id"]),
+            # OpeningObject.kind 은 필수 — scene_json 에 있으면 사용, 없으면 "door" fallback
+            "kind": str(op.get("kind") or op.get("opening_type") or "door"),
             "center_xy": [float(op["center_xy"][0]), float(op["center_xy"][1])],
             "width_m": float(op["width_m"]),
             "height_m": float(op["height_m"]),

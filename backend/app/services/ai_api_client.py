@@ -81,7 +81,8 @@ def run_sionna_simulation(
             resp.raise_for_status()
             return resp.json()
     except httpx.HTTPStatusError as exc:
-        body = exc.response.text[:500] if exc.response is not None else ""
+        body = exc.response.text[:3000] if exc.response is not None else ""
+        logger.warning("ai_api %s — full error: %s", exc.response.status_code, body)
         raise AiApiClientError(
             f"ai_api returned {exc.response.status_code}: {body}"
         ) from exc

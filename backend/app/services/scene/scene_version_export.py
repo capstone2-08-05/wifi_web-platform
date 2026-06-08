@@ -12,6 +12,7 @@ GeoJSON 으로 변환한 뒤 좌표를 추출한다.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 from sqlalchemy.orm import Session, selectinload
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_WALL_THICKNESS_M = 0.12
 DEFAULT_WALL_HEIGHT_M = 2.6
-DEFAULT_WALL_MATERIAL = "plasterboard"
+DEFAULT_WALL_MATERIAL = "concrete"
 
 # Sionna 1.0.2 의 ITURadioMaterial type 인자가 받는 enum (소문자, prefix 없음).
 # 출처: ITU-R P.2040 표준. 컨테이너 (`apps/sagemaker_rf_inference`) 가
@@ -103,20 +104,28 @@ def export_scene_version_to_scene_json(
             404,
         )
 
+    # wall_id → (x1, y1, x2, y2, length) — opening 검증에 사용.
+    wall_geom_cache: dict[str, tuple[float, float, float, float, float]] = {}
     walls_out: list[dict[str, Any]] = []
     for w in sv.walls:
         line = _extract_linestring(w.centerline_geom)
         if line is None or len(line) < 2:
             continue
-        x1, y1 = line[0]
-        x2, y2 = line[-1]
+        x1, y1 = float(line[0][0]), float(line[0][1])
+        x2, y2 = float(line[-1][0]), float(line[-1][1])
+        # degenerate wall (start == end) 은 WallObject validator 에서 422 유발 — 건너뜀
+        if abs(x1 - x2) < 1e-9 and abs(y1 - y2) < 1e-9:
+            logger.warning("Wall %s is degenerate (start==end), skipping export", w.id)
+            continue
+        wall_len = math.hypot(x2 - x1, y2 - y1)
+        wall_geom_cache[str(w.id)] = (x1, y1, x2, y2, wall_len)
         walls_out.append(
             {
                 "id": str(w.id),
-                "x1": float(x1),
-                "y1": float(y1),
-                "x2": float(x2),
-                "y2": float(y2),
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
                 "thickness": float(w.thickness_m or DEFAULT_WALL_THICKNESS_M),
                 "height": float(w.height_m or DEFAULT_WALL_HEIGHT_M),
                 "material": _to_sionna_material(
@@ -153,12 +162,31 @@ def export_scene_version_to_scene_json(
     for op in (sv.openings or []):
         if not op.wall_id:
             continue
+        wall_id_str = str(op.wall_id)
+        # 해당 wall 이 walls_out 에 포함되지 않은 경우 (degenerate skip) 건너뜀
+        if wall_id_str not in wall_geom_cache:
+            logger.debug("Opening %s skipped: wall %s not in export", op.id, wall_id_str)
+            continue
         line = _extract_linestring(op.line_geom)
         if line is None or len(line) < 2:
             continue
-        # 중심점: LineString 전체 좌표의 평균
-        cx = sum(p[0] for p in line) / len(line)
-        cy = sum(p[1] for p in line) / len(line)
+        # 중심점 계산 후 벽 중심선에 정사영(snap) — 부동소수점 오차로 perp > 1cm 방지
+        raw_cx = sum(p[0] for p in line) / len(line)
+        raw_cy = sum(p[1] for p in line) / len(line)
+        wx1, wy1, wx2, wy2, wall_len = wall_geom_cache[wall_id_str]
+        dx, dy = wx2 - wx1, wy2 - wy1
+        t = ((raw_cx - wx1) * dx + (raw_cy - wy1) * dy) / (wall_len * wall_len)
+        cx = wx1 + t * dx
+        cy = wy1 + t * dy
+        # opening 이 벽 길이에 들어가는지 확인 — 초과하면 422 유발
+        width_m = float(op.width_m)
+        s_center = t * wall_len
+        if s_center - width_m / 2.0 < -0.01 or s_center + width_m / 2.0 > wall_len + 0.01:
+            logger.warning(
+                "Opening %s (width=%.2f) does not fit on wall %s (len=%.2f, s=%.2f), skipping",
+                op.id, width_m, wall_id_str, wall_len, s_center,
+            )
+            continue
         # 재질: metadata_json.material 우선, 없으면 opening_type 기반 기본값
         raw_mat = (op.metadata_json or {}).get("material")
         default_mat = DEFAULT_DOOR_MATERIAL if op.opening_type == "door" else DEFAULT_WINDOW_MATERIAL
@@ -166,9 +194,10 @@ def export_scene_version_to_scene_json(
         openings_out.append(
             {
                 "id": str(op.id),
-                "wall_id": str(op.wall_id),
+                "wall_id": wall_id_str,
+                "kind": op.opening_type or "door",  # OpeningObject.kind 필수 — door/window
                 "center_xy": [float(cx), float(cy)],
-                "width_m": float(op.width_m),
+                "width_m": width_m,
                 "height_m": float(op.height_m),
                 "bottom_z_m": float(op.sill_height_m or 0.0),
                 "sionna_material_key": sionna_key,

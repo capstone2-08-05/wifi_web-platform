@@ -45,10 +45,18 @@ interface PropertiesPanelProps {
   onUpdateObjectPosition?: (ref: SelectedEntityRef, x: number, y: number) => void;
   /** 객체 크기(W/H) 변경 — 즉시 PATCH. */
   onUpdateObjectSize?: (ref: SelectedEntityRef, widthM: number, heightM: number) => void;
+  /** 선택된 벽들의 재질을 일괄 변경 (멀티셀렉트용). */
+  onUpdateSelectedMaterial?: (material: string) => void;
+  /** 멀티셀렉트 중 선택된 벽 개수. */
+  selectedWallCount?: number;
+  /** 모든 벽의 재질을 일괄 변경. */
+  onBulkUpdateWallMaterial?: (material: string) => void;
   /** 모든 문의 재질을 일괄 변경. */
   onBulkUpdateDoorMaterial?: (material: string) => void;
   /** 모든 창문의 재질을 일괄 변경. */
   onBulkUpdateWindowMaterial?: (material: string) => void;
+  /** 현재 씬의 벽 개수 */
+  wallCount?: number;
   /** 현재 씬의 문 개수 */
   doorCount?: number;
   /** 현재 씬의 창문 개수 */
@@ -73,8 +81,12 @@ export function PropertiesPanel({
   onUpdateMaterial,
   onUpdateWallDimension,
   onScaleAll,
+  onUpdateSelectedMaterial,
+  selectedWallCount = 0,
+  onBulkUpdateWallMaterial,
   onBulkUpdateDoorMaterial,
   onBulkUpdateWindowMaterial,
+  wallCount = 0,
   doorCount = 0,
   windowCount = 0,
   isSaving,
@@ -90,7 +102,9 @@ export function PropertiesPanel({
       {isMulti ? (
         <MultiSelectBody
           count={selectedCount ?? 0}
+          selectedWallCount={selectedWallCount}
           onDelete={onDelete}
+          onUpdateSelectedMaterial={onUpdateSelectedMaterial}
           isDeleting={!!isDeleting}
         />
       ) : selected ? (
@@ -108,10 +122,12 @@ export function PropertiesPanel({
         <EmptyBody />
       )}
 
-      {(doorCount > 0 || windowCount > 0) && (
+      {(wallCount > 0 || doorCount > 0 || windowCount > 0) && (
         <BulkMaterialSection
+          wallCount={wallCount}
           doorCount={doorCount}
           windowCount={windowCount}
+          onBulkUpdateWallMaterial={onBulkUpdateWallMaterial}
           onBulkUpdateDoorMaterial={onBulkUpdateDoorMaterial}
           onBulkUpdateWindowMaterial={onBulkUpdateWindowMaterial}
         />
@@ -126,25 +142,51 @@ export function PropertiesPanel({
 
 function MultiSelectBody({
   count,
+  selectedWallCount,
   onDelete,
+  onUpdateSelectedMaterial,
   isDeleting,
 }: {
   count: number;
+  selectedWallCount: number;
   onDelete?: () => void;
+  onUpdateSelectedMaterial?: (material: string) => void;
   isDeleting: boolean;
 }) {
+  const [mat, setMat] = useState('concrete');
+  const { data: materials, isLoading } = useMaterials();
   return (
     <div className="space-y-4 rounded-lg border bg-card p-4">
       <div>
         <p className="text-xs font-medium text-muted-foreground">선택됨</p>
         <p className="mt-1 text-base font-semibold">{count}개 항목</p>
       </div>
-      <p className="text-xs leading-relaxed text-muted-foreground">
-        여러 도형이 선택돼 있습니다. 캔버스에서 드래그하면 함께 이동하고,
-        아래 버튼으로 한꺼번에 삭제할 수 있어요.
-        <br />
-        개별 속성 편집은 하나만 선택했을 때 가능합니다.
-      </p>
+      {selectedWallCount > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[11px] text-muted-foreground">선택된 벽 {selectedWallCount}개 재질 변경</p>
+          <MaterialSelect
+            value={mat}
+            onChange={setMat}
+            disabled={isLoading}
+            materials={materials ?? []}
+          />
+          <button
+            type="button"
+            onClick={() => onUpdateSelectedMaterial?.(mat)}
+            disabled={!onUpdateSelectedMaterial}
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RefreshCw className="h-3 w-3" />
+            선택 벽에 적용
+          </button>
+        </div>
+      )}
+      {selectedWallCount === 0 && (
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          여러 도형이 선택돼 있습니다. 캔버스에서 드래그하면 함께 이동하고,
+          아래 버튼으로 한꺼번에 삭제할 수 있어요.
+        </p>
+      )}
       {onDelete && (
         <button
           type="button"
@@ -661,18 +703,23 @@ function MaterialSelect({
   );
 }
 
-/** 씬 내 모든 문 / 창문 재질을 일괄 변경하는 패널 섹션. */
+/** 씬 내 모든 벽 / 문 / 창문 재질을 일괄 변경하는 패널 섹션. */
 function BulkMaterialSection({
+  wallCount,
   doorCount,
   windowCount,
+  onBulkUpdateWallMaterial,
   onBulkUpdateDoorMaterial,
   onBulkUpdateWindowMaterial,
 }: {
+  wallCount: number;
   doorCount: number;
   windowCount: number;
+  onBulkUpdateWallMaterial?: (material: string) => void;
   onBulkUpdateDoorMaterial?: (material: string) => void;
   onBulkUpdateWindowMaterial?: (material: string) => void;
 }) {
+  const [wallMat, setWallMat] = useState('concrete');
   const [doorMat, setDoorMat] = useState('wood');
   const [windowMat, setWindowMat] = useState('glass');
   const { data: materials, isLoading } = useMaterials();
@@ -680,6 +727,27 @@ function BulkMaterialSection({
   return (
     <div className="rounded-lg border bg-card p-4 space-y-3">
       <h3 className="text-xs font-semibold text-foreground/80">일괄 재질 변경</h3>
+
+      {wallCount > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[11px] text-muted-foreground">벽 ({wallCount}개)</p>
+          <MaterialSelect
+            value={wallMat}
+            onChange={setWallMat}
+            disabled={isLoading}
+            materials={materials ?? []}
+          />
+          <button
+            type="button"
+            onClick={() => onBulkUpdateWallMaterial?.(wallMat)}
+            disabled={!onBulkUpdateWallMaterial}
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RefreshCw className="h-3 w-3" />
+            벽 전체 적용
+          </button>
+        </div>
+      )}
 
       {doorCount > 0 && (
         <div className="space-y-1.5">

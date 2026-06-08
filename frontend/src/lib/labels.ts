@@ -77,6 +77,25 @@ export function materialLabel(material: string | null | undefined): string {
   return MATERIAL_LABELS[key] ?? material ?? '-';
 }
 
+/** 재질 코드 → 캔버스 벽 stroke 색상 (oklch). */
+export const MATERIAL_COLORS: Record<string, string> = {
+  concrete:     'oklch(0.38 0.01 250)',   // 짙은 회색
+  brick:        'oklch(0.52 0.13 35)',    // 벽돌 적갈색
+  drywall:      'oklch(0.65 0.07 80)',    // 베이지
+  plasterboard: 'oklch(0.65 0.07 80)',    // 베이지 (drywall alias)
+  wood:         'oklch(0.55 0.10 55)',    // 갈색
+  glass:        'oklch(0.60 0.12 220)',   // 하늘색
+  metal:        'oklch(0.52 0.05 245)',   // 강철 청회색
+  chipboard:    'oklch(0.62 0.07 75)',    // 황갈색
+  ceiling_board:'oklch(0.68 0.06 85)',    // 황토
+};
+
+/** material_label → stroke 색상. null/미지정이면 진회색. */
+export function materialColor(material: string | null | undefined): string {
+  const key = (material ?? '').toLowerCase().replace(/^itu_/, '');
+  return MATERIAL_COLORS[key] ?? 'oklch(0.25 0 0)';
+}
+
 /** room_type → 한국어 라벨. 미상이면 그대로 반환. */
 const ROOM_TYPE_LABELS: Record<string, string> = {
   general: '일반',
