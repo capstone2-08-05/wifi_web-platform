@@ -104,11 +104,12 @@ def _legacy_existing_aps_to_physical(
     # physical_ap_id 기반 그룹 변환
     for phys_id, items in groups.items():
         anchor = items[0]
-        x = _coerce_float(anchor.get("x_m") or anchor.get("x"))
-        y = _coerce_float(anchor.get("y_m") or anchor.get("y"))
+        x = _coerce_float(anchor.get("x_m") if anchor.get("x_m") is not None else anchor.get("x"))
+        y = _coerce_float(anchor.get("y_m") if anchor.get("y_m") is not None else anchor.get("y"))
         if x is None or y is None:
             continue
-        z = _coerce_float(anchor.get("z_m") or anchor.get("z")) or 2.0
+        _z_raw = anchor.get("z_m") if anchor.get("z_m") is not None else anchor.get("z")
+        z = _coerce_float(_z_raw) if _z_raw is not None else 2.0
         radios = [_item_to_radio(it, i, fallback_tx_power_dbm) for i, it in enumerate(items)]
         result.append(
             PhysicalApInput(
@@ -127,11 +128,12 @@ def _legacy_existing_aps_to_physical(
     for i, item in enumerate(ungrouped):
         if i in merged_indices:
             continue
-        x = _coerce_float(item.get("x_m") or item.get("x"))
-        y = _coerce_float(item.get("y_m") or item.get("y"))
+        x = _coerce_float(item.get("x_m") if item.get("x_m") is not None else item.get("x"))
+        y = _coerce_float(item.get("y_m") if item.get("y_m") is not None else item.get("y"))
         if x is None or y is None:
             continue
-        z = _coerce_float(item.get("z_m") or item.get("z")) or 2.0
+        _z_raw = item.get("z_m") if item.get("z_m") is not None else item.get("z")
+        z = _coerce_float(_z_raw) if _z_raw is not None else 2.0
         ap_id = str(item.get("id") or item.get("name") or f"ap{i + 1}")
         radios = [_item_to_radio(item, 0, fallback_tx_power_dbm)]
 
@@ -139,8 +141,8 @@ def _legacy_existing_aps_to_physical(
         for j, other in enumerate(ungrouped):
             if j <= i or j in merged_indices:
                 continue
-            ox = _coerce_float(other.get("x_m") or other.get("x"))
-            oy = _coerce_float(other.get("y_m") or other.get("y"))
+            ox = _coerce_float(other.get("x_m") if other.get("x_m") is not None else other.get("x"))
+            oy = _coerce_float(other.get("y_m") if other.get("y_m") is not None else other.get("y"))
             if ox is None or oy is None:
                 continue
             dist = math.hypot(ox - x, oy - y)
@@ -196,9 +198,10 @@ def _item_to_radio(
         channel=item.get("channel"),
         ssid=item.get("ssid"),
         bssid=item.get("bssid"),
-        tx_power_dbm=_coerce_float(
-            item.get("tx_power_dbm") or item.get("power_dbm")
-        ) or fallback_tx_power_dbm,
+        tx_power_dbm=next(
+            (v for v in (_coerce_float(item.get("tx_power_dbm")), _coerce_float(item.get("power_dbm"))) if v is not None),
+            fallback_tx_power_dbm,
+        ),
     )
 
 

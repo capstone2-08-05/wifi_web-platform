@@ -121,7 +121,7 @@ export interface ApRecommendationResponse {
   /** band별 radio 개수 등 메타. */
   band_metadata?: Record<string, unknown> | null;
   /** 커버리지 평가 방식 설명. */
-  coverage_semantics?: string | null;
+  coverage_semantics?: Record<string, unknown> | null;
   recommendation_band?: WifiBand | null;
   /** 사용된 추천 모드. */
   recommendation_mode?: string;

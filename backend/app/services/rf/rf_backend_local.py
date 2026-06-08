@@ -500,9 +500,9 @@ def _build_sionna_request_payload(
 
     ap_id = str(ap.get("id") or "ap0")
     ap_position = [
-        float(ap.get("x_m") or ap.get("x") or 0.0),
-        float(ap.get("y_m") or ap.get("y") or 0.0),
-        float(ap.get("z_m") or ap.get("z") or 1.2),
+        float(ap.get("x_m") if ap.get("x_m") is not None else ap.get("x") if ap.get("x") is not None else 0.0),
+        float(ap.get("y_m") if ap.get("y_m") is not None else ap.get("y") if ap.get("y") is not None else 0.0),
+        float(ap.get("z_m") if ap.get("z_m") is not None else ap.get("z") if ap.get("z") is not None else 1.2),
     ]
 
     # 모든 fallback 은 `app/core/rf_defaults.py` 에서 import — 같은 source of truth 유지.

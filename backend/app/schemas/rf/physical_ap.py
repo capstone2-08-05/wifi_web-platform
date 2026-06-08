@@ -137,7 +137,8 @@ class PhysicalApInput(BaseModel):
     """실제 설치/이동 가능한 물리 AP 장비.
 
     - 하나 이상의 RadioInterfaceInput을 가진다.
-    - radios가 0개면 backward-compat을 위해 default 5G radio 1개가 생성된다.
+    - radios가 None이면 backward-compat을 위해 default 5G radio 1개가 생성된다.
+    - 빈 리스트 또는 모두 disabled이면 radio가 없는 것으로 간주한다.
     - AP 추천에서 candidate 위치는 Physical AP 단위로 평가된다.
     - 모든 radio는 이 AP의 x, y, z 좌표를 공유한다.
     """
@@ -148,16 +149,14 @@ class PhysicalApInput(BaseModel):
     y: float
     z: float = Field(default=2.0)
     movable: bool = True
-    radios: list[RadioInterfaceInput] = Field(default_factory=list)
+    radios: list[RadioInterfaceInput] | None = Field(default=None)
 
     def effective_radios(self) -> list[RadioInterfaceInput]:
-        """활성화된 radio 목록. 없으면 default 5G radio를 반환한다."""
-        enabled = [r for r in self.radios if r.enabled]
-        if enabled:
-            return enabled
-        # backward compat: radio 미지정 → default 5G
-        ap_id = self.id or "ap"
-        return [RadioInterfaceInput(id=f"{ap_id}-5g-default", band="5G")]
+        """활성화된 radio 목록. None이면 default 5G radio를 반환한다."""
+        if self.radios is None:
+            ap_id = self.id or "ap"
+            return [RadioInterfaceInput(id=f"{ap_id}-5g-default", band="5G")]
+        return [r for r in self.radios if r.enabled]
 
     def radios_for_band(self, band: BandLiteral) -> list[RadioInterfaceInput]:
         return [r for r in self.effective_radios() if r.band == band]

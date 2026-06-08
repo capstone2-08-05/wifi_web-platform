@@ -251,7 +251,7 @@ export function ApRecommendationCanvas({
       if (!ctm) return;
       const sp = pt.matrixTransform(ctm.inverse());
 
-      if (heatmapMode === 'measurement' && measurementHeatmap?.valuesDbm) {
+      if (heatmapMode === 'measurement' && measurementHeatmap?.valuesDbm && measurementHeatmap.bounds) {
         const { min_x, min_y, max_x, max_y } = measurementHeatmap.bounds;
         const rows = measurementHeatmap.valuesDbm.length;
         const cols = measurementHeatmap.valuesDbm[0]?.length ?? 0;
@@ -355,13 +355,13 @@ export function ApRecommendationCanvas({
             </g>
           )}
 
-          {heatmapMode === 'measurement' && measurementHeatmap?.valuesDbm ? (
+          {heatmapMode === 'measurement' && measurementHeatmap?.valuesDbm && measurementHeatmap.bounds ? (
             <g opacity={0.65} pointerEvents="none">
               {measurementHeatmap.valuesDbm.map((row, rowIdx) =>
                 row.map((value, colIdx) => {
                   const rows = measurementHeatmap.valuesDbm?.length ?? 1;
                   const cols = row.length || 1;
-                  const bounds = measurementHeatmap.bounds;
+                  const bounds = measurementHeatmap.bounds!;
                   const cellW = (bounds.max_x - bounds.min_x) / cols;
                   const cellH = (bounds.max_y - bounds.min_y) / rows;
                   const range = measurementHeatmap.rssiRange ?? { min: -90, max: -30 };
@@ -378,7 +378,7 @@ export function ApRecommendationCanvas({
                 }),
               )}
             </g>
-          ) : heatmapMode === 'measurement' && measurementHeatmap?.url && (
+          ) : heatmapMode === 'measurement' && measurementHeatmap?.url && measurementHeatmap.bounds && (
             <image
               href={measurementHeatmap.url}
               xlinkHref={measurementHeatmap.url}
