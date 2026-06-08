@@ -605,6 +605,15 @@ const FALLBACK_MATERIALS = [
   { code: 'metal', name: '금속' },
 ] as const;
 
+/** AI 추론이 반환하는 한국어 동의어 → material_code 매핑 (백엔드 MATERIAL_ALIASES 와 동기). */
+const KO_ALIASES: Record<string, string> = {
+  '나무': 'wood',
+  '합판': 'wood',
+  '플라이우드': 'wood',
+  '대리석': 'concrete',
+  '플라스틱': 'plastic',
+};
+
 /**
  * 다양한 형식(itu_ prefix, 한국어 이름, 영문 코드)의 재질 값을
  * material_code 로 정규화. `onChange` 가 항상 code 를 반환하도록.
@@ -618,6 +627,14 @@ function normalizeMaterialToCode(value: string, materials: Material[]): string {
   // DB name 매칭 (한국어)
   const byName = materials.find((m) => m.material_name === value);
   if (byName) return byName.material_code;
+  // 한국어 동의어 매핑 (AI 추론 반환값 대응)
+  const aliasCode = KO_ALIASES[value];
+  if (aliasCode) {
+    const byAlias = materials.find((m) => m.material_code === aliasCode);
+    if (byAlias) return byAlias.material_code;
+    const fbAlias = FALLBACK_MATERIALS.find((f) => f.code === aliasCode);
+    if (fbAlias) return fbAlias.code;
+  }
   // Fallback code/name 매칭
   const byFallback = FALLBACK_MATERIALS.find(
     (f) => f.code === stripped || f.name === value,

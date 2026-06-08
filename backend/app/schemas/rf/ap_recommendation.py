@@ -64,8 +64,18 @@ class ApRecommendationRequest(BaseModel):
     calibration_policy: Literal["transfer_only", "best_params_only", "combined"] = (
         "transfer_only"
     )
-    recommendation_mode: Literal["add", "replace"] = "add"
+    recommendation_mode: Literal["add", "replace", "relocate_all", "relocate_selected"] = "add"
     replace_target_ap_id: str | None = None
+    # Multi-target replace: list of AP IDs to swap out simultaneously.
+    replace_target_ap_ids: list[str] = Field(default_factory=list)
+    # relocate_selected: IDs that stay fixed (never moved).
+    fixed_ap_ids: list[str] = Field(default_factory=list)
+    # relocate_selected: IDs to relocate.
+    relocate_target_ap_ids: list[str] = Field(default_factory=list)
+    # add mode: explicit count of new APs to add (overrides n_aps when > 0).
+    additional_ap_count: int = Field(default=0, ge=0, le=5)
+    # relocate_all mode: total number of APs in the new layout.
+    target_total_aps: int | None = Field(default=None, ge=1, le=10)
     candidate_tx_power_dbm: float = 20.0
     coverage_threshold_dbm: float = -67.0
     weak_zone_threshold_dbm: float = -67.0
@@ -145,6 +155,20 @@ class ApRecommendationResponse(BaseModel):
     calibration: ApRecommendationCalibrationInfo | None = None
     score_weights: dict[str, float] = Field(default_factory=dict)
     created_at: datetime | None = None
+
+    # ── Recommendation mode metadata ────────────────────────────────────────
+    recommendation_mode: str = "add"
+    mode_explanation: str = ""
+    # All existing APs before any moves (for before/after comparison).
+    baseline_aps_snapshot: list[dict[str, Any]] = Field(default_factory=list)
+    # APs that stayed fixed (not moved).
+    fixed_aps_snapshot: list[dict[str, Any]] = Field(default_factory=list)
+    # APs that were replaced / relocated.
+    movable_aps_snapshot: list[dict[str, Any]] = Field(default_factory=list)
+    # Final AP layout for the top recommendation (fixed + recommended).
+    final_aps: list[dict[str, Any]] = Field(default_factory=list)
+    # Per-AP move records: {ap_id, from_x, from_y, to_x, to_y}.
+    relocation_moves: list[dict[str, Any]] = Field(default_factory=list)
 
     # ── Physical AP / band 메타데이터 ────────────────────────
     # 추천에 사용된 physical AP 목록 스냅샷

@@ -35,6 +35,7 @@ import {
   validRecommendationAreas,
   type ApRecommendationArea,
   type ApRecommendationAreaType,
+  type RecommendationMode,
 } from '@/features/ap-recommendation/recommendation-utils';
 import type { ApRecommendationResult, ApRecommendationRun } from '@/types/ap-recommendation';
 import { cn } from '@/lib/utils';
@@ -145,6 +146,10 @@ export default function MobileAppPage() {
   const [selectedRank, setSelectedRank] = useState<number | null>(null);
   const [savedRank, setSavedRank] = useState<number | null>(null);
   const [nAps, setNAps] = useState(1);
+  const [recommendationMode, setRecommendationMode] = useState<RecommendationMode>('add');
+  const [replaceTargetApIds, setReplaceTargetApIds] = useState<string[]>([]);
+  const [relocateTargetApIds, setRelocateTargetApIds] = useState<string[]>([]);
+  const [targetTotalAps, setTargetTotalAps] = useState<number | null>(null);
   const [compareWithMeasurement, setCompareWithMeasurement] = useState(false);
   const [verificationRunId, setVerificationRunId] = useState<string | null>(null);
   const [verificationRank, setVerificationRank] = useState<number | null>(null);
@@ -460,6 +465,10 @@ export default function MobileAppPage() {
       existingAps,
       txPowerDbm: DEFAULT_TX_POWER_DBM,
       nAps,
+      recommendationMode,
+      replaceTargetApIds: recommendationMode === 'replace' ? replaceTargetApIds : undefined,
+      relocateTargetApIds: recommendationMode === 'relocate_selected' ? relocateTargetApIds : undefined,
+      targetTotalAps: recommendationMode === 'relocate_all' ? (targetTotalAps ?? undefined) : undefined,
     });
 
     if (import.meta.env.DEV) {
@@ -665,6 +674,105 @@ export default function MobileAppPage() {
             </p>
           </div>
           <div className="flex shrink-0 flex-col items-stretch gap-1.5 sm:items-end">
+            {/* 추천 모드 */}
+            <div className="flex items-center gap-2 sm:justify-end">
+              <span className="text-[12px] text-slate-500">추천 모드</span>
+              <div className="inline-flex items-center rounded-lg bg-slate-100 p-0.5">
+                {(
+                  [
+                    { value: 'add', label: '추가' },
+                    { value: 'replace', label: '교체' },
+                    { value: 'relocate_all', label: '전체 재배치' },
+                    { value: 'relocate_selected', label: '선택 재배치' },
+                  ] as const
+                ).map(({ value, label }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setRecommendationMode(value)}
+                    className={cn(
+                      'inline-flex h-6 items-center rounded-md px-2 text-[11px] transition-colors',
+                      recommendationMode === value
+                        ? 'bg-white font-semibold text-blue-700 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-800',
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 모드별 부가 입력 */}
+            {recommendationMode === 'replace' && (
+              <div className="flex items-center gap-2 sm:justify-end">
+                <span className="text-[12px] text-slate-500">교체할 AP</span>
+                <select
+                  multiple
+                  value={replaceTargetApIds}
+                  onChange={(e) =>
+                    setReplaceTargetApIds(
+                      Array.from(e.target.selectedOptions, (o) => o.value),
+                    )
+                  }
+                  className="h-20 min-w-[120px] rounded border border-slate-200 bg-white px-1.5 py-1 text-[11px] text-slate-800 focus:border-blue-300 focus:outline-none"
+                >
+                  {existingAps.map((ap) => (
+                    <option key={ap.id} value={ap.id}>
+                      {ap.id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {recommendationMode === 'relocate_selected' && (
+              <div className="flex items-center gap-2 sm:justify-end">
+                <span className="text-[12px] text-slate-500">재배치할 AP</span>
+                <select
+                  multiple
+                  value={relocateTargetApIds}
+                  onChange={(e) =>
+                    setRelocateTargetApIds(
+                      Array.from(e.target.selectedOptions, (o) => o.value),
+                    )
+                  }
+                  className="h-20 min-w-[120px] rounded border border-slate-200 bg-white px-1.5 py-1 text-[11px] text-slate-800 focus:border-blue-300 focus:outline-none"
+                >
+                  {existingAps.map((ap) => (
+                    <option key={ap.id} value={ap.id}>
+                      {ap.id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {recommendationMode === 'relocate_all' && (
+              <div className="flex items-center gap-2 sm:justify-end">
+                <span className="text-[12px] text-slate-500">새 AP 총 개수</span>
+                <div className="flex gap-1">
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setTargetTotalAps(n)}
+                      className={cn(
+                        'h-7 w-7 rounded-md text-[12px] font-semibold transition-colors',
+                        (targetTotalAps ?? existingAps.length) === n
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200',
+                      )}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* add / replace 모드에서는 설치 개수 선택 유지 */}
+            {(recommendationMode === 'add' || recommendationMode === 'replace') && (
             <div className="flex items-center gap-2 sm:justify-end">
               <span className="text-[12px] text-slate-500">설치할 공유기 수</span>
               <div className="flex gap-1">
@@ -685,6 +793,7 @@ export default function MobileAppPage() {
                 ))}
               </div>
             </div>
+            )}
             <button
               type="button"
               onClick={handleRecommend}
