@@ -1,4 +1,5 @@
 import type { ISODateString, UUID } from './common';
+import type { PhysicalAp, WifiBand } from './rf';
 
 /** POST /ap-recommendation — existing_aps 항목. */
 export interface ExistingAp {
@@ -25,14 +26,24 @@ export interface ApRecommendationRequest {
   existing_aps?: ExistingAp[];
   calibration_run_id?: UUID | null;
   calibration_policy?: 'transfer_only' | 'best_params_only' | 'combined';
-  recommendation_mode?: 'add' | 'replace';
+  recommendation_mode?: 'add' | 'replace' | 'relocate_all' | 'relocate_selected';
   replace_target_ap_id?: string | null;
+  replace_target_ap_ids?: string[];
+  fixed_ap_ids?: string[];
+  relocate_target_ap_ids?: string[];
+  additional_ap_count?: number;
+  target_total_aps?: number | null;
   candidate_tx_power_dbm?: number;
   coverage_threshold_dbm?: number;
   weak_zone_threshold_dbm?: number;
   shadow_threshold_dbm?: number;
   shadow_penalty?: number;
   n_aps?: number;
+  /** Physical AP 구조. 있으면 existing_aps 보다 우선. */
+  physical_aps?: PhysicalAp[];
+  recommendation_unit?: 'physical_ap' | 'radio';
+  target_bands?: WifiBand[];
+  combine_policy?: 'max' | 'prefer_5g_then_2g' | 'weighted';
 }
 
 /** 멀티 AP 세트 내 개별 AP 위치. */
@@ -105,6 +116,27 @@ export interface ApRecommendationResponse {
   calibration?: ApRecommendationCalibrationInfo | null;
   score_weights?: Record<string, number>;
   created_at?: ISODateString | null;
+  /** Physical AP 스냅샷 (요청 시 넘긴 physical_aps). */
+  physical_aps_snapshot?: PhysicalAp[] | null;
+  /** band별 radio 개수 등 메타. */
+  band_metadata?: Record<string, unknown> | null;
+  /** 커버리지 평가 방식 설명. */
+  coverage_semantics?: Record<string, unknown> | null;
+  recommendation_band?: WifiBand | null;
+  /** 사용된 추천 모드. */
+  recommendation_mode?: string;
+  /** 모드 설명 문자열. */
+  mode_explanation?: string;
+  /** 이동 전 전체 AP 목록. */
+  baseline_aps_snapshot?: Array<{ id: string; x: number; y: number }>;
+  /** 고정 AP 목록. */
+  fixed_aps_snapshot?: Array<{ id: string; x: number; y: number }>;
+  /** 이동 대상 AP 목록 (이동 전 위치). */
+  movable_aps_snapshot?: Array<{ id: string; x: number; y: number }>;
+  /** 최종 AP 레이아웃 (fixed + 추천). */
+  final_aps?: Array<{ id: string; x: number; y: number; fixed: boolean }>;
+  /** AP 이동 기록 {ap_id, from_x, from_y, to_x, to_y}[]. */
+  relocation_moves?: Array<{ ap_id: string; from_x: number; from_y: number; to_x: number; to_y: number }>;
 }
 
 /** UI 표시용. */

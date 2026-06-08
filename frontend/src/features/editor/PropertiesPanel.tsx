@@ -597,13 +597,48 @@ function shortId(id: string): string {
 
 /** Sionna 유효 재질 — DB 비어있을 때 fallback 으로도 사용. */
 const FALLBACK_MATERIALS = [
+  { code: 'wood', name: '목재' },
   { code: 'concrete', name: '콘크리트' },
+  { code: 'stone', name: '돌' },
   { code: 'brick', name: '벽돌' },
   { code: 'drywall', name: '석고보드' },
   { code: 'glass', name: '유리' },
-  { code: 'wood', name: '목재' },
   { code: 'metal', name: '금속' },
+  { code: 'plastic', name: '플라스틱' },
 ] as const;
+
+/** AI 추론이 반환하는 한국어 동의어 → material_code 매핑 (백엔드 MATERIAL_ALIASES 와 동기). */
+const KO_ALIASES: Record<string, string> = {
+  // wood
+  '나무': 'wood',
+  '목재': 'wood',
+  '합판': 'wood',
+  '플라이우드': 'wood',
+  '원목': 'wood',
+  // concrete (대리석·시멘트·석재는 Sionna에 marble/stone 코드 없어 concrete 근사)
+  '콘크리트': 'concrete',
+  '시멘트': 'concrete',
+  '석재': 'concrete',
+  '돌': 'concrete',
+  '대리석': 'concrete',
+  // brick
+  '벽돌': 'brick',
+  '적벽돌': 'brick',
+  // drywall
+  '석고보드': 'drywall',
+  '석고': 'drywall',
+  '내장재': 'drywall',
+  // glass
+  '유리': 'glass',
+  // metal
+  '금속': 'metal',
+  '철': 'metal',
+  '강철': 'metal',
+  '알루미늄': 'metal',
+  '스틸': 'metal',
+  // plastic
+  '플라스틱': 'plastic',
+};
 
 /**
  * 다양한 형식(itu_ prefix, 한국어 이름, 영문 코드)의 재질 값을
@@ -618,6 +653,14 @@ function normalizeMaterialToCode(value: string, materials: Material[]): string {
   // DB name 매칭 (한국어)
   const byName = materials.find((m) => m.material_name === value);
   if (byName) return byName.material_code;
+  // 한국어 동의어 매핑 (AI 추론 반환값 대응)
+  const aliasCode = KO_ALIASES[value];
+  if (aliasCode) {
+    const byAlias = materials.find((m) => m.material_code === aliasCode);
+    if (byAlias) return byAlias.material_code;
+    const fbAlias = FALLBACK_MATERIALS.find((f) => f.code === aliasCode);
+    if (fbAlias) return fbAlias.code;
+  }
   // Fallback code/name 매칭
   const byFallback = FALLBACK_MATERIALS.find(
     (f) => f.code === stripped || f.name === value,
@@ -672,11 +715,7 @@ function MaterialSelect({
   sourceLabel?: string;
 }) {
   const codeValue = normalizeMaterialToCode(value, materials);
-  // DB 에 재질이 있으면 DB 기준, 없으면 fallback 사용
-  const options =
-    materials.length > 0
-      ? materials.map((m) => ({ code: m.material_code, name: m.material_name }))
-      : FALLBACK_MATERIALS.map((f) => ({ code: f.code, name: f.name }));
+  const options = FALLBACK_MATERIALS.map((f) => ({ code: f.code, name: f.name }));
   // 현재 값이 옵션에 없으면 추가 (레거시 데이터 대응)
   const hasCurrentCode = options.some((o) => o.code === codeValue);
   return (

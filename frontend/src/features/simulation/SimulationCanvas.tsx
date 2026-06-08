@@ -13,6 +13,7 @@ import type {
   DraftWall,
   SceneVersion,
 } from '@/types/scene';
+import type { RadioInterface } from '@/types/rf';
 import { cn } from '@/lib/utils';
 
 export interface PlacedAp {
@@ -20,6 +21,8 @@ export interface PlacedAp {
   x_m: number;
   y_m: number;
   z_m: number;
+  /** Radio interface 목록. 없으면 기본 5G 단일 radio 로 취급. */
+  radios?: RadioInterface[];
 }
 
 /** 모든 AP 에 공통 적용되는 출력 파워 (백엔드 simulation.tx_power_dbm 으로 보냄). */
@@ -47,6 +50,10 @@ interface Props {
   heatmapBounds?: { minX: number; minY: number; maxX: number; maxY: number } | null;
   /** true 면 AP 추가/드래그/삭제 모두 비활성화 — 결과 보기 전용. */
   readOnly?: boolean;
+  /** AP 라벨 클릭 시 호출 — radio 설정 패널 열기용. */
+  onApClick?: (id: string) => void;
+  /** 현재 선택된 AP id (패널 열림 표시용). */
+  selectedApId?: string | null;
 }
 
 interface Bounds {
@@ -128,9 +135,10 @@ export function SimulationCanvas({
   heatmapUrl,
   heatmapBounds,
   readOnly = false,
+  onApClick,
+  selectedApId,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const sceneId = sceneVersion?.id ?? null;
 
   // 배경 이미지를 editor 와 동일한 좌표계로 배치하기 위해 imageExtent (미터) 계산.
   // 있으면 image 는 (0,0)~(extent.w, extent.h) 에 그림 → 벽과 정확히 정렬.
@@ -311,8 +319,10 @@ export function SimulationCanvas({
             key={ap.id}
             ap={ap}
             isDragging={dragId === ap.id}
+            isSelected={selectedApId === ap.id}
             onPointerDown={(e) => handleApPointerDown(e, ap)}
             onRemove={() => onRemove(ap.id)}
+            onSettings={onApClick ? () => onApClick(ap.id) : undefined}
           />
         ))}
         </g>
@@ -485,21 +495,53 @@ function ObjectShape({ object }: { object: DraftObject }) {
 function ApMarker({
   ap,
   isDragging,
+  isSelected,
   onPointerDown,
   onRemove,
+  onSettings,
 }: {
   ap: PlacedAp;
   isDragging: boolean;
+  isSelected?: boolean;
   onPointerDown: (e: React.PointerEvent) => void;
   onRemove: () => void;
+  onSettings?: () => void;
 }) {
-  const fill = 'oklch(0.55 0.22 254)';
+  const fill = isSelected ? 'oklch(0.45 0.22 254)' : 'oklch(0.55 0.22 254)';
   const r = AP_MARKER_RADIUS_M;
-  // lucide Wifi 아이콘 (24x24 viewBox) 을 r 안에 들어갈 크기로 스케일.
-  const iconSize = r * 1.1; // 원 지름의 약 55%
+  const iconSize = r * 1.1;
   const iconScale = iconSize / 24;
+
+  // enabled radio의 band badge 목록.
+  const enabledBands = (ap.radios ?? []).filter((radio) => radio.enabled).map((radio) => radio.band);
+  const badgesToShow = enabledBands.length > 0 ? [...new Set(enabledBands)] : ['5G'];
+
+  const badgeW = r * 0.9;
+  const badgeH = r * 0.46;
+  const badgeGap = r * 0.08;
+  const totalBadgeW = badgesToShow.length * badgeW + (badgesToShow.length - 1) * badgeGap;
+  const badgeStartX = ap.x_m - totalBadgeW / 2;
+  const labelBoxY = ap.y_m + r + 0.04;
+  const labelBoxH = r * 0.75;
+  const badgeRowY = labelBoxY + labelBoxH + r * 0.06;
+
   return (
     <g className={isDragging ? 'cursor-grabbing' : 'cursor-grab'}>
+      {/* 선택 링 (패널 열림 표시) */}
+      {isSelected && (
+        <circle
+          cx={ap.x_m}
+          cy={ap.y_m}
+          r={r + 0.06}
+          fill="none"
+          stroke="oklch(0.55 0.22 254)"
+          strokeWidth="2"
+          strokeDasharray={`${r * 0.4} ${r * 0.2}`}
+          vectorEffect="non-scaling-stroke"
+          pointerEvents="none"
+          opacity={0.7}
+        />
+      )}
       <circle
         cx={ap.x_m}
         cy={ap.y_m}
@@ -507,7 +549,7 @@ function ApMarker({
         fill={fill}
         onPointerDown={onPointerDown}
       />
-      {/* lucide Wifi 아이콘 path 인라인 — 우측 "AP 추가" 패널과 동일 모양. */}
+      {/* lucide Wifi 아이콘 path 인라인 */}
       <g
         transform={`translate(${ap.x_m - iconSize / 2}, ${ap.y_m - iconSize / 2}) scale(${iconScale})`}
         pointerEvents="none"
@@ -522,33 +564,69 @@ function ApMarker({
         <path d="M5 12.859a10 10 0 0 1 14 0" />
         <path d="M8.5 16.429a5 5 0 0 1 7 0" />
       </g>
-      {/* 라벨 박스 */}
-      <g pointerEvents="none">
+      {/* 라벨 박스 — 클릭으로 radio 설정 패널 열기. */}
+      <g
+        onPointerDown={onSettings ? (e) => { e.stopPropagation(); onSettings(); } : undefined}
+        className={onSettings ? 'cursor-pointer' : ''}
+      >
         <rect
           x={ap.x_m - 0.18}
-          y={ap.y_m + r + 0.04}
+          y={labelBoxY}
           width={r * 1.8}
-          height={r * 0.75}
+          height={labelBoxH}
           rx={r * 0.18}
-          fill="white"
-          stroke="oklch(0.85 0.02 240)"
+          fill={isSelected ? 'oklch(0.94 0.05 254)' : 'white'}
+          stroke={isSelected ? 'oklch(0.65 0.18 254)' : 'oklch(0.85 0.02 240)'}
           strokeWidth="1"
           vectorEffect="non-scaling-stroke"
         />
         <text
           x={ap.x_m}
-          y={ap.y_m + r + r * 0.38}
+          y={labelBoxY + labelBoxH / 2}
           textAnchor="middle"
           dominantBaseline="middle"
           fontSize={AP_LABEL_FONT_SIZE_M}
           fontWeight="600"
           fill="oklch(0.25 0.04 240)"
+          pointerEvents="none"
           style={{ userSelect: 'none' }}
         >
           {ap.id.toUpperCase()}
         </text>
       </g>
-      {/* 삭제 버튼 — AP 크기에 맞춰 우측 상단에 충분히 크게 표시. */}
+      {/* Band badge 행 */}
+      <g pointerEvents="none">
+        {badgesToShow.map((band, i) => {
+          const bx = badgeStartX + i * (badgeW + badgeGap);
+          const by = badgeRowY;
+          const badgeFill = band === '5G' ? 'oklch(0.55 0.16 145)' : 'oklch(0.60 0.15 55)';
+          return (
+            <g key={band}>
+              <rect
+                x={bx}
+                y={by}
+                width={badgeW}
+                height={badgeH}
+                rx={badgeH * 0.4}
+                fill={badgeFill}
+              />
+              <text
+                x={bx + badgeW / 2}
+                y={by + badgeH / 2}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fontSize={badgeH * 0.62}
+                fontWeight="700"
+                fill="white"
+                style={{ userSelect: 'none' }}
+              >
+                {band}
+              </text>
+            </g>
+          );
+        })}
+      </g>
+      {/* 삭제 버튼 */}
       <g
         onPointerDown={(e) => {
           e.stopPropagation();

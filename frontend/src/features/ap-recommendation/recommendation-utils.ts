@@ -5,6 +5,7 @@ import type {
   ApRecommendationResult,
   ApRecommendationRun,
 } from '@/types/ap-recommendation';
+import type { PhysicalAp, WifiBand } from '@/types/rf';
 import type { UUID } from '@/types/common';
 import { parseGeometry } from '@/features/editor/geometry-utils';
 import { CANVAS_BLUE } from '@/lib/canvas-scene-colors';
@@ -87,6 +88,8 @@ export function unionMeterBBoxes(bboxes: MeterBBox[]): MeterBBox | null {
   };
 }
 
+export type RecommendationMode = 'add' | 'replace' | 'relocate_all' | 'relocate_selected';
+
 /** POST /ap-recommendation 요청 본문 조립 (백엔드 default 필드는 생략). */
 export function buildApRecommendationPayload(params: {
   sceneVersionId: UUID;
@@ -95,6 +98,20 @@ export function buildApRecommendationPayload(params: {
   existingAps: { id: string; x_m: number; y_m: number }[];
   txPowerDbm?: number;
   nAps?: number;
+  /** Physical AP 구조. 있으면 existing_aps 보다 우선 처리. */
+  physicalAps?: PhysicalAp[];
+  targetBands?: WifiBand[];
+  combinePolicy?: 'max' | 'prefer_5g_then_2g' | 'weighted';
+  /** 추천 모드. 기본값: 'add'. */
+  recommendationMode?: RecommendationMode;
+  /** replace 모드: 교체할 AP ID 목록. */
+  replaceTargetApIds?: string[];
+  /** relocate_selected 모드: 고정 AP ID 목록. */
+  fixedApIds?: string[];
+  /** relocate_selected 모드: 재배치할 AP ID 목록. */
+  relocateTargetApIds?: string[];
+  /** relocate_all 모드: 새 레이아웃에서 AP 총 개수. */
+  targetTotalAps?: number;
 }): ApRecommendationRequest {
   const areas = validRecommendationAreas(params.areas);
   const legacyBboxes = validSelectionBBoxes(params.bboxes);
@@ -123,6 +140,7 @@ export function buildApRecommendationPayload(params: {
   if (candidateBBoxes.length === 0) {
     throw new Error('At least one installable candidate area is required.');
   }
+  const mode = params.recommendationMode ?? 'add';
   const request: ApRecommendationRequest = {
     scene_version_id: params.sceneVersionId,
     candidate_bboxes: candidateBBoxes,
@@ -134,6 +152,29 @@ export function buildApRecommendationPayload(params: {
     candidate_tx_power_dbm: params.txPowerDbm,
     existing_aps: mapToExistingAps(params.existingAps, params.txPowerDbm),
     ...(params.nAps && params.nAps > 1 ? { n_aps: params.nAps } : {}),
+    // Physical AP 구조 — 있으면 포함.
+    ...(params.physicalAps && params.physicalAps.length > 0
+      ? {
+          physical_aps: params.physicalAps,
+          recommendation_unit: 'physical_ap' as const,
+          target_bands: params.targetBands ?? ['5G'],
+          combine_policy: params.combinePolicy ?? 'prefer_5g_then_2g',
+        }
+      : {}),
+    // 추천 모드.
+    ...(mode !== 'add' ? { recommendation_mode: mode } : {}),
+    ...(mode === 'replace' && params.replaceTargetApIds?.length
+      ? { replace_target_ap_ids: params.replaceTargetApIds }
+      : {}),
+    ...(mode === 'relocate_selected' && params.relocateTargetApIds?.length
+      ? { relocate_target_ap_ids: params.relocateTargetApIds }
+      : {}),
+    ...(mode === 'relocate_selected' && params.fixedApIds?.length
+      ? { fixed_ap_ids: params.fixedApIds }
+      : {}),
+    ...(mode === 'relocate_all' && params.targetTotalAps != null
+      ? { target_total_aps: params.targetTotalAps }
+      : {}),
   };
   if (legacyUnion) {
     request.x_min = legacyUnion.x_min;

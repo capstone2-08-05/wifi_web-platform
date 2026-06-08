@@ -42,6 +42,16 @@ from app.services.rf.calibration_worker.path_loss import (
     WallSegment,
     predict_rssi_best_ap,
 )
+from app.services.rf.ap_recommendation_modes import (
+    RecommendationPlan,
+    build_recommendation_plan,
+    compute_final_aps,
+    compute_relocation_moves,
+)
+from app.services.rf.physical_ap_helpers import (
+    build_band_metadata,
+    normalize_physical_aps_from_request,
+)
 from app.services.rf.scene_obstacles import (
     column_wall_segments_for_objects,
     normalize_rf_material,
@@ -154,8 +164,17 @@ def recommend_ap_location(
         residual_weight=0.5,
     )
 
-    existing_aps = _parse_existing_aps(request.existing_aps)
-    _validate_replace_target(request, existing_aps)
+    # Physical AP 정규화 — physical_aps 우선, 없으면 legacy existing_aps 변환
+    _physical_aps = normalize_physical_aps_from_request(
+        physical_aps=request.physical_aps or None,
+        existing_aps=request.existing_aps,
+        candidate_tx_power_dbm=request.candidate_tx_power_dbm,
+    )
+    existing_aps = _physical_aps_to_access_points(
+        _physical_aps, request.candidate_tx_power_dbm
+    )
+    _validate_mode_targets(request, existing_aps)
+    plan = build_recommendation_plan(request, existing_aps)
 
     candidates = _generate_candidates_for_request(request)
     if not candidates:
@@ -186,38 +205,42 @@ def recommend_ap_location(
 
     _attach_baseline_rssi(
         points=weighted_points,
-        existing_aps=existing_aps,
+        existing_aps=plan.baseline_aps,
         walls=walls,
         params=params,
         transfer=rssi_transfer,
     )
 
-    n_aps = max(1, request.n_aps)
+    n_movable = plan.movable_count
 
     logger.info(
-        "AP recommendation start: scene=%s candidates=%d eval=%d weighted=%d existing_aps=%d n_aps=%d calibration=%s",
+        "AP recommendation start: scene=%s mode=%s candidates=%d eval=%d weighted=%d "
+        "fixed_aps=%d movable=%d calibration=%s",
         sv.id,
+        plan.mode,
         len(candidates),
         len(raw_eval_points),
         len(weighted_points),
-        len(existing_aps),
-        n_aps,
+        len(plan.fixed_aps),
+        n_movable,
         rssi_transfer.method,
     )
 
     coverage_threshold = request.coverage_threshold_dbm or _DEFAULT_COVERAGE_THRESHOLD_DBM
     weak_zone_threshold = request.weak_zone_threshold_dbm or _DEFAULT_WEAK_ZONE_THRESHOLD_DBM
 
-    if n_aps == 1:
+    # plan.fixed_aps already encodes the mode logic (targets removed, etc.).
+    # Always use mode="add" internally — fixed_aps is the adjusted base.
+    if n_movable == 1:
         top_results = _grid_search_topn(
             candidates=candidates,
             eval_points=weighted_points,
-            existing_aps=existing_aps,
+            existing_aps=plan.fixed_aps,
             walls=walls,
             params=params,
             transfer=rssi_transfer,
-            recommendation_mode=request.recommendation_mode,
-            replace_target_ap_id=request.replace_target_ap_id,
+            recommendation_mode="add",
+            replace_target_ap_id=None,
             candidate_tx_power_dbm=request.candidate_tx_power_dbm,
             coverage_threshold_dbm=coverage_threshold,
             weak_zone_threshold_dbm=weak_zone_threshold,
@@ -227,13 +250,16 @@ def recommend_ap_location(
             _to_response_item(i + 1, x, y, metrics, predicted, ap_positions=[(x, y)])
             for i, (x, y, metrics, predicted) in enumerate(top_results)
         ]
+        top_positions: list[tuple[float, float]] = (
+            [(top_results[0][0], top_results[0][1])] if top_results else []
+        )
     else:
         top_sets = _greedy_multi_ap(
-            n_aps=n_aps,
+            n_aps=n_movable,
             n_sets=request.n_recommendations,
             candidates=candidates,
             eval_points=weighted_points,
-            existing_aps=existing_aps,
+            existing_aps=plan.fixed_aps,
             walls=walls,
             params=params,
             transfer=rssi_transfer,
@@ -250,7 +276,12 @@ def recommend_ap_location(
             )
             for i, (ap_set, metrics, predicted) in enumerate(top_sets)
         ]
+        top_positions = top_sets[0][0] if top_sets else []
 
+    relocation_moves = compute_relocation_moves(plan, top_positions)
+    final_aps_list = compute_final_aps(plan, top_positions)
+
+    leading_band = request.target_bands[0] if request.target_bands else "5G"
     response = ApRecommendationResponse(
         recommendations=recommendations,
         candidates_evaluated=len(candidates),
@@ -270,6 +301,25 @@ def recommend_ap_location(
             else None,
         ),
         score_weights=SCORE_WEIGHTS,
+        recommendation_mode=plan.mode,
+        mode_explanation=plan.mode_explanation,
+        baseline_aps_snapshot=[
+            {"id": ap.name, "x": round(ap.x, 3), "y": round(ap.y, 3)}
+            for ap in plan.baseline_aps
+        ],
+        fixed_aps_snapshot=[
+            {"id": ap.name, "x": round(ap.x, 3), "y": round(ap.y, 3)}
+            for ap in plan.fixed_aps
+        ],
+        movable_aps_snapshot=[
+            {"id": ap_id, "x": round(x, 3), "y": round(y, 3)}
+            for ap_id, (x, y) in zip(plan.movable_ap_ids, plan.movable_ap_coords)
+        ],
+        final_aps=final_aps_list,
+        relocation_moves=relocation_moves,
+        physical_aps_snapshot=[ap.model_dump(mode="json") for ap in _physical_aps],
+        band_metadata=build_band_metadata(_physical_aps, request.target_bands),
+        recommendation_band=leading_band,
     )
     run = _persist_recommendation_run(
         db=db,
@@ -1234,6 +1284,33 @@ def _finite_float(value: Any, default: float) -> float:
     return parsed if math.isfinite(parsed) else default
 
 
+def _physical_aps_to_access_points(
+    physical_aps: list,  # list[PhysicalApInput]
+    candidate_tx_power_dbm: float = 20.0,
+) -> list[AccessPoint]:
+    """PhysicalApInput list → 경로 손실 모델용 AccessPoint list.
+
+    현재는 AP별 leading radio(첫 번째 활성 radio)를 single-band 기준으로 변환한다.
+    TODO: band별 scoring 완성 후 band-aware AccessPoint로 확장.
+    """
+    result: list[AccessPoint] = []
+    for ap in physical_aps:
+        radios = ap.effective_radios()
+        leading = radios[0] if radios else None
+        result.append(
+            AccessPoint(
+                name=str(ap.id or ap.name or f"ap_{id(ap)}"),
+                x=ap.x,
+                y=ap.y,
+                tx_power_dbm=(
+                    leading.effective_tx_power_dbm(candidate_tx_power_dbm)
+                    if leading else candidate_tx_power_dbm
+                ),
+            )
+        )
+    return result
+
+
 def _parse_existing_aps(raw: list[dict]) -> list[AccessPoint]:
     aps: list[AccessPoint] = []
     for i, ap in enumerate(raw):
@@ -1255,19 +1332,26 @@ def _parse_existing_aps(raw: list[dict]) -> list[AccessPoint]:
     return aps
 
 
-def _validate_replace_target(
+def _validate_mode_targets(
     request: ApRecommendationRequest,
     existing_aps: list[AccessPoint],
 ) -> None:
-    if request.recommendation_mode != "replace" or not request.replace_target_ap_id:
+    """Validate that AP IDs referenced in mode-specific fields exist in existing_aps."""
+    if request.recommendation_mode != "replace":
         return
-    if any(ap.name == request.replace_target_ap_id for ap in existing_aps):
+    targets = list(request.replace_target_ap_ids or [])
+    if request.replace_target_ap_id and request.replace_target_ap_id not in targets:
+        targets.append(request.replace_target_ap_id)
+    if not targets:
         return
-    raise AppError(
-        ErrorCode.INVALID_REQUEST_BODY,
-        f"replace_target_ap_id '{request.replace_target_ap_id}' was not found in existing_aps.",
-        400,
-    )
+    existing_names = {ap.name for ap in existing_aps}
+    for target in targets:
+        if target not in existing_names:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST_BODY,
+                f"replace target AP '{target}' was not found in existing_aps.",
+                400,
+            )
 
 
 def _attach_baseline_rssi(

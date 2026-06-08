@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { parseGeometry, type Coord } from '@/features/editor/geometry-utils';
 import {
   deriveImageExtent,
@@ -8,6 +8,7 @@ import type { ApRecommendationResult } from '@/types/ap-recommendation';
 import type { DraftObject, DraftOpening, DraftWall, SceneVersion } from '@/types/scene';
 import { cn } from '@/lib/utils';
 import { dbmToHeatmapColor } from '@/lib/rssi-colormap';
+import { DbmColorBar } from '@/features/simulation/DbmColorBar';
 import {
   clampCoord,
   clampMeterBBox,
@@ -137,6 +138,7 @@ export function ApRecommendationCanvas({
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<{ start: Coord; current: Coord } | null>(null);
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; dbm: number } | null>(null);
 
   const imageDims = useImageNaturalDimensions(backgroundImageUrl ?? null);
   const imageExtent = useMemo(
@@ -238,6 +240,58 @@ export function ApRecommendationCanvas({
     onAreasChange(selectedAreas.filter((area) => area.id !== id));
   };
 
+  const handleSvgMouseMove = useCallback(
+    (e: React.MouseEvent<SVGSVGElement>) => {
+      const svg = svgRef.current;
+      if (!svg) return;
+      const pt = svg.createSVGPoint();
+      pt.x = e.clientX;
+      pt.y = e.clientY;
+      const ctm = svg.getScreenCTM();
+      if (!ctm) return;
+      const sp = pt.matrixTransform(ctm.inverse());
+
+      if (heatmapMode === 'measurement' && measurementHeatmap?.valuesDbm && measurementHeatmap.bounds) {
+        const { min_x, min_y, max_x, max_y } = measurementHeatmap.bounds;
+        const rows = measurementHeatmap.valuesDbm.length;
+        const cols = measurementHeatmap.valuesDbm[0]?.length ?? 0;
+        if (rows > 0 && cols > 0) {
+          const cellW = (max_x - min_x) / cols;
+          const cellH = (max_y - min_y) / rows;
+          const col = Math.floor((sp.x - min_x) / cellW);
+          const row = Math.floor((sp.y - min_y) / cellH);
+          if (row >= 0 && row < rows && col >= 0 && col < cols) {
+            const dbm = measurementHeatmap.valuesDbm[row][col];
+            if (dbm != null && Number.isFinite(dbm)) {
+              setTooltip({ x: e.clientX, y: e.clientY, dbm });
+              return;
+            }
+          }
+        }
+      } else if (heatmapMode === 'prediction' && predictionCells) {
+        const half = Math.max(predictionCells.cellW, predictionCells.cellH) * 0.6;
+        let best: { dist: number; dbm: number } | null = null;
+        for (const pt2 of predictionCells.points) {
+          if (Math.abs(pt2.x - sp.x) < half && Math.abs(pt2.y - sp.y) < half) {
+            const dist = Math.hypot(pt2.x - sp.x, pt2.y - sp.y);
+            if (!best || dist < best.dist) best = { dist, dbm: pt2.rssi_dbm };
+          }
+        }
+        if (best) { setTooltip({ x: e.clientX, y: e.clientY, dbm: best.dbm }); return; }
+      }
+      setTooltip(null);
+    },
+    [heatmapMode, measurementHeatmap, predictionCells],
+  );
+
+  const heatmapRssiRange = heatmapMode === 'measurement'
+    ? (measurementHeatmap?.rssiRange ?? null)
+    : predictionCells?.range ?? null;
+  const showLegend = heatmapRssiRange !== null && (
+    (heatmapMode === 'measurement' && !!measurementHeatmap) ||
+    (heatmapMode === 'prediction' && !!predictionCells)
+  );
+
   return (
     <div className="relative h-full w-full overflow-hidden bg-[#f8fafc] [background-image:radial-gradient(circle,oklch(0.92_0_0)_1px,transparent_1px)] bg-size-[18px_18px] bg-position-[0_0]">
       <svg
@@ -253,6 +307,8 @@ export function ApRecommendationCanvas({
         onPointerMove={handlePointerMove}
         onPointerUp={finishDrag}
         onPointerCancel={finishDrag}
+        onMouseMove={handleSvgMouseMove}
+        onMouseLeave={() => setTooltip(null)}
       >
         <defs>
           <clipPath id="ap-rec-scene-clip">
@@ -299,13 +355,13 @@ export function ApRecommendationCanvas({
             </g>
           )}
 
-          {heatmapMode === 'measurement' && measurementHeatmap?.valuesDbm ? (
+          {heatmapMode === 'measurement' && measurementHeatmap?.valuesDbm && measurementHeatmap.bounds ? (
             <g opacity={0.65} pointerEvents="none">
               {measurementHeatmap.valuesDbm.map((row, rowIdx) =>
                 row.map((value, colIdx) => {
                   const rows = measurementHeatmap.valuesDbm?.length ?? 1;
                   const cols = row.length || 1;
-                  const bounds = measurementHeatmap.bounds;
+                  const bounds = measurementHeatmap.bounds!;
                   const cellW = (bounds.max_x - bounds.min_x) / cols;
                   const cellH = (bounds.max_y - bounds.min_y) / rows;
                   const range = measurementHeatmap.rssiRange ?? { min: -90, max: -30 };
@@ -322,7 +378,7 @@ export function ApRecommendationCanvas({
                 }),
               )}
             </g>
-          ) : heatmapMode === 'measurement' && measurementHeatmap?.url && (
+          ) : heatmapMode === 'measurement' && measurementHeatmap?.url && measurementHeatmap.bounds && (
             <image
               href={measurementHeatmap.url}
               xlinkHref={measurementHeatmap.url}
@@ -449,6 +505,28 @@ export function ApRecommendationCanvas({
           )}
         </g>
       </svg>
+
+      {/* 색 범례 — 히트맵이 보일 때만 표시 */}
+      {showLegend && heatmapRssiRange && (
+        <div className="pointer-events-none absolute left-2 top-2 z-10 w-52">
+          <DbmColorBar
+            vmin={heatmapRssiRange.min}
+            vmax={heatmapRssiRange.max}
+            label={heatmapMode === 'measurement' ? '실측/보정 RSSI' : '예측 RSSI'}
+            className="pointer-events-auto"
+          />
+        </div>
+      )}
+
+      {/* 마우스 호버 툴팁 */}
+      {tooltip && (
+        <div
+          className="pointer-events-none fixed z-50 rounded-md bg-slate-800/90 px-2 py-1 text-[11px] font-medium text-white shadow-lg"
+          style={{ left: tooltip.x + 14, top: tooltip.y - 28 }}
+        >
+          {tooltip.dbm.toFixed(1)} dBm
+        </div>
+      )}
     </div>
   );
 }
