@@ -87,13 +87,16 @@ async def submit_via_local_ai_api(
             400,
         )
 
-    payload = _build_sionna_request_payload(
-        scene_json=scene_json,
-        floor_id=str(sv.floor_id),
-        scene_version_id=str(sv.id),
-        access_points=access_points,
-        simulation=simulation,
-    )
+    payloads = [
+        _build_sionna_request_payload(
+            scene_json=scene_json,
+            floor_id=str(sv.floor_id),
+            scene_version_id=str(sv.id),
+            ap=ap,
+            simulation=simulation,
+        )
+        for ap in access_points
+    ]
 
     now = _now_utc()
     rf_run = RfRun(
@@ -123,7 +126,7 @@ async def submit_via_local_ai_api(
             "ai_api_payload_summary": {
                 "walls": len(scene_json.get("walls") or []),
                 "rooms": len(scene_json.get("rooms") or []),
-                "primary_ap_id": access_points[0].get("id"),
+                "ap_ids": [ap.get("id") for ap in access_points],
             },
         },
     }
@@ -164,7 +167,7 @@ async def submit_via_local_ai_api(
 
     thread = threading.Thread(
         target=_background_run_ai_api,
-        kwargs={"job_id": job_id, "rf_run_id": rf_run_id, "payload": payload},
+        kwargs={"job_id": job_id, "rf_run_id": rf_run_id, "payloads": payloads},
         name=f"rf-local-{job_id[:8]}",
         daemon=True,
     )
@@ -181,51 +184,94 @@ async def submit_via_local_ai_api(
 # Background worker
 # ============================================================
 def _background_run_ai_api(
-    *, job_id: str, rf_run_id: str, payload: dict[str, Any]
+    *, job_id: str, rf_run_id: str, payloads: list[dict[str, Any]]
 ) -> None:
-    """Thread entry point: ai_api 호출 + 결과 DB 영속화 (성공/실패 분기)."""
-    # 디버그: 어떤 simulation 설정으로 호출되는지 확인 — 3초 미만으로 끝나는 등 의심
-    # 상황에서 실제 적용된 값이 무엇인지 빠르게 검증하기 위한 단일 로그.
-    sim_cfg = payload.get("simulation") or {}
+    """Thread entry point: AP별 ai_api 호출 → element-wise max 합산 → DB 영속화."""
+    sim_cfg = (payloads[0].get("simulation") or {}) if payloads else {}
     logger.info(
-        "RF job %s: sending to ai_api — solver=%s, propagation=%s, mp=%s",
-        job_id,
+        "RF job %s: sending %d AP(s) to ai_api — solver=%s propagation=%s mp=%s",
+        job_id, len(payloads),
         sim_cfg.get("solver"),
         sim_cfg.get("propagation"),
-        payload.get("measurement_plane"),
+        payloads[0].get("measurement_plane") if payloads else None,
     )
-    # try 범위를 호출 + 응답 파싱 + 영속화 전체로 확장 — 어디서 예외 나도 job 이
-    # running 으로 dangling 되지 않도록 (백그라운드 thread 가 silent 크래시 했을 때 폴링이
-    # 영원히 running 응답을 받게 되는 버그 방지).
     try:
-        response = ai_api_client.run_sionna_simulation(payload=payload)
-        status = str(response.get("status") or "").lower()
-        if status != "succeeded":
-            detail = (
-                response.get("detail")
-                or response.get("error")
-                or "ai_api returned non-success status"
-            )
+        responses: list[dict[str, Any]] = []
+        for i, payload in enumerate(payloads):
+            ap_id = (payload.get("access_point") or {}).get("id", f"ap{i}")
+            logger.info("RF job %s: AP %d/%d id=%s → ai_api", job_id, i + 1, len(payloads), ap_id)
+            try:
+                response = ai_api_client.run_sionna_simulation(payload=payload)
+            except ai_api_client.AiApiClientError as exc:
+                logger.warning("RF job %s: AP %d (%s) call failed: %s", job_id, i + 1, ap_id, exc)
+                if len(payloads) == 1:
+                    raise
+                continue
+            status = str(response.get("status") or "").lower()
+            if status != "succeeded":
+                detail = response.get("detail") or response.get("error") or "non-success"
+                logger.warning("RF job %s: AP %d status=%s (%s)", job_id, i + 1, status, detail)
+                if len(payloads) == 1:
+                    _persist_local_failure(
+                        job_id=job_id, rf_run_id=rf_run_id,
+                        message=f"ai_api status={status}: {detail}",
+                    )
+                    return
+                continue
+            responses.append(response)
+
+        if not responses:
             _persist_local_failure(
                 job_id=job_id, rf_run_id=rf_run_id,
-                message=f"ai_api status={status or 'unknown'}: {detail}",
+                message="all AP simulations failed",
             )
             return
 
-        _persist_local_success(job_id=job_id, rf_run_id=rf_run_id, response=response)
+        merged = _merge_ap_responses(responses)
+        _persist_local_success(job_id=job_id, rf_run_id=rf_run_id, response=merged)
+
     except ai_api_client.AiApiClientError as exc:
-        logger.warning(
-            "RF job %s: local ai_api call failed: %s", job_id, exc,
-        )
+        logger.warning("RF job %s: local ai_api call failed: %s", job_id, exc)
         _persist_local_failure(job_id=job_id, rf_run_id=rf_run_id, message=str(exc))
-    except Exception as exc:  # pragma: no cover — 방어
-        # response 파싱 (KeyError/TypeError 등) 이나 _persist_local_success 내부에서
-        # 새 예외가 터질 수 있음. 그 경우도 반드시 failure 로 기록.
+    except Exception as exc:  # pragma: no cover
         logger.exception("RF job %s: unexpected error during local ai_api call", job_id)
         _persist_local_failure(
             job_id=job_id, rf_run_id=rf_run_id,
             message=f"unexpected error: {exc}",
         )
+
+
+def _merge_ap_responses(responses: list[dict[str, Any]]) -> dict[str, Any]:
+    """여러 AP 시뮬 응답을 하나로 합산. 각 셀에서 RSSI가 가장 강한 AP 값 선택."""
+    if len(responses) == 1:
+        return responses[0]
+
+    import copy
+
+    base = copy.deepcopy(responses[0])
+    base_values: list[list[float]] | None = None
+    try:
+        base_values = base["artifacts"]["radiomap"]["values_dbm"]
+    except (KeyError, TypeError):
+        pass
+
+    if base_values is None:
+        return base
+
+    for resp in responses[1:]:
+        try:
+            values: list[list[float]] = resp["artifacts"]["radiomap"]["values_dbm"]
+        except (KeyError, TypeError):
+            continue
+        for r, row in enumerate(values):
+            if r >= len(base_values):
+                break
+            for c, val in enumerate(row):
+                if c < len(base_values[r]) and isinstance(val, (int, float)) and val > base_values[r][c]:
+                    base_values[r][c] = val
+
+    base["artifacts"]["radiomap"]["values_dbm"] = base_values
+    return base
 
 
 def _persist_local_success(
@@ -406,13 +452,13 @@ def _build_sionna_request_payload(
     scene_json: dict[str, Any],
     floor_id: str,
     scene_version_id: str,
-    access_points: list[dict[str, Any]],
+    ap: dict[str, Any],
     simulation: dict[str, Any],
 ) -> dict[str, Any]:
-    """web-platform scene/simulation/AP 형식 → ai_api `/internal/sionna/run` body.
+    """web-platform AP 1개 + scene/simulation → ai_api `/internal/sionna/run` body.
 
-    Local backend 는 ai_api 가 single-AP 모델이므로 첫 번째 AP 만 사용한다.
-    다중 AP 가 들어오면 첫 번째만 시뮬 (한계 — 추후 per-AP 반복 호출로 확장 가능).
+    멀티 AP 는 submit_via_local_ai_api 가 AP별로 이 함수를 호출하고
+    _merge_ap_responses 로 element-wise max 합산한다.
     """
     walls = [
         {
@@ -452,12 +498,11 @@ def _build_sionna_request_payload(
         if op.get("wall_id")
     ]
 
-    primary_ap = access_points[0]
-    ap_id = str(primary_ap.get("id") or "ap0")
+    ap_id = str(ap.get("id") or "ap0")
     ap_position = [
-        float(primary_ap.get("x_m") or primary_ap.get("x") or 0.0),
-        float(primary_ap.get("y_m") or primary_ap.get("y") or 0.0),
-        float(primary_ap.get("z_m") or primary_ap.get("z") or 1.2),
+        float(ap.get("x_m") or ap.get("x") or 0.0),
+        float(ap.get("y_m") or ap.get("y") or 0.0),
+        float(ap.get("z_m") or ap.get("z") or 1.2),
     ]
 
     # 모든 fallback 은 `app/core/rf_defaults.py` 에서 import — 같은 source of truth 유지.

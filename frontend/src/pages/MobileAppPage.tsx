@@ -155,6 +155,8 @@ export default function MobileAppPage() {
   const [verificationRank, setVerificationRank] = useState<number | null>(null);
   const [recommendationUpdatedAt, setRecommendationUpdatedAt] = useState<string | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
+  const [showSimComparison, setShowSimComparison] = useState(false);
+  const [simComparisonTab, setSimComparisonTab] = useState<'baseline' | 'verification'>('verification');
 
   const recommendMutation = useApRecommendation();
   const recommendationRunsQuery = useApRecommendationRuns(sceneVersionId, 10);
@@ -162,6 +164,7 @@ export default function MobileAppPage() {
   const createVerificationRun = useCreateRfRun(floorId, { page_size: 5 });
   const verificationPoll = useRfRun(verificationRunId);
   const verificationMapsQuery = useRfMaps(verificationRunId, verificationPoll.isSucceeded);
+  const baselineRunDetail = useRfRun(latestRfRunId);
   const measurementSessionsQuery = useFloorMeasurementSessions(floorId);
   const storedMeasurementView = useMemo(
     () => readStoredMeasurementView(floorId),
@@ -322,8 +325,24 @@ export default function MobileAppPage() {
   );
   const comparisonHeatmap = verificationCalibratedHeatmap ?? verificationHeatmap ?? measurementHeatmap;
   const showComparisonHeatmap = compareWithMeasurement && !!comparisonHeatmap;
+
+  const baselineHeatmap = useMemo(
+    () =>
+      extractRadioMapHeatmap(baselineRunDetail.rfRun?.metrics_json) ??
+      extractRadioMapHeatmap(latestRfRun?.metrics_json),
+    [baselineRunDetail.rfRun?.metrics_json, latestRfRun?.metrics_json],
+  );
+  const baselineCoverageMetrics = useMemo(
+    () => computeGridCoverageMetricsFromValues(baselineHeatmap?.valuesDbm),
+    [baselineHeatmap],
+  );
   const verificationMatchesSelection =
     selectedRecommendation != null && verificationRank === selectedRecommendation.rank;
+
+  const canvasHeatmap = showSimComparison && verificationMatchesSelection
+    ? (simComparisonTab === 'baseline' ? baselineHeatmap : (verificationCalibratedHeatmap ?? verificationHeatmap))
+    : showComparisonHeatmap ? comparisonHeatmap : null;
+  const useComparisonMode = (showSimComparison && verificationMatchesSelection) || showComparisonHeatmap;
 
   const persistRecommendationSession = (patch: Partial<ApRecommendationSession>) => {
     if (!sceneVersionId) return;
@@ -571,40 +590,27 @@ export default function MobileAppPage() {
     }
 
     const selected = selectedRecommendation;
-    const originalAccessPoints = existingAps.map((ap, index) => ({
-      id: `ap${index + 1}`,
-      label: ap.label ?? ap.id,
-      x_m: ap.x_m,
-      y_m: ap.y_m,
+
+    // 선택된 순위의 모든 AP 위치만 검증에 사용.
+    // 모드/고정AP 분기 없이 추천 배치 자체의 커버리지를 측정.
+    const positions =
+      selected.ap_positions && selected.ap_positions.length > 0
+        ? selected.ap_positions.map((p) => ({ x: p.x, y: p.y }))
+        : [{ x: selected.recommended_x, y: selected.recommended_y }];
+
+    const originalAccessPoints = positions.map((p, i) => ({
+      id: `recommended_${i + 1}`,
+      label: `추천${selected.rank} AP${i + 1}`,
+      x_m: p.x,
+      y_m: p.y,
       z_m: AP_DEFAULT_Z_M,
     }));
     const accessPoints = originalAccessPoints.map((ap) => ({
       id: ap.id,
       x_m: ap.x_m,
       y_m: ap.y_m,
-      z_m: AP_DEFAULT_Z_M,
+      z_m: ap.z_m,
     }));
-    const candidateAlreadyPresent = existingAps.some(
-      (ap) =>
-        Math.abs(ap.x_m - selected.recommended_x) < 0.05 &&
-        Math.abs(ap.y_m - selected.recommended_y) < 0.05,
-    );
-    if (!candidateAlreadyPresent) {
-      const id = `ap${accessPoints.length + 1}`;
-      originalAccessPoints.push({
-        id,
-        label: `recommended-${selected.rank}`,
-        x_m: selected.recommended_x,
-        y_m: selected.recommended_y,
-        z_m: AP_DEFAULT_Z_M,
-      });
-      accessPoints.push({
-        id,
-        x_m: selected.recommended_x,
-        y_m: selected.recommended_y,
-        z_m: AP_DEFAULT_Z_M,
-      });
-    }
 
     setPageError(null);
     createVerificationRun.mutate(
@@ -619,18 +625,13 @@ export default function MobileAppPage() {
           source: 'ap_recommendation_verification',
           recommendation_rank: selected.rank,
           recommendation_score: selected.score,
+          recommendation_mode: recommendMutation.data?.recommendation_mode ?? null,
           baseline_rf_run_id: latestRfRunId,
           comparison_measurement_session_ids: comparisonEvaluationSessionIds,
           comparison_ap_bssid: comparisonApBssid,
-          original_access_points: originalAccessPoints.map((ap) => ({
-            id: ap.id,
-            label: ap.label,
-            x_m: ap.x_m,
-            y_m: ap.y_m,
-            z_m: ap.z_m,
-          })),
+          original_access_points: originalAccessPoints,
         },
-        apply_calibration: false,
+        apply_calibration: true,
         backend: inferenceMode as RfBackend,
       },
       {
@@ -852,19 +853,49 @@ export default function MobileAppPage() {
             ) : !sceneVersionId ? (
               <EmptyState message="도면 정보를 불러올 수 없습니다." />
             ) : (
-              <ApRecommendationCanvas
-                sceneVersion={versionDetail}
-                backgroundImageUrl={backgroundImageUrl}
-                existingAps={existingAps}
-                selectedAreas={selectedAreas}
-                activeAreaType={activeAreaType}
-                onAreasChange={handleAreasChange}
-                recommendations={recommendations}
-                selectedRecommendationRank={selectedRank}
-                heatmapMode={showComparisonHeatmap ? 'measurement' : 'prediction'}
-                measurementHeatmap={comparisonHeatmap}
-                disabled={recommendMutation.isPending || createLayout.isPending}
-              />
+              <>
+                {showSimComparison && verificationMatchesSelection && (
+                  <div className="absolute left-1/2 top-2 z-10 flex -translate-x-1/2 overflow-hidden rounded-lg border border-[#D8E3F0] bg-white shadow-sm">
+                    <button
+                      type="button"
+                      onClick={() => setSimComparisonTab('baseline')}
+                      className={cn(
+                        'px-4 py-1.5 text-xs font-semibold transition-colors',
+                        simComparisonTab === 'baseline'
+                          ? 'bg-slate-700 text-white'
+                          : 'text-slate-500 hover:bg-muted/60',
+                      )}
+                    >
+                      기존 시뮬
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSimComparisonTab('verification')}
+                      className={cn(
+                        'px-4 py-1.5 text-xs font-semibold transition-colors',
+                        simComparisonTab === 'verification'
+                          ? 'bg-blue-600 text-white'
+                          : 'text-slate-500 hover:bg-muted/60',
+                      )}
+                    >
+                      추천 검증
+                    </button>
+                  </div>
+                )}
+                <ApRecommendationCanvas
+                  sceneVersion={versionDetail}
+                  backgroundImageUrl={backgroundImageUrl}
+                  existingAps={existingAps}
+                  selectedAreas={selectedAreas}
+                  activeAreaType={activeAreaType}
+                  onAreasChange={handleAreasChange}
+                  recommendations={recommendations}
+                  selectedRecommendationRank={selectedRank}
+                  heatmapMode={useComparisonMode ? 'measurement' : 'prediction'}
+                  measurementHeatmap={canvasHeatmap}
+                  disabled={recommendMutation.isPending || createLayout.isPending}
+                />
+              </>
             )}
           </div>
 
@@ -977,7 +1008,31 @@ export default function MobileAppPage() {
                   polling={verificationMatchesSelection && verificationPoll.isPolling}
                   canVerify={!!selectedRecommendation && !!sceneVersionId}
                   onVerify={handleVerifyRecommendation}
+                  canCompare={verificationMatchesSelection && verificationPoll.isSucceeded}
+                  showComparison={showSimComparison}
+                  onCompare={() => {
+                    setShowSimComparison((v) => !v);
+                    setSimComparisonTab('verification');
+                  }}
                 />
+                {showSimComparison && verificationMatchesSelection && (
+                  <SimComparisonCard
+                    baselineCoverage={
+                      baselineCoverageMetrics ??
+                      extractRunCoverageMetrics(baselineRunDetail.rfRun?.metrics_json) ??
+                      extractRunCoverageMetrics(latestRfRun?.metrics_json)
+                    }
+                    verificationCoverage={
+                      verificationCalibratedCoverageMetrics ??
+                      verificationCoverageMetrics ??
+                      extractRunCoverageMetrics(verificationPoll.rfRun?.metrics_json)
+                    }
+                    hasBaselineHeatmap={!!baselineHeatmap}
+                    hasVerificationHeatmap={!!(verificationCalibratedHeatmap ?? verificationHeatmap)}
+                    simComparisonTab={simComparisonTab}
+                    onTabChange={setSimComparisonTab}
+                  />
+                )}
                 {recommendations.map((rec) => (
                   <RecommendationCard
                     key={rec.rank}
@@ -1168,6 +1223,34 @@ function computeGridCoverageMetrics(
   return computeGridCoverageMetricsFromValues(evaluation?.maps.calibrated.values_dbm);
 }
 
+function extractRunCoverageMetrics(
+  metricsJson: Record<string, unknown> | null | undefined,
+): GridCoverageMetrics | null {
+  if (!metricsJson) return null;
+  const radioMap = metricsJson['radio_map'];
+  if (!radioMap || typeof radioMap !== 'object') return null;
+  const rm = radioMap as Record<string, unknown>;
+  // coverage_summary 에서 직접 추출 (values_dbm 불필요)
+  const cs = rm['coverage_summary'];
+  if (cs && typeof cs === 'object') {
+    const obj = cs as Record<string, unknown>;
+    const ratio = Number(obj['coverage_ratio'] ?? obj['coverage_fraction']);
+    const avg = Number(obj['avg_rssi_dbm'] ?? obj['mean_rssi_dbm'] ?? obj['average_rssi_dbm']);
+    const bot = Number(obj['p10_rssi_dbm'] ?? obj['bottom_10_percent_rssi_dbm'] ?? obj['p10_dbm']);
+    if (Number.isFinite(ratio)) {
+      return {
+        coverage_threshold_dbm: COVERAGE_THRESHOLD_DBM,
+        coverage_ratio: ratio,
+        coverage_score: ratio,
+        average_rssi_dbm: Number.isFinite(avg) ? avg : null,
+        bottom_10_percent_rssi_dbm: Number.isFinite(bot) ? bot : null,
+      };
+    }
+  }
+  // fallback: values_dbm 에서 계산
+  return computeGridCoverageMetricsFromValues(coerceNumberGrid(rm['values_dbm']));
+}
+
 function computeGridCoverageMetricsFromValues(
   values: number[][] | null | undefined,
 ): GridCoverageMetrics | null {
@@ -1344,6 +1427,9 @@ function SionnaVerificationCard({
   polling,
   canVerify,
   onVerify,
+  canCompare,
+  showComparison,
+  onCompare,
 }: {
   recommendation: ApRecommendationResult | null;
   integratedCoverage: GridCoverageMetrics | null;
@@ -1355,6 +1441,9 @@ function SionnaVerificationCard({
   polling: boolean;
   canVerify: boolean;
   onVerify: () => void;
+  canCompare: boolean;
+  showComparison: boolean;
+  onCompare: () => void;
 }) {
   const predictionCoverage = recommendation?.coverage_ratio ?? recommendation?.coverage_score ?? null;
   const sionnaRatio = sionnaCoverage?.coverage_ratio ?? sionnaCoverage?.coverage_score ?? null;
@@ -1381,17 +1470,18 @@ function SionnaVerificationCard({
         )}
       </div>
 
-      <button
-        type="button"
-        onClick={onVerify}
-        disabled={!canVerify || isBusy}
-        className={cn(
-          'mt-3 w-full rounded-lg border py-2.5 text-sm font-medium transition-colors',
-          canVerify && !isBusy
-            ? 'border-blue-500 bg-blue-600 text-white hover:bg-blue-700'
-            : 'cursor-not-allowed border-[#E5EAF2] bg-muted text-muted-foreground',
-        )}
-      >
+      <div className="mt-3 flex gap-2">
+        <button
+          type="button"
+          onClick={onVerify}
+          disabled={!canVerify || isBusy}
+          className={cn(
+            'flex-1 rounded-lg border py-2.5 text-sm font-medium transition-colors',
+            canVerify && !isBusy
+              ? 'border-blue-500 bg-blue-600 text-white hover:bg-blue-700'
+              : 'cursor-not-allowed border-[#E5EAF2] bg-muted text-muted-foreground',
+          )}
+        >
         {starting ? (
           <span className="inline-flex items-center justify-center gap-1.5">
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -1405,7 +1495,22 @@ function SionnaVerificationCard({
         ) : (
           '선택 후보 Sionna 검증'
         )}
-      </button>
+        </button>
+        {canCompare && (
+          <button
+            type="button"
+            onClick={onCompare}
+            className={cn(
+              'rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors',
+              showComparison
+                ? 'border-emerald-400 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                : 'border-[#D8E3F0] bg-white text-slate-600 hover:bg-muted/60',
+            )}
+          >
+            {showComparison ? '비교 종료' : '비교하기'}
+          </button>
+        )}
+      </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2">
         <MetricTile label="간이 예측 커버리지" value={formatCoveragePercent(predictionCoverage)} />
@@ -1419,6 +1524,148 @@ function SionnaVerificationCard({
         <MetricTile label="실행 상태" value={runStatus ?? '-'} />
       </div>
     </section>
+  );
+}
+
+function SimComparisonCard({
+  baselineCoverage,
+  verificationCoverage,
+  hasBaselineHeatmap,
+  hasVerificationHeatmap,
+  simComparisonTab,
+  onTabChange,
+}: {
+  baselineCoverage: GridCoverageMetrics | null;
+  verificationCoverage: GridCoverageMetrics | null;
+  hasBaselineHeatmap: boolean;
+  hasVerificationHeatmap: boolean;
+  simComparisonTab: 'baseline' | 'verification';
+  onTabChange: (tab: 'baseline' | 'verification') => void;
+}) {
+  const bCov = baselineCoverage?.coverage_ratio ?? baselineCoverage?.coverage_score ?? null;
+  const vCov = verificationCoverage?.coverage_ratio ?? verificationCoverage?.coverage_score ?? null;
+  const covDelta = bCov != null && vCov != null ? vCov - bCov : null;
+  const rssiDelta =
+    baselineCoverage?.average_rssi_dbm != null && verificationCoverage?.average_rssi_dbm != null
+      ? verificationCoverage.average_rssi_dbm - baselineCoverage.average_rssi_dbm
+      : null;
+  const botDelta =
+    baselineCoverage?.bottom_10_percent_rssi_dbm != null &&
+    verificationCoverage?.bottom_10_percent_rssi_dbm != null
+      ? verificationCoverage.bottom_10_percent_rssi_dbm - baselineCoverage.bottom_10_percent_rssi_dbm
+      : null;
+
+  return (
+    <section className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+      <h3 className="text-sm font-bold text-emerald-800">기존 시뮬 vs 추천 검증 비교</h3>
+      <p className="mt-0.5 text-[11px] text-emerald-700">
+        좌측 지도 탭으로 기존/추천 맵을 전환하세요.
+      </p>
+
+      <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+        <div className="text-[10px] font-semibold text-muted-foreground" />
+        <div className="text-[10px] font-semibold text-slate-600">기존 시뮬</div>
+        <div className="text-[10px] font-semibold text-blue-600">추천 검증</div>
+
+        <div className="rounded-lg bg-white px-2 py-2 text-[10px] font-medium text-muted-foreground">커버리지</div>
+        <div className={cn('rounded-lg px-2 py-2 text-sm font-bold', simComparisonTab === 'baseline' ? 'bg-slate-100 text-slate-800' : 'bg-white text-slate-600')}>
+          {formatCoveragePercent(bCov)}
+        </div>
+        <div className={cn('rounded-lg px-2 py-2 text-sm font-bold', simComparisonTab === 'verification' ? 'bg-blue-100 text-blue-800' : 'bg-white text-blue-600')}>
+          {formatCoveragePercent(vCov)}
+        </div>
+
+        <div className="rounded-lg bg-white px-2 py-2 text-[10px] font-medium text-muted-foreground">평균 RSSI</div>
+        <div className={cn('rounded-lg px-2 py-2 text-sm font-bold', simComparisonTab === 'baseline' ? 'bg-slate-100 text-slate-800' : 'bg-white text-slate-600')}>
+          {formatDbm(baselineCoverage?.average_rssi_dbm)}
+        </div>
+        <div className={cn('rounded-lg px-2 py-2 text-sm font-bold', simComparisonTab === 'verification' ? 'bg-blue-100 text-blue-800' : 'bg-white text-blue-600')}>
+          {formatDbm(verificationCoverage?.average_rssi_dbm)}
+        </div>
+
+        <div className="rounded-lg bg-white px-2 py-2 text-[10px] font-medium text-muted-foreground">하위 10%</div>
+        <div className={cn('rounded-lg px-2 py-2 text-sm font-bold', simComparisonTab === 'baseline' ? 'bg-slate-100 text-slate-800' : 'bg-white text-slate-600')}>
+          {formatDbm(baselineCoverage?.bottom_10_percent_rssi_dbm)}
+        </div>
+        <div className={cn('rounded-lg px-2 py-2 text-sm font-bold', simComparisonTab === 'verification' ? 'bg-blue-100 text-blue-800' : 'bg-white text-blue-600')}>
+          {formatDbm(verificationCoverage?.bottom_10_percent_rssi_dbm)}
+        </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <DeltaTile label="커버리지 변화" delta={covDelta} isRatio />
+        <DeltaTile label="평균 RSSI 변화" delta={rssiDelta} unit="dBm" />
+        <DeltaTile label="하위 10% 변화" delta={botDelta} unit="dBm" />
+      </div>
+
+      {(hasBaselineHeatmap || hasVerificationHeatmap) && (
+        <div className="mt-3 flex gap-2">
+          <button
+            type="button"
+            disabled={!hasBaselineHeatmap}
+            onClick={() => onTabChange('baseline')}
+            className={cn(
+              'flex-1 rounded-md border py-1.5 text-xs font-medium transition-colors',
+              simComparisonTab === 'baseline'
+                ? 'border-slate-400 bg-slate-700 text-white'
+                : hasBaselineHeatmap
+                  ? 'border-[#D8E3F0] bg-white text-slate-500 hover:bg-muted/60'
+                  : 'cursor-not-allowed border-[#E5EAF2] bg-muted text-muted-foreground/50',
+            )}
+          >
+            기존 시뮬 보기
+          </button>
+          <button
+            type="button"
+            disabled={!hasVerificationHeatmap}
+            onClick={() => onTabChange('verification')}
+            className={cn(
+              'flex-1 rounded-md border py-1.5 text-xs font-medium transition-colors',
+              simComparisonTab === 'verification'
+                ? 'border-blue-500 bg-blue-600 text-white'
+                : hasVerificationHeatmap
+                  ? 'border-[#D8E3F0] bg-white text-slate-500 hover:bg-muted/60'
+                  : 'cursor-not-allowed border-[#E5EAF2] bg-muted text-muted-foreground/50',
+            )}
+          >
+            추천 검증 보기
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DeltaTile({
+  label,
+  delta,
+  isRatio,
+  unit,
+}: {
+  label: string;
+  delta: number | null;
+  isRatio?: boolean;
+  unit?: string;
+}) {
+  if (delta == null || !Number.isFinite(delta)) {
+    return (
+      <div className="rounded-lg bg-white px-2 py-2 text-center">
+        <p className="text-[10px] text-muted-foreground">{label}</p>
+        <p className="mt-0.5 text-sm font-bold text-foreground">-</p>
+      </div>
+    );
+  }
+  const positive = delta > 0;
+  const display = isRatio
+    ? `${positive ? '+' : ''}${(delta * 100).toFixed(1)}%`
+    : `${positive ? '+' : ''}${delta.toFixed(1)}${unit ?? ''}`;
+  return (
+    <div className="rounded-lg bg-white px-2 py-2 text-center">
+      <p className="text-[10px] text-muted-foreground">{label}</p>
+      <p className={cn('mt-0.5 text-sm font-bold', positive ? 'text-emerald-600' : delta < 0 ? 'text-red-500' : 'text-foreground')}>
+        {display}
+      </p>
+    </div>
   );
 }
 
