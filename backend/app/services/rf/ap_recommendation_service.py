@@ -42,6 +42,10 @@ from app.services.rf.calibration_worker.path_loss import (
     WallSegment,
     predict_rssi_best_ap,
 )
+from app.services.rf.physical_ap_helpers import (
+    build_band_metadata,
+    normalize_physical_aps_from_request,
+)
 from app.services.rf.scene_obstacles import (
     column_wall_segments_for_objects,
     normalize_rf_material,
@@ -154,7 +158,15 @@ def recommend_ap_location(
         residual_weight=0.5,
     )
 
-    existing_aps = _parse_existing_aps(request.existing_aps)
+    # Physical AP 정규화 — physical_aps 우선, 없으면 legacy existing_aps 변환
+    _physical_aps = normalize_physical_aps_from_request(
+        physical_aps=request.physical_aps or None,
+        existing_aps=request.existing_aps,
+        candidate_tx_power_dbm=request.candidate_tx_power_dbm,
+    )
+    existing_aps = _physical_aps_to_access_points(
+        _physical_aps, request.candidate_tx_power_dbm
+    )
     _validate_replace_target(request, existing_aps)
 
     candidates = _generate_candidates_for_request(request)
@@ -251,6 +263,7 @@ def recommend_ap_location(
             for i, (ap_set, metrics, predicted) in enumerate(top_sets)
         ]
 
+    leading_band = request.target_bands[0] if request.target_bands else "5G"
     response = ApRecommendationResponse(
         recommendations=recommendations,
         candidates_evaluated=len(candidates),
@@ -270,6 +283,9 @@ def recommend_ap_location(
             else None,
         ),
         score_weights=SCORE_WEIGHTS,
+        physical_aps_snapshot=[ap.model_dump(mode="json") for ap in _physical_aps],
+        band_metadata=build_band_metadata(_physical_aps, request.target_bands),
+        recommendation_band=leading_band,
     )
     run = _persist_recommendation_run(
         db=db,
@@ -1232,6 +1248,33 @@ def _finite_float(value: Any, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return parsed if math.isfinite(parsed) else default
+
+
+def _physical_aps_to_access_points(
+    physical_aps: list,  # list[PhysicalApInput]
+    candidate_tx_power_dbm: float = 20.0,
+) -> list[AccessPoint]:
+    """PhysicalApInput list → 경로 손실 모델용 AccessPoint list.
+
+    현재는 AP별 leading radio(첫 번째 활성 radio)를 single-band 기준으로 변환한다.
+    TODO: band별 scoring 완성 후 band-aware AccessPoint로 확장.
+    """
+    result: list[AccessPoint] = []
+    for ap in physical_aps:
+        radios = ap.effective_radios()
+        leading = radios[0] if radios else None
+        result.append(
+            AccessPoint(
+                name=str(ap.id or ap.name or f"ap_{id(ap)}"),
+                x=ap.x,
+                y=ap.y,
+                tx_power_dbm=(
+                    leading.effective_tx_power_dbm(candidate_tx_power_dbm)
+                    if leading else candidate_tx_power_dbm
+                ),
+            )
+        )
+    return result
 
 
 def _parse_existing_aps(raw: list[dict]) -> list[AccessPoint]:

@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, conlist, field_validator
 
-from typing import Literal
-
 from app.core.enums import normalize_job_status
+from app.schemas.rf.physical_ap import BandLiteral, PhysicalApInput
 from app.core.rf_defaults import (
     DEFAULT_DIFFRACTION,
     DEFAULT_DIFFUSE_REFLECTION,
@@ -66,11 +65,29 @@ class RfSimulationParams(BaseModel):
     diffraction: bool = DEFAULT_DIFFRACTION
 
 
+class BandSimulationParams(BaseModel):
+    """band별 RF run 파라미터 (신규).
+
+    현재는 bands 목록과 combine_policy만 지원한다.
+    실제 band별 Sionna run은 각 band의 leading radio frequency를 사용한다.
+
+    TODO: band별 calibration slope/intercept 분리 적용
+    TODO: overall_quality_map (2.4G/5G 통합 맵) 생성
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    bands: list[BandLiteral] = Field(default_factory=lambda: ["5G"])
+    combine_policy: Literal["max", "prefer_5g_then_2g", "weighted"] = "prefer_5g_then_2g"
+
+
 class RfRunCreate(BaseModel):
     """POST /rf-runs 요청.
 
     기존 호환을 위해 access_points/simulation 은 optional. 둘 다 없으면 단순
     queue 등록 (sagemaker invoke 안 함) — 추후 deprecate 예정.
+
+    신규: physical_aps로 Physical AP + Radio Interface 구조를 직접 전달할 수 있다.
+    physical_aps가 있으면 access_points보다 우선한다.
     """
     model_config = ConfigDict(extra="forbid")
 
@@ -86,6 +103,12 @@ class RfRunCreate(BaseModel):
     backend: RfBackend = "sagemaker"
     # 옛 호출자 호환 (deprecated)
     request_json: Optional[dict[str, Any]] = None
+
+    # ── Physical AP / Radio Interface 구조 (신규) ────────────
+    # physical_aps가 있으면 access_points보다 우선해 transmitter list를 빌드한다.
+    physical_aps: list[PhysicalApInput] = Field(default_factory=list)
+    # band별 시뮬 파라미터 — 미지정 시 single band (5G default) 로 동작한다.
+    band_simulation: Optional[BandSimulationParams] = None
 
 
 class RfRunResponse(BaseModel):

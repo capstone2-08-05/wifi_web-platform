@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.rf.physical_ap import BandLiteral, PhysicalApInput
+
 
 class ApRecommendationBBox(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
@@ -42,6 +44,22 @@ class ApRecommendationRequest(BaseModel):
 
     step_m: float = Field(default=1.0, gt=0.0, le=5.0)
     existing_aps: list[dict[str, Any]] = Field(default_factory=list)
+
+    # ── Physical AP / Radio Interface 구조 (신규) ────────────
+    # physical_aps가 있으면 existing_aps보다 우선한다.
+    # 없으면 기존 existing_aps를 내부에서 PhysicalApInput으로 변환한다.
+    physical_aps: list[PhysicalApInput] = Field(default_factory=list)
+    # 추천 단위: 현재는 physical_ap만 지원. radio 단위 추천은 후속 작업.
+    recommendation_unit: Literal["physical_ap"] = "physical_ap"
+    # 시뮬 대상 band 우선순위. 현재 추천은 leading band 단일 시뮬로 동작한다.
+    # TODO: band별 scoring 완성 후 멀티 band 평가 지원
+    target_bands: list[BandLiteral] = Field(default_factory=lambda: ["5G", "2.4G"])
+    # band 결과 통합 정책
+    # max: cell별 max RSSI
+    # prefer_5g_then_2g: 5G 가용 시 5G, 아니면 2.4G
+    # weighted: 가중 평균 (후속 작업)
+    combine_policy: Literal["max", "prefer_5g_then_2g", "weighted"] = "prefer_5g_then_2g"
+
     calibration_run_id: UUID | None = None
     calibration_policy: Literal["transfer_only", "best_params_only", "combined"] = (
         "transfer_only"
@@ -127,6 +145,26 @@ class ApRecommendationResponse(BaseModel):
     calibration: ApRecommendationCalibrationInfo | None = None
     score_weights: dict[str, float] = Field(default_factory=dict)
     created_at: datetime | None = None
+
+    # ── Physical AP / band 메타데이터 ────────────────────────
+    # 추천에 사용된 physical AP 목록 스냅샷
+    physical_aps_snapshot: list[dict[str, Any]] = Field(default_factory=list)
+    # band별 시뮬 정보 (어떤 band/radio가 사용됐는지)
+    band_metadata: dict[str, Any] = Field(default_factory=dict)
+    # 추천이 어떤 band 기준으로 수행됐는지
+    recommendation_band: str | None = None
+    # coverage semantics 설명
+    coverage_semantics: dict[str, Any] = Field(
+        default_factory=lambda: {
+            "multi_ap_rssi_merge": "max_per_cell",
+            "rssi_is_not_summed": True,
+            "note": (
+                "복수 AP/radio의 RSSI는 합산되지 않습니다. "
+                "cell별 coverage는 max(rssi per radio)로 평가합니다. "
+                "채널/혼잡 완화 효과는 별도 capacity/congestion 관점으로 다룹니다."
+            ),
+        }
+    )
 
 
 class ApRecommendationRunResponse(BaseModel):
