@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, ChevronDown, Ruler, RotateCcw, Sparkles, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, Ruler, RotateCcw, Sparkles, Trash2, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   materialLabel,
@@ -45,6 +45,22 @@ interface PropertiesPanelProps {
   onUpdateObjectPosition?: (ref: SelectedEntityRef, x: number, y: number) => void;
   /** 객체 크기(W/H) 변경 — 즉시 PATCH. */
   onUpdateObjectSize?: (ref: SelectedEntityRef, widthM: number, heightM: number) => void;
+  /** 선택된 벽들의 재질을 일괄 변경 (멀티셀렉트용). */
+  onUpdateSelectedMaterial?: (material: string) => void;
+  /** 멀티셀렉트 중 선택된 벽 개수. */
+  selectedWallCount?: number;
+  /** 모든 벽의 재질을 일괄 변경. */
+  onBulkUpdateWallMaterial?: (material: string) => void;
+  /** 모든 문의 재질을 일괄 변경. */
+  onBulkUpdateDoorMaterial?: (material: string) => void;
+  /** 모든 창문의 재질을 일괄 변경. */
+  onBulkUpdateWindowMaterial?: (material: string) => void;
+  /** 현재 씬의 벽 개수 */
+  wallCount?: number;
+  /** 현재 씬의 문 개수 */
+  doorCount?: number;
+  /** 현재 씬의 창문 개수 */
+  windowCount?: number;
   /** 작업 진행 중 표시 */
   isSaving?: boolean;
   isDeleting?: boolean;
@@ -65,6 +81,14 @@ export function PropertiesPanel({
   onUpdateMaterial,
   onUpdateWallDimension,
   onScaleAll,
+  onUpdateSelectedMaterial,
+  selectedWallCount = 0,
+  onBulkUpdateWallMaterial,
+  onBulkUpdateDoorMaterial,
+  onBulkUpdateWindowMaterial,
+  wallCount = 0,
+  doorCount = 0,
+  windowCount = 0,
   isSaving,
   isDeleting,
 }: PropertiesPanelProps) {
@@ -78,7 +102,9 @@ export function PropertiesPanel({
       {isMulti ? (
         <MultiSelectBody
           count={selectedCount ?? 0}
+          selectedWallCount={selectedWallCount}
           onDelete={onDelete}
+          onUpdateSelectedMaterial={onUpdateSelectedMaterial}
           isDeleting={!!isDeleting}
         />
       ) : selected ? (
@@ -96,6 +122,17 @@ export function PropertiesPanel({
         <EmptyBody />
       )}
 
+      {(wallCount > 0 || doorCount > 0 || windowCount > 0) && (
+        <BulkMaterialSection
+          wallCount={wallCount}
+          doorCount={doorCount}
+          windowCount={windowCount}
+          onBulkUpdateWallMaterial={onBulkUpdateWallMaterial}
+          onBulkUpdateDoorMaterial={onBulkUpdateDoorMaterial}
+          onBulkUpdateWindowMaterial={onBulkUpdateWindowMaterial}
+        />
+      )}
+
       {/* [미구현] 모바일 AR 가구 스캔 — 백엔드/모바일 연동 없음. 구현 시 MobileScanCard 복구.
       <MobileScanCard />
       */}
@@ -105,25 +142,51 @@ export function PropertiesPanel({
 
 function MultiSelectBody({
   count,
+  selectedWallCount,
   onDelete,
+  onUpdateSelectedMaterial,
   isDeleting,
 }: {
   count: number;
+  selectedWallCount: number;
   onDelete?: () => void;
+  onUpdateSelectedMaterial?: (material: string) => void;
   isDeleting: boolean;
 }) {
+  const [mat, setMat] = useState('concrete');
+  const { data: materials, isLoading } = useMaterials();
   return (
     <div className="space-y-4 rounded-lg border bg-card p-4">
       <div>
         <p className="text-xs font-medium text-muted-foreground">선택됨</p>
         <p className="mt-1 text-base font-semibold">{count}개 항목</p>
       </div>
-      <p className="text-xs leading-relaxed text-muted-foreground">
-        여러 도형이 선택돼 있습니다. 캔버스에서 드래그하면 함께 이동하고,
-        아래 버튼으로 한꺼번에 삭제할 수 있어요.
-        <br />
-        개별 속성 편집은 하나만 선택했을 때 가능합니다.
-      </p>
+      {selectedWallCount > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[11px] text-muted-foreground">선택된 벽 {selectedWallCount}개 재질 변경</p>
+          <MaterialSelect
+            value={mat}
+            onChange={setMat}
+            disabled={isLoading}
+            materials={materials ?? []}
+          />
+          <button
+            type="button"
+            onClick={() => onUpdateSelectedMaterial?.(mat)}
+            disabled={!onUpdateSelectedMaterial}
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RefreshCw className="h-3 w-3" />
+            선택 벽에 적용
+          </button>
+        </div>
+      )}
+      {selectedWallCount === 0 && (
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          여러 도형이 선택돼 있습니다. 캔버스에서 드래그하면 함께 이동하고,
+          아래 버튼으로 한꺼번에 삭제할 수 있어요.
+        </p>
+      )}
       {onDelete && (
         <button
           type="button"
@@ -532,9 +595,41 @@ function shortId(id: string): string {
   return id.slice(0, 6) + '…';
 }
 
+/** Sionna 유효 재질 — DB 비어있을 때 fallback 으로도 사용. */
+const FALLBACK_MATERIALS = [
+  { code: 'concrete', name: '콘크리트' },
+  { code: 'brick', name: '벽돌' },
+  { code: 'drywall', name: '석고보드' },
+  { code: 'glass', name: '유리' },
+  { code: 'wood', name: '목재' },
+  { code: 'metal', name: '금속' },
+] as const;
+
+/**
+ * 다양한 형식(itu_ prefix, 한국어 이름, 영문 코드)의 재질 값을
+ * material_code 로 정규화. `onChange` 가 항상 code 를 반환하도록.
+ */
+function normalizeMaterialToCode(value: string, materials: Material[]): string {
+  if (!value) return value;
+  const stripped = value.toLowerCase().startsWith('itu_') ? value.slice(4) : value.toLowerCase();
+  // DB code 매칭
+  const byCode = materials.find((m) => m.material_code?.toLowerCase() === stripped);
+  if (byCode) return byCode.material_code;
+  // DB name 매칭 (한국어)
+  const byName = materials.find((m) => m.material_name === value);
+  if (byName) return byName.material_code;
+  // Fallback code/name 매칭
+  const byFallback = FALLBACK_MATERIALS.find(
+    (f) => f.code === stripped || f.name === value,
+  );
+  if (byFallback) return byFallback.code;
+  return stripped;
+}
+
 /**
  * 백엔드 §12.1 GET /materials 결과를 옵션으로 사용.
- * 로딩 중이거나 비어있으면 fallback 옵션으로 동작.
+ * 로딩 중이거나 비어있으면 FALLBACK_MATERIALS 로 동작.
+ * onChange 는 항상 material_code (영문) 를 반환.
  */
 function MaterialSelectWired({
   value,
@@ -557,22 +652,10 @@ function MaterialSelectWired({
           ? '백엔드 재질 DB'
           : isLoading
           ? '재질 목록 불러오는 중...'
-          : '기본 재질 목록 사용 (백엔드 비어있음)'
+          : '기본 재질 목록'
       }
     />
   );
-}
-
-/** 현재 값(예: AI 가 넣은 "concrete") 이 material_code 와 매칭되면 material_name 으로 정규화. */
-function normalizeMaterialValue(value: string, materials: Material[]): string {
-  if (!value) return value;
-  // 이미 material_name 과 일치하면 그대로
-  if (materials.some((m) => m.material_name === value)) return value;
-  // material_code 매칭 → 한글 이름으로 변환
-  const matched = materials.find(
-    (m) => m.material_code?.toLowerCase() === value.toLowerCase(),
-  );
-  return matched ? matched.material_name : value;
 }
 
 function MaterialSelect({
@@ -588,32 +671,129 @@ function MaterialSelect({
   materials: Material[];
   sourceLabel?: string;
 }) {
-  const normalizedValue = normalizeMaterialValue(value, materials);
-  const fallbackNames = ['유리', '나무', '콘크리트', '플라스틱'];
-  const optionNames = Array.from(
-    new Set([...materials.map((m) => m.material_name), ...fallbackNames]),
-  );
-  const showRawValue = !!normalizedValue && !optionNames.includes(normalizedValue);
+  const codeValue = normalizeMaterialToCode(value, materials);
+  // DB 에 재질이 있으면 DB 기준, 없으면 fallback 사용
+  const options =
+    materials.length > 0
+      ? materials.map((m) => ({ code: m.material_code, name: m.material_name }))
+      : FALLBACK_MATERIALS.map((f) => ({ code: f.code, name: f.name }));
+  // 현재 값이 옵션에 없으면 추가 (레거시 데이터 대응)
+  const hasCurrentCode = options.some((o) => o.code === codeValue);
   return (
     <div className="relative">
       <select
-        value={normalizedValue}
+        value={codeValue}
         onChange={(e) => onChange?.(e.target.value)}
         disabled={disabled || !onChange}
         className="w-full appearance-none rounded-md border bg-background px-3 py-2.5 pr-9 text-sm text-foreground shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-70"
       >
-        {showRawValue && <option value={normalizedValue}>{normalizedValue}</option>}
-        {optionNames.map((m) => (
-          <option key={m} value={m}>
-            {m}
+        {!codeValue && <option value="">재질 미지정</option>}
+        {!hasCurrentCode && codeValue && <option value={codeValue}>{codeValue}</option>}
+        {options.map((o) => (
+          <option key={o.code} value={o.code}>
+            {o.name}
           </option>
         ))}
-        {!normalizedValue && <option value="">재질 미지정</option>}
       </select>
       <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
       {sourceLabel && (
         <p className="mt-1 text-[10px] text-muted-foreground/80">{sourceLabel}</p>
       )}
+    </div>
+  );
+}
+
+/** 씬 내 모든 벽 / 문 / 창문 재질을 일괄 변경하는 패널 섹션. */
+function BulkMaterialSection({
+  wallCount,
+  doorCount,
+  windowCount,
+  onBulkUpdateWallMaterial,
+  onBulkUpdateDoorMaterial,
+  onBulkUpdateWindowMaterial,
+}: {
+  wallCount: number;
+  doorCount: number;
+  windowCount: number;
+  onBulkUpdateWallMaterial?: (material: string) => void;
+  onBulkUpdateDoorMaterial?: (material: string) => void;
+  onBulkUpdateWindowMaterial?: (material: string) => void;
+}) {
+  const [wallMat, setWallMat] = useState('concrete');
+  const [doorMat, setDoorMat] = useState('wood');
+  const [windowMat, setWindowMat] = useState('glass');
+  const { data: materials, isLoading } = useMaterials();
+
+  return (
+    <div className="rounded-lg border bg-card p-4 space-y-3">
+      <h3 className="text-xs font-semibold text-foreground/80">일괄 재질 변경</h3>
+
+      {wallCount > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[11px] text-muted-foreground">벽 ({wallCount}개)</p>
+          <MaterialSelect
+            value={wallMat}
+            onChange={setWallMat}
+            disabled={isLoading}
+            materials={materials ?? []}
+          />
+          <button
+            type="button"
+            onClick={() => onBulkUpdateWallMaterial?.(wallMat)}
+            disabled={!onBulkUpdateWallMaterial}
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RefreshCw className="h-3 w-3" />
+            벽 전체 적용
+          </button>
+        </div>
+      )}
+
+      {doorCount > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[11px] text-muted-foreground">문 ({doorCount}개)</p>
+          <MaterialSelect
+            value={doorMat}
+            onChange={setDoorMat}
+            disabled={isLoading}
+            materials={materials ?? []}
+          />
+          <button
+            type="button"
+            onClick={() => onBulkUpdateDoorMaterial?.(doorMat)}
+            disabled={!onBulkUpdateDoorMaterial}
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RefreshCw className="h-3 w-3" />
+            문 전체 적용
+          </button>
+        </div>
+      )}
+
+      {windowCount > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[11px] text-muted-foreground">창문 ({windowCount}개)</p>
+          <MaterialSelect
+            value={windowMat}
+            onChange={setWindowMat}
+            disabled={isLoading}
+            materials={materials ?? []}
+          />
+          <button
+            type="button"
+            onClick={() => onBulkUpdateWindowMaterial?.(windowMat)}
+            disabled={!onBulkUpdateWindowMaterial}
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RefreshCw className="h-3 w-3" />
+            창문 전체 적용
+          </button>
+        </div>
+      )}
+
+      <p className="text-[10px] text-muted-foreground/70">
+        선택한 재질을 해당 유형의 모든 도형에 적용합니다.
+      </p>
     </div>
   );
 }
@@ -764,7 +944,7 @@ function getMaterial(selected: SelectedEntityResolved): string {
       material?: string;
       raw?: { material?: string };
     };
-    return meta?.material_label ?? meta?.material ?? meta?.raw?.material ?? '';
+    return meta?.material ?? meta?.material_label ?? meta?.raw?.material ?? '';
   }
   if (selected.kind === 'object') {
     const meta = selected.data.metadata_json as {

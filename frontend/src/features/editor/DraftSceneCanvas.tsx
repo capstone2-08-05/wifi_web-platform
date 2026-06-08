@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { materialColor, materialLabel, MATERIAL_COLORS } from '@/lib/labels';
 import type {
   DraftEntityKind,
   DraftObject,
@@ -1664,6 +1665,28 @@ export function DraftSceneCanvas({
 
       <ScaleHint draft={draft} bounds={vb} dragging={!!drag} />
       {isCreationMode && <CreationHint tool={tool} creating={creating} />}
+      <WallMaterialLegend walls={draft.walls} />
+    </div>
+  );
+}
+
+function WallMaterialLegend({ walls }: { walls: DraftWall[] }) {
+  const usedKeys = [...new Set(walls.map((w) => w.material_label ?? ''))].filter(
+    (k) => k in MATERIAL_COLORS || k === '',
+  );
+  if (usedKeys.length === 0) return null;
+  return (
+    <div className="pointer-events-none absolute bottom-4 left-4 rounded-lg border bg-white/90 p-2.5 text-[11px] shadow-sm backdrop-blur-sm space-y-1">
+      <p className="font-semibold text-foreground/60 mb-1">벽 재질</p>
+      {usedKeys.map((k) => (
+        <div key={k || '_none'} className="flex items-center gap-1.5">
+          <span
+            className="h-2 w-5 rounded-[2px] shrink-0"
+            style={{ backgroundColor: materialColor(k || null) }}
+          />
+          <span className="text-foreground/75">{k ? materialLabel(k) : '미지정'}</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -1976,7 +1999,7 @@ function WallShape({
         y1={start[1]}
         x2={end[0]}
         y2={end[1]}
-        stroke={selected ? 'oklch(0.55 0.22 264)' : 'oklch(0.25 0 0)'}
+        stroke={selected ? 'oklch(0.55 0.22 264)' : materialColor(wall.material_label)}
         strokeWidth={selected ? 6 : 4}
         strokeLinecap="butt"
         vectorEffect="non-scaling-stroke"

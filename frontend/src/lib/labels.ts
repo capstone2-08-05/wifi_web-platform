@@ -59,24 +59,41 @@ export function wallRoleLabel(role: string | null | undefined): string {
   return WALL_ROLE_LABELS[key] ?? role ?? '-';
 }
 
-/** 재질(material_label) → 한국어 라벨. value 는 백엔드 enum 그대로 유지. */
+/** 재질(material_label / material_code) → 한국어 라벨. Sionna 유효 재질만 포함. */
 const MATERIAL_LABELS: Record<string, string> = {
   concrete: '콘크리트',
   brick: '벽돌',
   drywall: '석고보드',
-  gypsum_board: '석고보드',
+  plasterboard: '석고보드',  // Sionna 내부 키 (drywall alias)
   glass: '유리',
   wood: '목재',
   metal: '금속',
-  steel: '강철',
-  stone: '석재',
-  plaster: '회벽',
-  tile: '타일',
+  chipboard: '칩보드',
+  ceiling_board: '천장재',
 };
 
 export function materialLabel(material: string | null | undefined): string {
   const key = (material ?? '').toLowerCase();
   return MATERIAL_LABELS[key] ?? material ?? '-';
+}
+
+/** 재질 코드 → 캔버스 벽 stroke 색상 (oklch). */
+export const MATERIAL_COLORS: Record<string, string> = {
+  concrete:     'oklch(0.38 0.01 250)',   // 짙은 회색
+  brick:        'oklch(0.52 0.13 35)',    // 벽돌 적갈색
+  drywall:      'oklch(0.65 0.07 80)',    // 베이지
+  plasterboard: 'oklch(0.65 0.07 80)',    // 베이지 (drywall alias)
+  wood:         'oklch(0.55 0.10 55)',    // 갈색
+  glass:        'oklch(0.60 0.12 220)',   // 하늘색
+  metal:        'oklch(0.52 0.05 245)',   // 강철 청회색
+  chipboard:    'oklch(0.62 0.07 75)',    // 황갈색
+  ceiling_board:'oklch(0.68 0.06 85)',    // 황토
+};
+
+/** material_label → stroke 색상. null/미지정이면 진회색. */
+export function materialColor(material: string | null | undefined): string {
+  const key = (material ?? '').toLowerCase().replace(/^itu_/, '');
+  return MATERIAL_COLORS[key] ?? 'oklch(0.25 0 0)';
 }
 
 /** room_type → 한국어 라벨. 미상이면 그대로 반환. */
