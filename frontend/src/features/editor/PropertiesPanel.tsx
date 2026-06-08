@@ -944,7 +944,7 @@ function getMaterial(selected: SelectedEntityResolved): string {
       material?: string;
       raw?: { material?: string };
     };
-    return meta?.material_label ?? meta?.material ?? meta?.raw?.material ?? '';
+    return meta?.material ?? meta?.material_label ?? meta?.raw?.material ?? '';
   }
   if (selected.kind === 'object') {
     const meta = selected.data.metadata_json as {

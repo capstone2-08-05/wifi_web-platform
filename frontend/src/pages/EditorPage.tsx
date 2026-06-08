@@ -588,8 +588,7 @@ export default function EditorPage() {
     }
     if (selectedRef.kind === 'opening' && baseScene) {
       const opening = baseScene.openings.find((o) => o.id === selectedRef.id);
-      const meta = (opening?.metadata_json ?? {}) as Record<string, unknown>;
-      // "material" 키 사용 — scene_version_export.py 가 metadata_json["material"] 을 읽음
+      const { material_label: _ml, ...meta } = (opening?.metadata_json ?? {}) as Record<string, unknown>;
       runPatch('opening', selectedRef.id, {
         metadata_json: { ...meta, material },
       });
@@ -633,7 +632,7 @@ export default function EditorPage() {
     if (!baseScene) return;
     const doors = baseScene.openings.filter((o) => o.opening_type === 'door');
     doors.forEach((op, i) => {
-      const meta = (op.metadata_json ?? {}) as Record<string, unknown>;
+      const { material_label: _ml, ...meta } = (op.metadata_json ?? {}) as Record<string, unknown>;
       runPatch('opening', op.id, { metadata_json: { ...meta, material } }, {
         skipHistory: i > 0,
         silent: i < doors.length - 1,
@@ -646,7 +645,7 @@ export default function EditorPage() {
     if (!baseScene) return;
     const windows = baseScene.openings.filter((o) => o.opening_type === 'window');
     windows.forEach((op, i) => {
-      const meta = (op.metadata_json ?? {}) as Record<string, unknown>;
+      const { material_label: _ml, ...meta } = (op.metadata_json ?? {}) as Record<string, unknown>;
       runPatch('opening', op.id, { metadata_json: { ...meta, material } }, {
         skipHistory: i > 0,
         silent: i < windows.length - 1,

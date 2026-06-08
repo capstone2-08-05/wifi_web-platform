@@ -179,7 +179,7 @@ def export_scene_version_to_scene_json(
         cx = wx1 + t * dx
         cy = wy1 + t * dy
         # opening 이 벽 길이에 들어가는지 확인 — 초과하면 422 유발
-        width_m = float(op.width_m)
+        width_m = float(op.width_m) if op.width_m is not None else 0.9
         s_center = t * wall_len
         if s_center - width_m / 2.0 < -0.01 or s_center + width_m / 2.0 > wall_len + 0.01:
             logger.warning(
@@ -198,7 +198,7 @@ def export_scene_version_to_scene_json(
                 "kind": op.opening_type or "door",  # OpeningObject.kind 필수 — door/window
                 "center_xy": [float(cx), float(cy)],
                 "width_m": width_m,
-                "height_m": float(op.height_m),
+                "height_m": float(op.height_m) if op.height_m is not None else 2.1,
                 "bottom_z_m": float(op.sill_height_m or 0.0),
                 "sionna_material_key": sionna_key,
                 "material_id": sionna_key,
