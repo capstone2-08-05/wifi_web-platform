@@ -176,9 +176,13 @@ export default function SimulationPage() {
     const apsRaw = (rfRunPoll.rfRun.request_json?.['access_points'] ?? []) as Array<Record<string, unknown>>;
     // setAps in effect: 서버 데이터 수신 후 동기화 — external state 반응이므로 의도된 패턴.
     /* eslint-disable react-hooks/set-state-in-effect */
+    const safeApId = (raw: unknown, i: number) => {
+      const s = String(raw ?? '');
+      return /^[A-Za-z0-9_\-]{1,32}$/.test(s) ? s : `ap${i + 1}`;
+    };
     if (Array.isArray(physRaw) && physRaw.length > 0) {
       setAps(physRaw.map((a, i) => ({
-        id: String(a['id'] ?? `ap${i + 1}`),
+        id: safeApId(a['id'], i),
         x_m: Number(a['x'] ?? a['x_m'] ?? 0),
         y_m: Number(a['y'] ?? a['y_m'] ?? 0),
         z_m: Number(a['z'] ?? a['z_m'] ?? 2.5),
@@ -186,7 +190,7 @@ export default function SimulationPage() {
       })));
     } else if (Array.isArray(apsRaw) && apsRaw.length > 0) {
       setAps(apsRaw.map((a, i) => ({
-        id: String(a['id'] ?? `ap${i + 1}`),
+        id: safeApId(a['id'], i),
         x_m: Number(a['x_m'] ?? a['x'] ?? 0),
         y_m: Number(a['y_m'] ?? a['y'] ?? 0),
         z_m: Number(a['z_m'] ?? a['z'] ?? 2.5),

@@ -168,22 +168,20 @@ function deriveImageExtent(
   });
   if (fromSummary) return fromSummary;
 
-  // 2순위: 도형 bounds 역추정.
-  // version-as-draft 는 summary_json:{} 이므로 여기 도달. rescale 후에도 도형 좌표가
-  // factor 배 되므로 bounds 기반 추정이 현재 scale 에 맞는 imageExtent 를 반환.
-  // (기존 localStorage 캐시가 stale 된 상황도 자동 복구.)
-  const bounds = computeShapeBounds(draft);
-  const fromBounds = inferImageExtentFromWallBounds(
-    imageDims,
-    isFinite(bounds.minX) ? bounds : null,
-  );
-  if (fromBounds) return fromBounds;
-
-  // 3순위: localStorage 캐시 (stale 가능성 있음 — 위 두 경로가 모두 실패했을 때만 사용).
-  return deriveImageExtentShared(imageDims, {
+  // 2순위: localStorage 캐시 — promote 후 version-as-draft(summary_json:{})에서
+  // 정확한 scale_ratio 복원. rescale 시에도 EditorPage 가 캐시를 factor 배 갱신하므로 정확.
+  const fromCache = deriveImageExtentShared(imageDims, {
     sourceAssetId: draft.source_asset_id ?? null,
     floorId: draft.floor_id ?? null,
   });
+  if (fromCache) return fromCache;
+
+  // 3순위: 도형 bounds 역추정 — localStorage 캐시도 없을 때 마지막 fallback.
+  const bounds = computeShapeBounds(draft);
+  return inferImageExtentFromWallBounds(
+    imageDims,
+    isFinite(bounds.minX) ? bounds : null,
+  );
 }
 
 const DRAG_THRESHOLD_M = 0.05;

@@ -425,7 +425,7 @@ def _persist_local_failure(
 def _create_local_rf_maps(
     db: Session, rf_run: RfRun, *, image_url: str | None, radio_map_meta: dict[str, Any]
 ) -> None:
-    """heatmap RfMap row 1개 생성 (가능한 경우). SageMaker 경로의 _create_rf_map_rows 와 같은 의도."""
+    """heatmap RfMap row 1개 생성. RF 서버 이미지를 S3에 업로드해 presigned URL로 프론트에 전달."""
     if not image_url:
         return
     cell_size_m = radio_map_meta.get("cell_size_m") or 0.5
@@ -441,12 +441,31 @@ def _create_local_rf_maps(
         "grid_shape": radio_map_meta.get("grid_shape"),
         "color_scale": radio_map_meta.get("color_scale"),
     }
+
+    # RF 서버(localhost:PORT)의 이미지 URL은 브라우저에서 접근 불가 →
+    # 백엔드에서 이미지를 다운로드해 S3에 올리고 s3:// URI로 교체.
+    # S3 업로드 실패 시 원본 URL 유지 (fallback).
+    storage_url = image_url
+    try:
+        import uuid as _uuid
+        import httpx
+        from app.services import _s3
+        resp = httpx.get(image_url, timeout=60)
+        resp.raise_for_status()
+        content_type = resp.headers.get("content-type", "image/png")
+        ext = "png" if "png" in content_type else "jpg"
+        key = f"rf-maps/{rf_run.id}/{_uuid.uuid4()}.{ext}"
+        storage_url = _s3.upload_bytes(key, resp.content, content_type=content_type)
+        logger.info("RF 히트맵 S3 업로드 완료: %s", storage_url)
+    except Exception as exc:
+        logger.warning("RF 히트맵 S3 업로드 실패, 원본 URL 유지: %s", exc)
+
     db.add(
         RfMap(
             rf_run_id=rf_run.id,
             map_type="heatmap",
             resolution_cm=resolution_cm,
-            storage_url=image_url,
+            storage_url=storage_url,
             bounds_json=radio_map_meta.get("bounds_m") or {},
             metrics_json=metrics,
         )
