@@ -1209,7 +1209,7 @@ export function DraftSceneCanvas({
             y={imageExtent ? 0 : vb.y}
             width={imageExtent ? imageExtent.w : vb.w}
             height={imageExtent ? imageExtent.h : vb.h}
-            opacity={0.25}
+            opacity={0.4}
             preserveAspectRatio={imageExtent ? 'none' : 'xMidYMid meet'}
             pointerEvents="none"
             crossOrigin="anonymous"
