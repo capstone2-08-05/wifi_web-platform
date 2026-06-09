@@ -343,7 +343,6 @@ export function ApRecommendationCanvas({
               preserveAspectRatio={imageExtent ? 'none' : 'xMidYMid meet'}
               opacity={0.35}
               pointerEvents="none"
-              crossOrigin="anonymous"
             />
           )}
 

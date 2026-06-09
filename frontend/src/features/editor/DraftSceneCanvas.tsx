@@ -670,6 +670,8 @@ interface Props {
   onCreate?: (kind: DraftEntityKind, body: Record<string, unknown>) => void;
   /** 원본 도면 이미지 URL — 벡터 도형 뒤에 연하게 깔아 비교용. */
   backgroundImageUrl?: string | null;
+  /** backgroundImageUrl 로드 실패 시 호출 (CORS / PDF 등) — EditorPage 가 fallback 처리. */
+  onImageError?: () => void;
 }
 
 export function DraftSceneCanvas({
@@ -683,6 +685,7 @@ export function DraftSceneCanvas({
   tool = 'select',
   onCreate,
   backgroundImageUrl,
+  onImageError,
 }: Props) {
   // 배경 도면 이미지의 natural 픽셀 dim → real_width_m 와 조합해 실제 미터 크기 산출.
   // 이미지 extent 가 있으면 viewBox 는 (이미지 + 도형) 합집합 → 도형을 줄여도 캔버스가
@@ -1210,10 +1213,9 @@ export function DraftSceneCanvas({
             opacity={0.4}
             preserveAspectRatio={imageExtent ? 'none' : 'xMidYMid meet'}
             pointerEvents="none"
-            crossOrigin="anonymous"
             onError={() => {
-              // 이미지 로드 실패: CORS / private S3 / 잘못된 URL 가능성.
               console.warn('[Canvas] 배경 도면 이미지 로드 실패:', backgroundImageUrl);
+              onImageError?.();
             }}
           />
         )}

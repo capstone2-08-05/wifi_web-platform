@@ -174,9 +174,11 @@ export default function EditorPage() {
   const baseScene: SceneDraft | null = activeDraft ?? versionAsDraft;
   // 원본 도면 이미지(asset) — 캔버스 배경에 연하게 깔기 위해 가져옴.
   // 1순위: scene 의 source_asset_id (백엔드가 null 로 응답하는 경우 많음)
-  // 2순위: 층의 floorplan 자산 중 가장 최근 것 (fallback).
+  // 2순위: activeDraftSummary.source_asset_id — draft detail 로드 전 조기 확보 (list 응답에 포함)
+  // 3순위: 층의 floorplan 자산 중 가장 최근 것 (fallback).
   // Asset.storage_url 이 s3:// URI 라서 직접 못 쓰고, /download-url 로 presigned 받음.
-  const sourceAssetId = baseScene?.source_asset_id ?? null;
+  const sourceAssetId =
+    baseScene?.source_asset_id ?? activeDraftSummary?.source_asset_id ?? null;
   const allowUnversionedImageFallback = !!activeDraftSummary;
   const floorAssetsQuery = useFloorAssets(floorId, 'floorplan_image');
   const fallbackAsset = useMemo(() => {
@@ -208,7 +210,12 @@ export default function EditorPage() {
   const assetUrl = assetUrlQuery.data?.url ?? null;
   const usableAssetUrl =
     assetUrl && /^https?:\/\//i.test(assetUrl) ? assetUrl : null;
-  const backgroundImageUrl = usableAssetUrl ?? localImage ?? null;
+  // usableAssetUrl 이 CORS/PDF 등으로 로드 실패하면 localImage 로 전환.
+  const [assetUrlFailed, setAssetUrlFailed] = useState(false);
+  useEffect(() => { setAssetUrlFailed(false); }, [usableAssetUrl]);
+  const backgroundImageUrl =
+    (assetUrlFailed ? null : usableAssetUrl) ?? localImage ?? null;
+
   const editingScene: SceneDraft | null = baseScene;
   const resolvedSelected = useMemo<SelectedEntityResolved | null>(() => {
     const scene = editingScene;
@@ -1002,6 +1009,7 @@ export default function EditorPage() {
                 tool={tool}
                 onCreate={handleCreate}
                 backgroundImageUrl={backgroundImageUrl}
+                onImageError={() => setAssetUrlFailed(true)}
               />
             ) : currentVersion ? (
               // 버전이 선택돼있고 detail 로딩 중 — 파일 업로드 화면 대신 스피너.

@@ -312,7 +312,6 @@ export function MeasurementCanvas({
             preserveAspectRatio={imageExtent ? 'none' : 'xMidYMid meet'}
             opacity={0.35}
             pointerEvents="none"
-            crossOrigin="anonymous"
             onError={() => {
               console.warn(
                 '[MeasurementCanvas] 배경 도면 이미지 로드 실패:',

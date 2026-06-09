@@ -160,20 +160,6 @@ export function SimulationCanvas({
     return inferImageExtentFromWallBounds(imageDims, isFinite(b.minX) ? b : null);
   }, [imageDims, sceneVersion?.source_asset_id, sceneVersion?.floor_id, sceneVersion?.walls]);
 
-  // DEBUG: 히트맵 정렬 진단용 — 확인 후 삭제
-  useMemo(() => {
-    const b = emptyBounds();
-    for (const wall of sceneVersion?.walls ?? []) {
-      const g = parseGeometry(wall.centerline_geom);
-      if (g?.type === 'LineString') for (const [x, y] of g.coordinates) extendBounds(b, x, y);
-    }
-    if (isFinite(b.minX)) console.log('[HEATMAP DBG] wall bounds (meters):', JSON.stringify(b));
-    console.log('[HEATMAP DBG] heatmapBounds:', JSON.stringify(heatmapBounds));
-    console.log('[HEATMAP DBG] imageDims (px):', JSON.stringify(imageDims));
-    console.log('[HEATMAP DBG] imageExtent (meters):', JSON.stringify(imageExtent));
-    console.log('[HEATMAP DBG] aps:', JSON.stringify(aps.map(a => ({id:a.id, x:a.x_m, y:a.y_m}))));
-  }, [sceneVersion?.walls, heatmapBounds, imageDims, imageExtent, aps]);
-
   // imageExtent 가 있으면 항상 image+shape union 으로 계산 (editor 와 동일한 로직).
   // 캐시는 imageExtent 없이 저장된 경우 배경 이미지가 clipPath 에 잘리는 문제를 일으킬 수 있어
   // imageExtent 확보 이후엔 무시.
@@ -284,32 +270,37 @@ export function SimulationCanvas({
             preserveAspectRatio={imageExtent ? 'none' : 'xMidYMid meet'}
             opacity={0.35}
             pointerEvents="none"
-            crossOrigin="anonymous"
             onError={() => {
               console.warn('[SimulationCanvas] 배경 도면 이미지 로드 실패:', backgroundImageUrl);
             }}
           />
         )}
-        {/* RF 시뮬레이션 히트맵 오버레이 — 배경 도면 위, 도형 아래.
-            bounds_json 이 있으면 그 미터 좌표에 정확히 배치(도면과 1:1 정렬).
-            없으면(파싱 실패) fallback 으로 viewBox 영역에 fitting → 정렬은 안 맞아도
-            적어도 결과가 보이게는 함. */}
-        {heatmapUrl && (
-          <image
-            href={heatmapUrl}
-            xlinkHref={heatmapUrl}
-            x={heatmapBounds ? heatmapBounds.minX : vb.x}
-            y={heatmapBounds ? heatmapBounds.minY : vb.y}
-            width={heatmapBounds ? heatmapBounds.maxX - heatmapBounds.minX : vb.w}
-            height={heatmapBounds ? heatmapBounds.maxY - heatmapBounds.minY : vb.h}
-            preserveAspectRatio={heatmapBounds ? 'none' : 'xMidYMid meet'}
-            opacity={0.6}
-            pointerEvents="none"
-            onError={() => {
-              console.warn('[SimulationCanvas] 히트맵 이미지 로드 실패:', heatmapUrl);
-            }}
-          />
-        )}
+        {/* RF 시뮬레이션 히트맵 오버레이 — 바운딩 박스 정밀 정렬 버전 */}
+        {heatmapUrl && (() => {
+          // 백엔드가 준 마진(0.5m)이 포함된 타이트한 영역(heatmapBounds)을 1순위로 정확히 매핑합니다.
+          const hx = heatmapBounds ? heatmapBounds.minX : (imageExtent ? 0 : vb.x);
+          const hy = heatmapBounds ? heatmapBounds.minY : (imageExtent ? 0 : vb.y);
+          const hw = heatmapBounds ? heatmapBounds.maxX - heatmapBounds.minX : (imageExtent ? imageExtent.w : vb.w);
+          const hh = heatmapBounds ? heatmapBounds.maxY - heatmapBounds.minY : (imageExtent ? imageExtent.h : vb.h);
+          
+          return (
+            <image
+              href={heatmapUrl}
+              xlinkHref={heatmapUrl}
+              x={hx}
+              y={hy}
+              width={hw}
+              height={hh}
+              // 백엔드가 준 고유 영역 해상도에 맞게 1:1로 강제 매칭하기 위해 'none' 처리
+              preserveAspectRatio="none"
+              opacity={0.6}
+              pointerEvents="none"
+              onError={() => {
+                console.warn('[SimulationCanvas] 히트맵 이미지 로드 실패:', heatmapUrl);
+              }}
+            />
+          );
+        })()}
         {/* [room 비활성화] 시뮬레이션 캔버스에서 room 영역 렌더 제거. 다시 켜려면 아래 블록 주석 해제. */}
         {/* {(sceneVersion?.rooms ?? []).map((r) => (
           <RoomShape key={r.id} room={r} />
