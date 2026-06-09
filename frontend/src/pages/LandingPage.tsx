@@ -260,8 +260,8 @@ export default function LandingPage() {
                       <div key={i} className="rounded-xl border border-white/70 bg-white/35" />
                     ))}
                   </div>
-                  <div className="absolute left-12 top-9 rounded-full bg-blue-600 px-2 py-0.5 text-[9px] font-bold text-white shadow-md">AP-1</div>
-                  <div className="absolute right-12 top-6 rounded-full bg-blue-600 px-2 py-0.5 text-[9px] font-bold text-white shadow-md">AP-2</div>
+                  <div className="absolute left-12 top-9 rounded-full bg-blue-600 px-2 py-0.5 text-[9px] font-bold text-white shadow-md">공유기1</div>
+                  <div className="absolute right-12 top-6 rounded-full bg-blue-600 px-2 py-0.5 text-[9px] font-bold text-white shadow-md">공유기2</div>
                   <div className="absolute bottom-2.5 left-2.5 right-2.5 rounded-xl bg-white/90 px-3 py-2 backdrop-blur-sm">
                     <div className="flex items-center justify-between text-[9px]">
                       <span className="text-slate-500">신호 범위</span>

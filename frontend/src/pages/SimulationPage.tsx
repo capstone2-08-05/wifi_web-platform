@@ -14,7 +14,7 @@ import {
 import { useMemo, useEffect } from 'react';
 import { useAppStore } from '@/stores/app-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
-import { useCreateRfRun, useFloorRfRuns, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
+import { useCreateRfRun, useDeleteRfRun, useFloorRfRuns, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
 import { useRfMapImageUrl } from '@/hooks/use-rf-map-image-url';
 import { useAssetDownloadUrl } from '@/hooks/use-assets';
 import { useLocalFloorplanImage, linkFloorImageToAsset } from '@/hooks/use-local-floorplan-image';
@@ -36,23 +36,44 @@ import {
   SimulationCanvas,
   type PlacedAp,
 } from '@/features/simulation/SimulationCanvas';
+import { ApRadioPanel } from '@/features/simulation/ApRadioPanel';
 import { extractColorScale } from '@/features/simulation/HeatmapColorLegend';
 import { DbmColorBar } from '@/features/simulation/DbmColorBar';
 import { FloorSpaceTypeSelector } from '@/features/floor/FloorSpaceTypeSelector';
 import { toast } from '@/stores/toast-store';
 import type { SceneVersion } from '@/types/scene';
 import type { ApCandidate, ApLayout } from '@/types/ap-layout';
-import type { RfBackend } from '@/types/rf';
+import type { RadioInterface, RfBackend, WifiBand } from '@/types/rf';
+import { DEFAULT_RADIO_5G } from '@/lib/wifi-channel';
 import { cn } from '@/lib/utils';
 import { nextApSequentialName } from '@/lib/ap-layout-naming';
 
 type SimulationState = 'idle' | 'running' | 'complete';
-type FrequencyBand = '2.4' | '5';
 
-const frequencyHzByBand: Record<FrequencyBand, number> = {
-  '2.4': 2.4e9,
-  '5': 5.0e9,
-};
+/** simBands[0] 를 simulation.frequency_hz 로 변환 (legacy compat). */
+function primaryFreqHz(bands: WifiBand[]): number {
+  return bands[0] === '2.4G' ? 2.4e9 : 5.0e9;
+}
+
+/** PlacedAp → physical_aps payload 항목. band 지정 시 해당 band의 enabled radio만 포함. */
+function toPhysicalApPayload(ap: PlacedAp, band?: WifiBand) {
+  const allEnabled: RadioInterface[] =
+    ap.radios && ap.radios.length > 0
+      ? ap.radios.filter((r) => r.enabled)
+      : [{ id: `${ap.id}-5g`, ...DEFAULT_RADIO_5G }];
+  const radios = band ? allEnabled.filter((r) => r.band === band) : allEnabled;
+  // band 필터 후 없으면 전체 enabled fallback (AP가 해당 band 라디오 미보유 시)
+  const finalRadios = radios.length > 0 ? radios : allEnabled;
+  return {
+    id: ap.id,
+    name: ap.id.toUpperCase(),
+    x: ap.x_m,
+    y: ap.y_m,
+    z: ap.z_m,
+    movable: true,
+    radios: finalRadios,
+  };
+}
 
 export default function SimulationPage() {
   const floorId = useAppStore((s) => s.selectedFloorId);
@@ -70,11 +91,13 @@ export default function SimulationPage() {
   // 사용자가 배치한 AP 목록 + 추가 모드(true 면 다음 클릭이 새 AP 추가).
   const [aps, setAps] = useState<PlacedAp[]>([]);
   const [pendingAdd, setPendingAdd] = useState(false);
+  // 선택된 AP id — radio 설정 패널 열림 관리.
+  const [selectedApId, setSelectedApId] = useState<string | null>(null);
 
   // 시뮬 실행 백엔드 토글 — local(기본, 로컬 ai_api) | sagemaker(클라우드).
-  // 로컬에서 분 단위로 결과 보는 게 dev 흐름이라 기본값을 local 로.
   const [backend, setBackend] = useState<RfBackend>('local');
-  const [frequencyBand, setFrequencyBand] = useState<FrequencyBand>('5');
+  // 시뮬 대상 band. 단일 5G | 단일 2.4G | dual.
+  const [simBands, setSimBands] = useState<WifiBand[]>(['5G']);
   const [txPowerDbm, setTxPowerDbm] = useState(20);
 
   // 층의 과거 RF Run 목록 (이력 카드 + 자동 복원용).
@@ -103,9 +126,19 @@ export default function SimulationPage() {
     setPickedRunId(id);
   };
 
+  // Dual 모드: 2.4GHz 전용 보조 run 추적.
+  const [secondaryRunId, setSecondaryRunId] = useState<string | null>(null);
+  // Dual 완료 후 어느 band 탭을 보여줄지.
+  const [bandTab, setBandTab] = useState<WifiBand>('5G');
+
+  const isDual = simBands.length > 1;
+
   const createRfRun = useCreateRfRun(floorId, { page_size: 20 });
+  const deleteRfRun = useDeleteRfRun(floorId);
   const rfRunPoll = useRfRun(activeRunId);
   const rfMapsQuery = useRfMaps(activeRunId, rfRunPoll.isSucceeded);
+  const secondaryRunPoll = useRfRun(secondaryRunId);
+  const secondaryMapsQuery = useRfMaps(secondaryRunId, secondaryRunPoll.isSucceeded);
   const activeRunSceneVersionId = rfRunPoll.rfRun?.scene_version_id ?? null;
 
   const state: SimulationState = (() => {
@@ -135,27 +168,94 @@ export default function SimulationPage() {
     !!activeRunSceneVersionId &&
     activeRunSceneVersionId !== currentVersion.id;
 
-  // 활성 run(과거/자동복원 포함)의 AP 를 캔버스에 복원 — 결과 화면에 AP 마커가 보이도록.
-  // (aps state 는 사용자가 직접 찍은 것만 담기는데, 과거 run 을 불러올 땐 비어 있어 마커가 안 떴음)
+  // 활성 run(과거/자동복원 포함)의 AP 를 캔버스에 복원.
+  // physical_aps_snapshot > physical_aps > access_points 우선순위.
+  // access_points[].id는 백엔드가 "{ap_id}-{radio_id}" 형식으로 오염시키므로 사용 금지.
   useEffect(() => {
     if (!activeRunId || !rfRunPoll.rfRun) return;
-    const aps_raw = (rfRunPoll.rfRun.request_json?.['access_points'] ?? []) as Array<
-      Record<string, unknown>
-    >;
-    if (!Array.isArray(aps_raw) || aps_raw.length === 0) return;
-    const restored: PlacedAp[] = aps_raw.map((a, i) => ({
-      id: String(a['id'] ?? `ap${i + 1}`),
-      x_m: Number(a['x_m'] ?? a['x'] ?? 0),
-      y_m: Number(a['y_m'] ?? a['y'] ?? 0),
-      z_m: Number(a['z_m'] ?? a['z'] ?? 2.5),
-    }));
-    setAps(restored);
-  }, [activeRunId, rfRunPoll.rfRun]);
+    const rj = rfRunPoll.rfRun.request_json;
+    const physRaw = (rj?.['physical_aps_snapshot'] ?? rj?.['physical_aps'] ?? []) as Array<Record<string, unknown>>;
+    const apsRaw = (rj?.['access_points'] ?? []) as Array<Record<string, unknown>>;
+    // setAps in effect: 서버 데이터 수신 후 동기화 — external state 반응이므로 의도된 패턴.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    const safeApId = (raw: unknown, i: number) => {
+      const s = String(raw ?? '');
+      return /^[A-Za-z0-9_\-]{1,32}$/.test(s) ? s : `ap${i + 1}`;
+    };
+    if (Array.isArray(physRaw) && physRaw.length > 0) {
+      setAps(physRaw.map((a, i) => ({
+        id: safeApId(a['id'], i),
+        x_m: Number(a['x'] ?? a['x_m'] ?? 0),
+        y_m: Number(a['y'] ?? a['y_m'] ?? 0),
+        z_m: Number(a['z'] ?? a['z_m'] ?? 2.5),
+        radios: Array.isArray(a['radios']) ? (a['radios'] as RadioInterface[]) : undefined,
+      })));
+    } else if (Array.isArray(apsRaw) && apsRaw.length > 0) {
+      // physical_ap_id 우선: access_points[].id는 "{ap_id}-{radio_id}" 복합 키일 수 있음.
+      setAps(apsRaw.map((a, i) => ({
+        id: safeApId(a['physical_ap_id'] ?? a['id'], i),
+        x_m: Number(a['x_m'] ?? a['x'] ?? 0),
+        y_m: Number(a['y_m'] ?? a['y'] ?? 0),
+        z_m: Number(a['z_m'] ?? a['z'] ?? 2.5),
+      })));
+    }
+    /* eslint-enable react-hooks/set-state-in-effect */
+  // rfRunPoll.rfRun?.id 만 의존 — run 내부 갱신마다 AP 덮어쓰기 방지.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRunId, rfRunPoll.rfRun?.id]);
+
+  // Dual 동반 run 자동 복원 — 페이지 재진입 시 secondary가 날아가는 문제 해결.
+  // pastRuns는 created_at desc 정렬 → 2.4G run이 미세하게 늦게 생성돼 [0]에 올 수 있음.
+  // 따라서 5G primary 케이스와 2.4G primary 케이스를 모두 처리한다.
+  useEffect(() => {
+    if (secondaryRunId) return; // 이미 복원됨
+    if (!rfRunPoll.rfRun) return;
+
+    const getBandsFromRun = (r: { request_json?: Record<string, unknown> }): WifiBand[] | null => {
+      const meta = r.request_json?.['metadata'] as Record<string, unknown> | undefined;
+      const rfUi = meta?.['rf_physical_ui'] as Record<string, unknown> | undefined;
+      const bands = rfUi?.['sim_bands'] as WifiBand[] | undefined;
+      return bands && bands.length === 1 ? bands : null;
+    };
+
+    const primaryBands = getBandsFromRun(rfRunPoll.rfRun);
+    if (!primaryBands) return; // multi-band run이거나 metadata 없음 → Dual 아님
+
+    const primaryTime = new Date(rfRunPoll.rfRun.created_at).getTime();
+    const [wantedBand, primaryBand] = primaryBands[0] === '5G'
+      ? ['2.4G', '5G'] as const
+      : ['5G', '2.4G'] as const;
+
+    const companion = pastRuns.find((r) => {
+      if (r.id === activeRunId) return false;
+      if (r.status !== 'succeeded') return false;
+      if (r.scene_version_id !== rfRunPoll.rfRun!.scene_version_id) return false;
+      const rBands = getBandsFromRun(r as unknown as { request_json?: Record<string, unknown> });
+      if (!rBands || rBands[0] !== wantedBand) return false;
+      return Math.abs(new Date(r.created_at).getTime() - primaryTime) < 30_000;
+    });
+
+    if (!companion) return;
+
+    /* eslint-disable react-hooks/set-state-in-effect */
+    if (primaryBand === '5G') {
+      // 정상 케이스: 5G primary, 2.4G companion → secondary에 companion
+      setSecondaryRunId(companion.id);
+    } else {
+      // 역전 케이스: 2.4G가 auto-선택됨 → 5G companion을 primary로 교체
+      setActiveRunId(companion.id);
+      setSecondaryRunId(rfRunPoll.rfRun.id);
+    }
+    setSimBands(['5G', '2.4G']);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  // rfRunPoll.rfRun?.id + pastRuns 변경 시만 실행.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rfRunPoll.rfRun?.id, pastRuns]);
 
   const heatmapMap = useMemo(() => {
-    const maps = rfMapsQuery.data ?? [];
+    const maps = (isDual && bandTab === '2.4G' ? secondaryMapsQuery.data : rfMapsQuery.data) ?? [];
     return maps.find((m) => m.map_type === 'heatmap') ?? maps[0] ?? null;
-  }, [rfMapsQuery.data]);
+  }, [isDual, bandTab, rfMapsQuery.data, secondaryMapsQuery.data]);
   const heatmapSourceUrl = useMemo(() => {
     if (!heatmapMap) return null;
     if (heatmapMap.url) return heatmapMap.url;
@@ -175,42 +275,53 @@ export default function SimulationPage() {
     () => parseHeatmapBounds(heatmapMap?.bounds_json),
     [heatmapMap],
   );
-
   const handleStart = () => {
     if (!currentVersion) return;
     if (aps.length === 0) {
       toast.info('공유기를 1개 이상 배치해주세요', '캔버스 우측의 "공유기 추가하기" 에서 종류를 선택하고 클릭하세요.');
       return;
     }
-    createRfRun.mutate(
-      {
+    // enabled radio가 하나도 없는 AP 경고.
+    const noRadioAps = aps.filter((ap) => {
+      if (!ap.radios || ap.radios.length === 0) return false;
+      return !ap.radios.some((r) => r.enabled);
+    });
+    if (noRadioAps.length > 0) {
+      toast.info(
+        '활성화된 radio가 없는 AP가 있습니다',
+        `${noRadioAps.map((a) => a.id.toUpperCase()).join(', ')} — 최소 1개 radio를 활성화해 주세요.`,
+      );
+      return;
+    }
+
+    const legacyAps = aps.map((ap) => ({ id: ap.id, x_m: ap.x_m, y_m: ap.y_m, z_m: ap.z_m }));
+
+    const makePayload = (bands: WifiBand[]) => {
+      const band = bands.length === 1 ? bands[0] : undefined;
+      const physicalAps = aps.map((ap) => toPhysicalApPayload(ap, band));
+      const freqHz = primaryFreqHz(bands);
+      return {
         scene_version_id: currentVersion.id,
         run_type: 'forward',
-        access_points: aps.map((ap) => ({
-          id: ap.id,
-          x_m: ap.x_m,
-          y_m: ap.y_m,
-          z_m: ap.z_m,
-        })),
-        // 모든 시뮬 파라미터는 backend `app/core/rf_defaults.py` 의 디폴트 사용 —
-        // 5GHz / 20dBm / max_depth=3 / samples=100k 등. UI 에서 사용자가 직접 정하는
-        // 값이 생기면 여기 채워 보내면 backend 가 우선 적용. 빈 `{}` 는 "new flow" 트리거.
-        simulation: {
-          frequency_hz: frequencyHzByBand[frequencyBand],
-          tx_power_dbm: txPowerDbm,
-        },
-        metadata: {
-          rf_physical_ui: {
-            frequency_band: frequencyBand,
-            frequency_hz: frequencyHzByBand[frequencyBand],
-            tx_power_dbm: txPowerDbm,
-          },
-        },
+        access_points: legacyAps,
+        physical_aps: physicalAps,
+        band_simulation: { bands },
+        simulation: { frequency_hz: freqHz, tx_power_dbm: txPowerDbm },
+        metadata: { rf_physical_ui: { sim_bands: bands, frequency_hz: freqHz, tx_power_dbm: txPowerDbm } },
         apply_calibration: false,
         backend,
-      },
-      { onSuccess: (data) => setActiveRunId(data.id) },
-    );
+      };
+    };
+
+    if (isDual) {
+      // Dual: 5GHz(primary) + 2.4GHz(secondary) 각각 별도 run.
+      setBandTab('5G');
+      setSecondaryRunId(null);
+      createRfRun.mutate(makePayload(['5G']), { onSuccess: (data) => setActiveRunId(data.id) });
+      createRfRun.mutate(makePayload(['2.4G']), { onSuccess: (data) => setSecondaryRunId(data.id) });
+    } else {
+      createRfRun.mutate(makePayload(simBands), { onSuccess: (data) => setActiveRunId(data.id) });
+    }
   };
 
   const handleReset = () => {
@@ -220,14 +331,30 @@ export default function SimulationPage() {
       activeRunSceneVersionId !== currentVersion?.id;
     setPickedRunId(null);
     setResetCleared(true);
+    setSecondaryRunId(null);
+    setBandTab('5G');
+    setSelectedApId(null);
     if (wasHistorical) setAps([]);
   };
 
-  const handleAddAp = (ap: PlacedAp) => setAps((prev) => [...prev, ap]);
+  const handleAddAp = (ap: PlacedAp) => {
+    // 새 AP는 기본 5G radio 1개를 가지고 시작.
+    const newAp: PlacedAp = {
+      ...ap,
+      radios: [{ id: `${ap.id}-5g`, ...DEFAULT_RADIO_5G, tx_power_dbm: txPowerDbm }],
+    };
+    setAps((prev) => [...prev, newAp]);
+  };
   const handleMoveAp = (id: string, x: number, y: number) =>
     setAps((prev) => prev.map((a) => (a.id === id ? { ...a, x_m: x, y_m: y } : a)));
-  const handleRemoveAp = (id: string) =>
+  const handleRemoveAp = (id: string) => {
     setAps((prev) => prev.filter((a) => a.id !== id));
+    if (selectedApId === id) setSelectedApId(null);
+  };
+  const handleUpdateApRadios = (id: string, radios: RadioInterface[]) =>
+    setAps((prev) => prev.map((a) => (a.id === id ? { ...a, radios } : a)));
+  const handleApClick = (id: string) =>
+    setSelectedApId((prev) => (prev === id ? null : id));
 
   // 메트릭 추출 (백엔드가 metrics_json 안에 다양한 키로 넣을 수 있어 유연하게)
   const metrics = parseMetrics(
@@ -281,8 +408,8 @@ export default function SimulationPage() {
         apsCount={aps.length}
         backend={backend}
         onBackendChange={setBackend}
-        frequencyBand={frequencyBand}
-        onFrequencyBandChange={setFrequencyBand}
+        simBands={simBands}
+        onSimBandsChange={setSimBands}
         txPowerDbm={txPowerDbm}
         onTxPowerDbmChange={setTxPowerDbm}
         floorId={floorId ?? null}
@@ -320,21 +447,38 @@ export default function SimulationPage() {
                   onRemove={handleRemoveAp}
                   pending={pendingAdd}
                   onClearPending={() => setPendingAdd(false)}
+                  onApClick={handleApClick}
+                  selectedApId={selectedApId}
                 />
                 <ApAddPanel
                   active={pendingAdd}
-                  onToggle={() => setPendingAdd((v) => !v)}
+                  onToggle={() => { setPendingAdd((v) => !v); setSelectedApId(null); }}
                   disabled={aps.length >= 8}
                 />
+                {selectedApId && aps.find((a) => a.id === selectedApId) && (
+                  <ApRadioPanel
+                    key={selectedApId}
+                    ap={aps.find((a) => a.id === selectedApId)!}
+                    onUpdateRadios={handleUpdateApRadios}
+                    onClose={() => setSelectedApId(null)}
+                  />
+                )}
               </>
             ) : state === 'running' ? (
               <div className="h-full p-4">
                 <SimulationVisualization state={state} />
               </div>
             ) : (
-              // 'complete' — 도형/AP + 히트맵 오버레이를 한 SVG 안에 겹쳐 표시 (read-only).
+              // 'complete' — 도형/AP + 히트맵 오버레이를 한 SVG 안에 겹쳐 표시.
               <>
                 {isViewingHistoricalRun && <HistoricalRunBubble />}
+                {isDual && (
+                  <BandTabBar
+                    bandTab={bandTab}
+                    onBandTabChange={setBandTab}
+                    secondaryLoading={!secondaryRunPoll.isSucceeded && !secondaryRunPoll.isFailed}
+                  />
+                )}
                 <SimulationCanvas
                   sceneVersion={canvasVersionQuery.data}
                   backgroundImageUrl={backgroundImageUrl}
@@ -347,6 +491,8 @@ export default function SimulationPage() {
                   heatmapUrl={heatmapUrl}
                   heatmapBounds={heatmapBounds}
                   readOnly
+                  onApClick={handleApClick}
+                  selectedApId={selectedApId}
                 />
                 {heatmapUrl && (
                   <div className="pointer-events-none absolute left-3 top-3 z-10 w-70">
@@ -356,6 +502,14 @@ export default function SimulationPage() {
                       label="예측 RSSI (시뮬)"
                     />
                   </div>
+                )}
+                {selectedApId && aps.find((a) => a.id === selectedApId) && (
+                  <ApRadioPanel
+                    key={selectedApId}
+                    ap={aps.find((a) => a.id === selectedApId)!}
+                    onUpdateRadios={handleUpdateApRadios}
+                    onClose={() => setSelectedApId(null)}
+                  />
                 )}
               </>
             )}
@@ -380,6 +534,10 @@ export default function SimulationPage() {
               isLoading={pastRunsQuery.isLoading}
               showCompareButton={false}
               onSelect={(id) => setActiveRunId(id)}
+              onDelete={(id) => {
+                if (id === activeRunId) setActiveRunId(null);
+                deleteRfRun.mutate(id);
+              }}
             />
             {canvasSceneVersionId && (
               <Link
@@ -422,6 +580,42 @@ function HistoricalRunBubble() {
           className="absolute -bottom-1 right-5 h-2 w-2 rotate-45 border-b border-r border-sky-200 bg-sky-50/95"
           aria-hidden="true"
         />
+      </div>
+    </div>
+  );
+}
+
+/** Dual 모드 완료 시 캔버스 상단 band 탭 전환 바. */
+function BandTabBar({
+  bandTab,
+  onBandTabChange,
+  secondaryLoading,
+}: {
+  bandTab: WifiBand;
+  onBandTabChange: (b: WifiBand) => void;
+  secondaryLoading: boolean;
+}) {
+  return (
+    <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2">
+      <div className="inline-flex h-8 items-center rounded-lg border border-slate-200 bg-white/95 p-0.5 shadow-sm backdrop-blur-sm">
+        {(['5G', '2.4G'] as WifiBand[]).map((b) => (
+          <button
+            key={b}
+            type="button"
+            onClick={() => onBandTabChange(b)}
+            className={cn(
+              'inline-flex h-7 items-center gap-1 rounded-md px-2.5 text-xs font-medium transition-colors',
+              bandTab === b
+                ? 'bg-blue-50 text-blue-700'
+                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900',
+            )}
+          >
+            {b === '2.4G' ? '2.4GHz' : '5GHz'}
+            {b === '2.4G' && secondaryLoading && (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            )}
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -502,8 +696,8 @@ function PageHeader({
   apsCount,
   backend,
   onBackendChange,
-  frequencyBand,
-  onFrequencyBandChange,
+  simBands,
+  onSimBandsChange,
   txPowerDbm,
   onTxPowerDbmChange,
   floorId,
@@ -517,8 +711,8 @@ function PageHeader({
   apsCount: number;
   backend: RfBackend;
   onBackendChange: (b: RfBackend) => void;
-  frequencyBand: FrequencyBand;
-  onFrequencyBandChange: (band: FrequencyBand) => void;
+  simBands: WifiBand[];
+  onSimBandsChange: (bands: WifiBand[]) => void;
   txPowerDbm: number;
   onTxPowerDbmChange: (value: number) => void;
   floorId: string | null;
@@ -531,7 +725,7 @@ function PageHeader({
       <div className="min-w-0">
         <h1 className="text-2xl font-semibold tracking-tight text-slate-900">시뮬레이션</h1>
         <p className="mt-0.5 text-sm text-slate-500">
-          저장된 도면을 불러와 가구와 AP를 자유롭게 배치하고 예상 품질을 비교합니다.
+          저장된 도면을 불러와 가구와 공유기를 자유롭게 배치하고 예상 품질을 비교합니다.
         </p>
       </div>
 
@@ -551,8 +745,8 @@ function PageHeader({
             </div>
             <div className="flex flex-wrap items-center gap-1 border-b border-slate-100 px-1.5 py-0.5 sm:border-b-0 sm:border-r">
               <RfPhysicalControls
-                frequencyBand={frequencyBand}
-                onFrequencyBandChange={onFrequencyBandChange}
+                simBands={simBands}
+                onSimBandsChange={onSimBandsChange}
                 txPowerDbm={txPowerDbm}
                 onTxPowerDbmChange={onTxPowerDbmChange}
                 disabled={isStarting}
@@ -593,52 +787,62 @@ function PageHeader({
   );
 }
 
-/** Wi-Fi 대역 · AP 출력 — idle 시 설정 바에 노출. */
+/** Wi-Fi 시뮬 대역 선택 + AP 출력 — idle 시 설정 바에 노출. */
 function RfPhysicalControls({
-  frequencyBand,
-  onFrequencyBandChange,
+  simBands,
+  onSimBandsChange,
   txPowerDbm,
   onTxPowerDbmChange,
   disabled,
 }: {
-  frequencyBand: FrequencyBand;
-  onFrequencyBandChange: (band: FrequencyBand) => void;
+  simBands: WifiBand[];
+  onSimBandsChange: (bands: WifiBand[]) => void;
   txPowerDbm: number;
   onTxPowerDbmChange: (value: number) => void;
   disabled?: boolean;
 }) {
-  const bands: Array<{ key: FrequencyBand; label: string; hint: string }> = [
-    { key: '2.4', label: '2.4GHz', hint: 'Use this when Android measurements are on 2.4GHz Wi-Fi.' },
-    { key: '5', label: '5GHz', hint: 'Use this when Android measurements are on 5GHz Wi-Fi.' },
-  ];
+  type BandMode = '5g' | '2.4g' | 'dual';
+  const currentMode: BandMode =
+    simBands.length > 1 ? 'dual' : simBands[0] === '2.4G' ? '2.4g' : '5g';
+
+  const handleModeChange = (mode: BandMode) => {
+    if (mode === 'dual') onSimBandsChange(['5G', '2.4G']);
+    else if (mode === '2.4g') onSimBandsChange(['2.4G']);
+    else onSimBandsChange(['5G']);
+  };
+
   const handleTxPowerChange = (value: string) => {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return;
     onTxPowerDbmChange(Math.min(30, Math.max(0, parsed)));
   };
 
+  const modes: Array<{ key: BandMode; label: string; hint: string }> = [
+    { key: '5g', label: '5GHz', hint: '5GHz 시뮬' },
+    { key: '2.4g', label: '2.4GHz', hint: '2.4GHz 시뮬' },
+    { key: 'dual', label: 'Dual', hint: '5GHz + 2.4GHz 각각 시뮬 후 탭으로 비교' },
+  ];
+
   return (
     <div className="flex flex-wrap items-center gap-2">
       <div
         role="group"
-        aria-label="Wi-Fi 대역"
+        aria-label="시뮬 대역"
         className="inline-flex h-8 items-center rounded-md bg-slate-50 p-0.5"
+        title="2.4GHz와 5GHz는 전파 특성이 다르므로 band별로 따로 시뮬레이션됩니다."
       >
-        {bands.map((band) => {
-          const active = frequencyBand === band.key;
-          return (
-            <button
-              key={band.key}
-              type="button"
-              onClick={() => onFrequencyBandChange(band.key)}
-              disabled={disabled}
-              title={band.hint}
-              className={simSegmentBtn(active, disabled)}
-            >
-              {band.label}
-            </button>
-          );
-        })}
+        {modes.map((m) => (
+          <button
+            key={m.key}
+            type="button"
+            onClick={() => handleModeChange(m.key)}
+            disabled={disabled}
+            title={m.hint}
+            className={simSegmentBtn(currentMode === m.key, disabled)}
+          >
+            {m.label}
+          </button>
+        ))}
       </div>
       <label className="inline-flex h-8 items-center gap-1.5 px-1 text-xs">
         <span className="text-slate-500">출력</span>
@@ -765,9 +969,8 @@ function EmptyState({
  * RF Run 이 succeeded 된 후에만 표시되고, 후보 생성 + 후보 선택 → 배치 저장 흐름.
  * 백엔드 ap-candidates 미구현으로 시연 동안 사용처에서만 주석 처리됨 (정의 유지).
  */
-void ApPlacementPanel;
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function ApPlacementPanel({ rfRunId }: { rfRunId: string }) {
+export function ApPlacementPanel({ rfRunId }: { rfRunId: string }) {
   const generate = useGenerateApCandidates();
   const candidatesQuery = useApCandidates(rfRunId);
   const layoutsQuery = useApLayouts(rfRunId);
@@ -794,7 +997,7 @@ function ApPlacementPanel({ rfRunId }: { rfRunId: string }) {
       <div className="flex items-center justify-between gap-2">
         <h3 className="flex items-center gap-1.5 text-sm font-semibold">
           <Wifi className="h-4 w-4 text-primary" />
-          AP 배치 (§14)
+          공유기 배치 (§14)
         </h3>
         <button
           type="button"
@@ -944,10 +1147,11 @@ function parseHeatmapBounds(
   bounds: Record<string, unknown> | null | undefined,
 ): { minX: number; minY: number; maxX: number; maxY: number } | null {
   if (!bounds) return null;
-  const minX = Number(bounds['min_x']);
-  const minY = Number(bounds['min_y']);
-  const maxX = Number(bounds['max_x']);
-  const maxY = Number(bounds['max_y']);
+  // AI 서버가 x_min/x_max 또는 min_x/max_x 두 형식으로 반환할 수 있음
+  const minX = Number(bounds['min_x'] ?? bounds['x_min']);
+  const minY = Number(bounds['min_y'] ?? bounds['y_min']);
+  const maxX = Number(bounds['max_x'] ?? bounds['x_max']);
+  const maxY = Number(bounds['max_y'] ?? bounds['y_max']);
   if (
     !Number.isFinite(minX) ||
     !Number.isFinite(minY) ||

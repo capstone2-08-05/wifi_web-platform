@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -18,14 +19,28 @@ from app.models.user import User
 from app.schemas.pagination import PaginatedResponse
 from app.schemas.rf.rf_map import RfMapCreate, RfMapResponse
 from app.schemas.rf.rf_run import (
+    BandSimulationParams,
     RfRunCreate,
     RfRunCreatedResponse,
     RfRunResponse,
     RfRunUpdate,
+    RfSimulationParams,
+)
+from app.services.rf.physical_ap_helpers import (
+    build_band_metadata,
+    group_radios_by_band,
+    normalize_physical_aps_from_request,
+    physical_aps_to_access_point_list,
 )
 
 
 ALLOWED_RF_RUN_STATUS = {"queued", "running", "completed", "failed"}
+
+COVERAGE_SEMANTICS: dict[str, Any] = {
+    "multi_ap_rssi_merge": "max_per_cell",
+    "rssi_is_not_summed": True,
+    "recommendation_unit": "physical_ap",
+}
 
 
 def _get_owned_scene_version(
@@ -82,6 +97,128 @@ def _to_response(rr: RfRun) -> RfRunResponse:
     )
 
 
+def _prepare_rf_submit_from_payload(payload: RfRunCreate) -> dict[str, Any] | None:
+    """Build the backend-compatible RF submit payload.
+
+    Physical APs take priority. Legacy access_points still flow through unchanged
+    unless physical_aps are present.
+    """
+    has_physical_aps = bool(payload.physical_aps)
+    has_legacy_submit = bool(payload.access_points and payload.simulation)
+    if not has_physical_aps and not has_legacy_submit:
+        return None
+
+    simulation_model = payload.simulation or RfSimulationParams()
+    simulation = simulation_model.model_dump()
+    legacy_aps = [ap.model_dump(mode="json") for ap in payload.access_points or []]
+
+    if not has_physical_aps:
+        legacy_physical_aps = normalize_physical_aps_from_request(
+            physical_aps=None,
+            existing_aps=legacy_aps,
+            candidate_tx_power_dbm=float(simulation.get("tx_power_dbm") or 20.0),
+        )
+        metadata = {
+            **(payload.metadata or {}),
+            "physical_aps_snapshot": [
+                ap.model_dump(mode="json") for ap in legacy_physical_aps
+            ],
+            "band_metadata": {
+                "requested_bands": ["5G"],
+                "executed_bands": ["5G"],
+                "leading_band": "5G",
+                "combine_policy": "prefer_5g_then_2g",
+                "band_aware_status": "legacy_single_band",
+                "bands": build_band_metadata(legacy_physical_aps, ["5G"]),
+            },
+            "coverage_semantics": COVERAGE_SEMANTICS,
+            "normalization_warnings": [],
+        }
+        return {
+            "access_points": legacy_aps,
+            "simulation": simulation,
+            "metadata": metadata,
+        }
+
+    fallback_tx_power_dbm = float(simulation.get("tx_power_dbm") or 20.0)
+    physical_aps = normalize_physical_aps_from_request(
+        physical_aps=payload.physical_aps or None,
+        existing_aps=legacy_aps,
+        candidate_tx_power_dbm=fallback_tx_power_dbm,
+    )
+    if not physical_aps:
+        raise AppError(
+            ErrorCode.INVALID_RF_RUN_STATUS,
+            "RF run requires at least one physical AP or legacy access point.",
+            status_code=400,
+        )
+
+    band_simulation = payload.band_simulation or BandSimulationParams()
+    requested_bands = list(band_simulation.bands)
+    grouped = group_radios_by_band(physical_aps)
+    warnings: list[str] = []
+    executable_bands = []
+    for band in requested_bands:
+        if grouped.get(band):
+            executable_bands.append(band)
+        else:
+            warnings.append(f"No enabled {band} radios found; skipping {band} RF run.")
+
+    if not executable_bands:
+        raise AppError(
+            ErrorCode.INVALID_RF_RUN_STATUS,
+            f"No enabled radios found for requested RF band(s): {requested_bands}.",
+            status_code=400,
+        )
+
+    leading_band = executable_bands[0]
+    leading_transmitters = grouped[leading_band]
+    access_points = physical_aps_to_access_point_list(
+        physical_aps,
+        band=leading_band,
+        fallback_tx_power_dbm=fallback_tx_power_dbm,
+    )
+    if not access_points:
+        raise AppError(
+            ErrorCode.INVALID_RF_RUN_STATUS,
+            f"No access points could be built for RF band {leading_band}.",
+            status_code=400,
+        )
+
+    first_tx = leading_transmitters[0]
+    simulation["frequency_hz"] = first_tx.frequency_ghz * 1_000_000_000.0
+    simulation["tx_power_dbm"] = first_tx.tx_power_dbm
+
+    band_metadata = {
+        "requested_bands": requested_bands,
+        "executed_bands": [leading_band],
+        "skipped_bands": [band for band in requested_bands if band != leading_band],
+        "leading_band": leading_band,
+        "combine_policy": band_simulation.combine_policy,
+        "band_aware_status": (
+            "leading_band_only" if len(requested_bands) > 1 else "single_band"
+        ),
+        "bands": build_band_metadata(physical_aps, requested_bands),
+        "todo": (
+            "Create per-band child jobs and combine results according to "
+            f"{band_simulation.combine_policy}."
+        ),
+    }
+    physical_snapshot = [ap.model_dump(mode="json") for ap in physical_aps]
+    metadata = {
+        **(payload.metadata or {}),
+        "physical_aps_snapshot": physical_snapshot,
+        "band_metadata": band_metadata,
+        "coverage_semantics": COVERAGE_SEMANTICS,
+        "normalization_warnings": warnings,
+    }
+    return {
+        "access_points": access_points,
+        "simulation": simulation,
+        "metadata": metadata,
+    }
+
+
 async def create_rf_run(
     db: Session, payload: RfRunCreate, user: User
 ) -> RfRunCreatedResponse:
@@ -93,17 +230,18 @@ async def create_rf_run(
     sv = _get_owned_scene_version(db, payload.scene_version_id, user)
 
     # 새 흐름: backend 선택형 (sagemaker async 또는 local ai_api)
-    if payload.access_points and payload.simulation:
+    prepared = _prepare_rf_submit_from_payload(payload)
+    if prepared is not None:
         from app.services.rf.rf_job_service import submit_rf_simulation
 
         rf_run, job = await submit_rf_simulation(
             db,
             scene_version_id=sv.id,
-            access_points=[ap.model_dump() for ap in payload.access_points],
-            simulation=payload.simulation.model_dump(),
+            access_points=prepared["access_points"],
+            simulation=prepared["simulation"],
             current_user=user,
             run_type=payload.run_type or "rf_simulate",
-            metadata=payload.metadata,
+            metadata=prepared["metadata"],
             apply_calibration=payload.apply_calibration,
             backend=payload.backend,
         )
@@ -150,6 +288,16 @@ async def create_rf_run(
 
 def get_rf_run(db: Session, rf_run_id: UUID, user: User) -> RfRunResponse:
     return _to_response(_get_owned_rf_run(db, rf_run_id, user))
+
+
+def delete_rf_run(db: Session, rf_run_id: UUID, user: User) -> None:
+    rr = _get_owned_rf_run(db, rf_run_id, user)
+    try:
+        db.delete(rr)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
 
 def list_by_floor(

@@ -183,3 +183,19 @@ export function useRfJob(jobId: UUID | null) {
     isFailed: isJobFailed(status),
   };
 }
+
+
+/** DELETE /rf-runs/{id} */
+export function useDeleteRfRun(floorId: UUID | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (rfRunId: UUID) => rfRunApi.delete(rfRunId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['rf-runs', floorId] });
+    },
+    onError: (err) => {
+      const e = err as HttpError | null;
+      toast.error('삭제 실패', e?.message ?? '잠시 후 다시 시도해주세요.');
+    },
+  });
+}

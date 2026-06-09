@@ -102,8 +102,8 @@ export default function MeasurementPage() {
   );
   const fallbackSceneVersionId =
     selectedSceneVersionId ??
-    latestMeasuredSession?.scene_version_id ??
     currentVersion?.id ??
+    latestMeasuredSession?.scene_version_id ??
     null;
   const viewingSceneVersionId =
     selectedSceneVersionId ?? selectedSession?.scene_version_id ?? fallbackSceneVersionId;
@@ -242,14 +242,16 @@ export default function MeasurementPage() {
     const stored = readStoredMeasurementView(floorId);
     if (!stored) return;
 
-    startTransition(() => {
-      if (!requestedSessionId && !requestedSceneVersionId) {
-        setSelectedSessionId(stored.sessionId);
+    if (!requestedSessionId && !requestedSceneVersionId) {
+      setSelectedSessionId(stored.sessionId);
+      // 세션을 명시적으로 선택한 경우에만 sceneVersionId 복원.
+      // 미선택이면 null 유지 → fallback이 currentVersion (최신 도면) 사용.
+      if (stored.sessionId != null) {
         setSelectedSceneVersionId(stored.sceneVersionId);
-        setSelectedApBssid(stored.apBssid);
       }
-      setMode(stored.mode);
-    });
+      setSelectedApBssid(stored.apBssid);
+    }
+    setMode(stored.mode);
   }, [floorId, requestedSceneVersionId, requestedSessionId]);
 
   const activeCoverage = useMemo(() => {
@@ -483,7 +485,7 @@ export default function MeasurementPage() {
         <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
           <section className="flex min-h-0 flex-col gap-3">
             <TabBar mode={mode} onChange={handleModeChange} />
-            <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border bg-background shadow-sm">
+            <div className="relative min-h-0 flex-1 flex flex-col overflow-hidden rounded-2xl border bg-background shadow-sm">
               {/* route 모드 범례/측정 방식 뱃지는 캔버스 위에 올려 도면 크기를 시뮬레이션과 맞춘다. */}
               <div className="pointer-events-none absolute left-3 top-3 z-10 flex flex-wrap items-center gap-2">
                 {mode === 'route' && <Legend colorMode="quality" range={pointColorRange} />}
@@ -498,7 +500,7 @@ export default function MeasurementPage() {
                   />
                 )}
               </div>
-              <div className="relative h-full min-h-112">
+              <div className="relative flex-1 min-h-112">
                 <MeasurementCanvas
                   sceneVersion={sceneVersion}
                   backgroundImageUrl={backgroundImageUrl}
@@ -656,10 +658,10 @@ function parseRfMapBounds(
   bounds: Record<string, unknown> | null | undefined,
 ): { min_x: number; min_y: number; max_x: number; max_y: number } | null {
   if (!bounds) return null;
-  const min_x = Number(bounds.min_x);
-  const min_y = Number(bounds.min_y);
-  const max_x = Number(bounds.max_x);
-  const max_y = Number(bounds.max_y);
+  const min_x = Number(bounds.min_x ?? bounds.x_min);
+  const min_y = Number(bounds.min_y ?? bounds.y_min);
+  const max_x = Number(bounds.max_x ?? bounds.x_max);
+  const max_y = Number(bounds.max_y ?? bounds.y_max);
   if (
     !Number.isFinite(min_x) ||
     !Number.isFinite(min_y) ||

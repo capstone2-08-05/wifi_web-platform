@@ -73,7 +73,6 @@ export function useImageNaturalDimensions(
     setDims(null);
     if (!url) return;
     const img = new Image();
-    img.crossOrigin = 'anonymous';
     let cancelled = false;
     img.onload = () => {
       if (!cancelled && img.naturalWidth > 0 && img.naturalHeight > 0) {

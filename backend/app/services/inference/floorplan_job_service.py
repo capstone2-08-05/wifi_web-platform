@@ -96,51 +96,28 @@ async def submit_floorplan_analysis(
 
     # raw upload 경로면 여기서 asset row 를 만들어 둔다. floor 단위 도면 자산이
     # 항상 존재해야 measurement_link 가 그걸 가리킬 수 있다.
-    # SageMaker 모드: S3 PUT + storage_url=s3://...
-    # 로컬 모드 (개발용): S3 우회 + storage_url=file:///local/path (router 가 이미 저장한 파일)
+    # inference_mode 에 관계없이 항상 S3 에 저장 → presigned URL 로 프론트 표시 가능.
     if source_asset_id is None:
-        if inference_mode == INFERENCE_MODE_SAGEMAKER:
-            new_asset = create_floorplan_asset_from_bytes(
-                db,
-                project_id=resolved_project_id,
-                floor_id=resolved_floor_id,
-                content=image_bytes,
-                filename=filename,
-                content_type=content_type,
-                uploaded_by=current_user.id,
-            )
-            source_asset_id = new_asset.id
-            # upload_metadata 에 실제 S3 좌표도 같이 보관 (참조 용이)
-            if not upload_metadata.s3_uri:
-                try:
-                    upload_metadata = upload_metadata.model_copy(
-                        update={
-                            "provider": upload_metadata.provider or "s3",
-                            "s3_uri": new_asset.storage_url,
-                        }
-                    )
-                except Exception:
-                    pass
-        elif inference_mode == INFERENCE_MODE_LOCAL:
-            # router(_validate_and_save_file) 가 이미 UPLOAD_DIR 에 저장 → 그 경로 사용.
-            local_path = upload_metadata.local_saved_path
-            if not local_path:
-                raise AppError(
-                    ErrorCode.INTERNAL_SERVER_ERROR,
-                    "Local inference mode requires upload.local_saved_path",
-                    500,
+        new_asset = create_floorplan_asset_from_bytes(
+            db,
+            project_id=resolved_project_id,
+            floor_id=resolved_floor_id,
+            content=image_bytes,
+            filename=filename,
+            content_type=content_type,
+            uploaded_by=current_user.id,
+        )
+        source_asset_id = new_asset.id
+        if not upload_metadata.s3_uri:
+            try:
+                upload_metadata = upload_metadata.model_copy(
+                    update={
+                        "provider": "s3",
+                        "s3_uri": new_asset.storage_url,
+                    }
                 )
-            new_asset = create_floorplan_asset_from_local_path(
-                db,
-                project_id=resolved_project_id,
-                floor_id=resolved_floor_id,
-                local_path=local_path,
-                filename=filename,
-                content_type=content_type,
-                file_size_bytes=upload_metadata.size_bytes or len(image_bytes),
-                uploaded_by=current_user.id,
-            )
-            source_asset_id = new_asset.id
+            except Exception:
+                pass
 
     # ── 로컬 모드: Job 생성 + 백그라운드 task 등록 → 202 즉시 반환 ─────────────
     # SageMaker 흐름과 동일하게 프론트는 폴링으로 완료 확인.
@@ -370,6 +347,36 @@ async def _run_local_in_background(
                 owner_user_id, job_id,
             )
             return
+
+        # 0) AI 분석 전에 이미지 크기를 미리 백필
+        # → 인퍼런스가 진행되는 동안에도 프론트가 해상도를 인지해 S3 배경을 즉시 렌더링 가능
+        source_asset_id_early = (job.input_json or {}).get("source_asset_id")
+        if source_asset_id_early:
+            try:
+                import io as _io
+                from PIL import Image as _PILImage
+                with _PILImage.open(_io.BytesIO(image_bytes)) as _img:
+                    _w, _h = _img.size
+                _asset_early = db.get(Asset, source_asset_id_early)
+                if _asset_early is not None:
+                    _md: dict[str, Any] = dict(_asset_early.metadata_json or {})
+                    _md["width_px"] = _w
+                    _md["height_px"] = _h
+                    if _md.get("scale_m_per_px") is None:
+                        _md["scale_m_per_px"] = 0.05
+                    _asset_early.metadata_json = _md
+                    flag_modified(_asset_early, "metadata_json")
+                    db.commit()
+                    logger.info(
+                        "local bg task: pre-backfill done asset=%s w=%s h=%s",
+                        source_asset_id_early, _w, _h,
+                    )
+            except Exception:
+                logger.warning(
+                    "local bg task: pre-backfill failed asset=%s, continuing",
+                    source_asset_id_early,
+                    exc_info=True,
+                )
 
         # 1) 로컬 AI 호출 (blocking HTTP) — threadpool 로 이벤트 루프 보호
         try:

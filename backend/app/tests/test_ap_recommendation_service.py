@@ -115,6 +115,21 @@ def test_candidate_bboxes_generate_candidates_but_priority_zones_drive_eval_fall
     ]
 
 
+def test_candidate_generation_excludes_excluded_zones():
+    request = _request(
+        candidate_bboxes=[ApRecommendationBBox(x_min=0, x_max=2, y_min=0, y_max=1)],
+        excluded_zones=[ApRecommendationBBox(x_min=1, x_max=1, y_min=0, y_max=1)],
+        step_m=1.0,
+    )
+
+    assert _generate_candidates_for_request(request) == [
+        (0.0, 0.0),
+        (0.0, 1.0),
+        (2.0, 0.0),
+        (2.0, 1.0),
+    ]
+
+
 def test_eval_fallback_uses_evaluation_bboxes_before_candidate_bboxes():
     request = _request(
         candidate_bboxes=[ApRecommendationBBox(x_min=10, x_max=11, y_min=10, y_max=11)],
