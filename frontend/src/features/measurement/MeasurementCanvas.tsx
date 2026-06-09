@@ -161,20 +161,19 @@ export function MeasurementCanvas({
   // image 는 (0,0)~(extent.w, extent.h) 에 그림 → 벽과 정확히 정렬.
   const imageDims = useImageNaturalDimensions(backgroundImageUrl ?? null);
   const imageExtent = useMemo(() => {
-    // 1순위: 도형 bounds 역추정 — SceneVersion 은 summary 가 없고, rescale 후
-    // localStorage 가 stale 될 수 있으므로 bounds 를 우선 사용.
+    // 1순위: localStorage 캐시 — rescale 시에도 EditorPage 가 factor 배 갱신하므로 정확.
+    const fromCache = deriveImageExtent(imageDims, {
+      sourceAssetId: sceneVersion?.source_asset_id ?? null,
+      floorId: sceneVersion?.floor_id ?? null,
+    });
+    if (fromCache) return fromCache;
+    // 2순위: 도형 bounds 역추정 — 캐시도 없을 때 마지막 fallback.
     const b = emptyBounds();
     for (const wall of sceneVersion?.walls ?? []) {
       const g = parseGeometry(wall.centerline_geom);
       if (g?.type === 'LineString') for (const [x, y] of g.coordinates) extendBounds(b, x, y);
     }
-    const fromBounds = inferImageExtentFromWallBounds(imageDims, isFinite(b.minX) ? b : null);
-    if (fromBounds) return fromBounds;
-    // 2순위: localStorage 캐시 (벽 데이터 없거나 guard 실패 시 fallback)
-    return deriveImageExtent(imageDims, {
-      sourceAssetId: sceneVersion?.source_asset_id ?? null,
-      floorId: sceneVersion?.floor_id ?? null,
-    });
+    return inferImageExtentFromWallBounds(imageDims, isFinite(b.minX) ? b : null);
   }, [imageDims, sceneVersion?.source_asset_id, sceneVersion?.floor_id, sceneVersion?.walls]);
 
   // imageExtent 가 있으면 항상 image+shape union 으로 계산 (editor 와 동일한 로직).
