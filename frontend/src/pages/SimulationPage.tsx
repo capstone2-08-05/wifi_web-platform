@@ -272,6 +272,11 @@ export default function SimulationPage() {
     () => parseHeatmapBounds(heatmapMap?.bounds_json),
     [heatmapMap],
   );
+  // DEBUG: 히트맵 정렬 진단용 — 확인 후 삭제
+  if (heatmapMap) {
+    console.log('[HEATMAP DEBUG] bounds_json:', heatmapMap.bounds_json);
+    console.log('[HEATMAP DEBUG] parsed bounds:', heatmapBounds);
+  }
 
   const handleStart = () => {
     if (!currentVersion) return;
