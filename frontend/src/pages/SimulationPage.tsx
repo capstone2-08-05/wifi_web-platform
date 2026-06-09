@@ -1145,10 +1145,11 @@ function parseHeatmapBounds(
   bounds: Record<string, unknown> | null | undefined,
 ): { minX: number; minY: number; maxX: number; maxY: number } | null {
   if (!bounds) return null;
-  const minX = Number(bounds['min_x']);
-  const minY = Number(bounds['min_y']);
-  const maxX = Number(bounds['max_x']);
-  const maxY = Number(bounds['max_y']);
+  // AI 서버가 x_min/x_max 또는 min_x/max_x 두 형식으로 반환할 수 있음
+  const minX = Number(bounds['min_x'] ?? bounds['x_min']);
+  const minY = Number(bounds['min_y'] ?? bounds['y_min']);
+  const maxX = Number(bounds['max_x'] ?? bounds['x_max']);
+  const maxY = Number(bounds['max_y'] ?? bounds['y_max']);
   if (
     !Number.isFinite(minX) ||
     !Number.isFinite(minY) ||

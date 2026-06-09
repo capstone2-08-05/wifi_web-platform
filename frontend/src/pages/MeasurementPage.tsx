@@ -660,10 +660,10 @@ function parseRfMapBounds(
   bounds: Record<string, unknown> | null | undefined,
 ): { min_x: number; min_y: number; max_x: number; max_y: number } | null {
   if (!bounds) return null;
-  const min_x = Number(bounds.min_x);
-  const min_y = Number(bounds.min_y);
-  const max_x = Number(bounds.max_x);
-  const max_y = Number(bounds.max_y);
+  const min_x = Number(bounds.min_x ?? bounds.x_min);
+  const min_y = Number(bounds.min_y ?? bounds.y_min);
+  const max_x = Number(bounds.max_x ?? bounds.x_max);
+  const max_y = Number(bounds.max_y ?? bounds.y_max);
   if (
     !Number.isFinite(min_x) ||
     !Number.isFinite(min_y) ||
