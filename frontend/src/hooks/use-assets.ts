@@ -1,6 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
 import { assetApi } from '@/api/asset';
-import { env } from '@/config/env';
 import type { UUID } from '@/types/common';
 import type { AssetType } from '@/types/asset';
 
@@ -39,14 +38,7 @@ const PRESIGN_GC_MS = 60 * 60_000; // 60분
 export function useAssetDownloadUrl(assetId: UUID | null) {
   return useQuery({
     queryKey: ['asset-download-url', assetId] as const,
-    queryFn: async () => {
-      const result = await assetApi.getDownloadUrl(assetId as UUID);
-      // file:// 자산은 /assets/{id}/raw (상대경로) 반환 → 절대 URL로 변환
-      if (result.url?.startsWith('/')) {
-        return { ...result, url: `${env.apiBaseUrl}${result.url}` };
-      }
-      return result;
-    },
+    queryFn: () => assetApi.getDownloadUrl(assetId as UUID),
     enabled: !!assetId,
     staleTime: PRESIGN_STALE_MS,
     gcTime: PRESIGN_GC_MS,
