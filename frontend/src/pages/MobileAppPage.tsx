@@ -160,8 +160,8 @@ export default function MobileAppPage() {
   const [targetTotalAps, setTargetTotalAps] = useState<number | null>(null);
   const [targetBands, setTargetBands] = useState<WifiBand[]>(['5G']);
   const [combinePolicy, setCombinePolicy] = useState<CombinePolicy>('prefer_5g_then_2g');
-  const verifyWithSionna = true;
-  const verificationTopK = 5;
+  const [verifyWithSionna, setVerifyWithSionna] = useState(false);
+  const verificationTopK = 3;
   const physicalAps = useMemo(
     () => existingAps.map((ap) => canvasApToPhysicalAp(ap, targetBands)),
     [existingAps, targetBands],
@@ -625,7 +625,7 @@ export default function MobileAppPage() {
     });
   };
 
-  const handleSelectRecommendation = (rec: ApRecommendationResult) => {
+  const handleSelectRecommendation = async (rec: ApRecommendationResult) => {
     if (!latestRfRunId) {
       setPageError('와이파이 위치를 저장하려면 먼저 시뮬레이션을 실행해 주세요.');
       return;
@@ -638,8 +638,39 @@ export default function MobileAppPage() {
     setPageError(null);
     persistRecommendationSession({ selectedRank: rec.rank });
 
-    const apName = nextApLayoutName(apLayoutsQuery.data ?? [], existingAps);
+    if (rec.final_aps && rec.final_aps.length > 0) {
+      // relocate_all / relocate_selected: final_aps의 모든 공유기를 한 번에 저장
+      const baseLayouts = apLayoutsQuery.data ?? [];
+      const fakePrevious: { ap_name: string }[] = [...baseLayouts];
+      const entries = rec.final_aps.map((ap) => {
+        const apName = ap.name ?? nextApLayoutName(fakePrevious, existingAps);
+        fakePrevious.push({ ap_name: apName });
+        return { ap, apName };
+      });
+      try {
+        await Promise.all(
+          entries.map(({ ap, apName }) =>
+            createLayout.mutateAsync({
+              rf_run_id: latestRfRunId,
+              ap_name: apName,
+              point_geom: { type: 'Point', coordinates: [ap.x, ap.y] },
+              z_m: ap.z ?? AP_DEFAULT_Z_M,
+              power_dbm: DEFAULT_TX_POWER_DBM,
+            }),
+          ),
+        );
+        setSavedRank(rec.rank);
+        persistRecommendationSession({ selectedRank: rec.rank, savedRank: rec.rank });
+      } catch (err) {
+        const e = err as HttpError | null;
+        setPageError(e?.message ?? '와이파이 위치 저장에 실패했습니다.');
+        setSelectedRank(null);
+        persistRecommendationSession({ selectedRank: null });
+      }
+      return;
+    }
 
+    const apName = nextApLayoutName(apLayoutsQuery.data ?? [], existingAps);
     createLayout.mutate(
       {
         rf_run_id: latestRfRunId,
@@ -851,6 +882,15 @@ export default function MobileAppPage() {
               </div>
             </div>
             )}
+            <label className="flex cursor-pointer select-none items-center gap-2 text-[12px] text-slate-500 sm:justify-end">
+              <input
+                type="checkbox"
+                checked={verifyWithSionna}
+                onChange={(e) => setVerifyWithSionna(e.target.checked)}
+                className="h-3.5 w-3.5"
+              />
+              Sionna 검증 (상위 {verificationTopK}개)
+            </label>
             <button
               type="button"
               onClick={handleRecommend}
