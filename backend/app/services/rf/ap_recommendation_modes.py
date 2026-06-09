@@ -110,6 +110,7 @@ def build_recommendation_plan(
     # ── relocate_selected ─────────────────────────────────────────────────────
     if mode == "relocate_selected":
         relocate_ids: set[str] = set(getattr(request, "relocate_target_ap_ids", None) or [])
+        relocate_ids.update(getattr(request, "movable_ap_ids", None) or [])
         fixed_ids: set[str] = set(getattr(request, "fixed_ap_ids", None) or [])
         if fixed_ids:
             relocate_ids -= fixed_ids

@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQueries, useQuery } from '@tanstack/react-query';
 import { Ban, CheckCircle2, Loader2, MapPin, Sparkles, Target } from 'lucide-react';
 import type { HttpError } from '@/api/client';
 import { calibrationRunApi } from '@/api/calibration-run';
+import { rfRunApi } from '@/api/rf-run';
 import { useAppStore } from '@/stores/app-store';
 import {
   useApRecommendationStore,
   type ApRecommendationSession,
 } from '@/stores/ap-recommendation-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
-import { useCreateRfRun, useFloorRfRuns, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
+import { useFloorRfRuns, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
 import { useInferenceMode } from '@/hooks/use-inference-mode';
 import { useApLayouts, useCreateApLayout } from '@/hooks/use-ap-layouts';
 import { useAssetDownloadUrl } from '@/hooks/use-assets';
@@ -26,7 +27,10 @@ import {
   apsFromRfRunRequest,
   nextApLayoutName,
 } from '@/features/ap-recommendation/ap-canvas-mappers';
-import { ApRecommendationCanvas } from '@/features/ap-recommendation/ApRecommendationCanvas';
+import {
+  ApRecommendationCanvas,
+  type CanvasExistingAp,
+} from '@/features/ap-recommendation/ApRecommendationCanvas';
 import {
   AP_DEFAULT_Z_M,
   buildApRecommendationPayload,
@@ -37,10 +41,14 @@ import {
   type ApRecommendationAreaType,
   type RecommendationMode,
 } from '@/features/ap-recommendation/recommendation-utils';
-import type { ApRecommendationResult, ApRecommendationRun } from '@/types/ap-recommendation';
+import type {
+  ApRecommendationResponse,
+  ApRecommendationResult,
+  ApRecommendationRun,
+} from '@/types/ap-recommendation';
 import { cn } from '@/lib/utils';
 import type { CalibrationEvaluationResponse } from '@/types/calibration-run';
-import type { RfBackend, RfMap } from '@/types/rf';
+import type { CombinePolicy, PhysicalAp, RfBackend, RfMap, WifiBand } from '@/types/rf';
 
 type PageStatus = 'idle' | 'areaSelected' | 'loading' | 'success' | 'error';
 
@@ -71,7 +79,7 @@ const AREA_TYPE_OPTIONS: Array<{
   {
     type: 'candidate',
     label: '설치 가능 영역',
-    hint: 'AP를 실제로 둘 수 있는 후보 영역입니다.',
+    hint: '공유기를 실제로 둘 수 있는 후보 영역입니다.',
     className: 'border-blue-200 bg-blue-50 text-blue-700',
     icon: MapPin,
   },
@@ -150,6 +158,23 @@ export default function MobileAppPage() {
   const [replaceTargetApIds, setReplaceTargetApIds] = useState<string[]>([]);
   const [relocateTargetApIds, setRelocateTargetApIds] = useState<string[]>([]);
   const [targetTotalAps, setTargetTotalAps] = useState<number | null>(null);
+  const [targetBands, setTargetBands] = useState<WifiBand[]>(['5G']);
+  const [combinePolicy, setCombinePolicy] = useState<CombinePolicy>('prefer_5g_then_2g');
+  const [verifyWithSionna, setVerifyWithSionna] = useState(false);
+  const verificationTopK = 3;
+  const physicalAps = useMemo(
+    () => existingAps.map((ap) => canvasApToPhysicalAp(ap, targetBands)),
+    [existingAps, targetBands],
+  );
+  const fixedApIds = useMemo(
+    () =>
+      recommendationMode === 'relocate_selected'
+        ? existingAps
+            .map((ap) => ap.id)
+            .filter((id) => !relocateTargetApIds.includes(id))
+        : [],
+    [existingAps, relocateTargetApIds, recommendationMode],
+  );
   const [compareWithMeasurement, setCompareWithMeasurement] = useState(false);
   const [verificationRunId, setVerificationRunId] = useState<string | null>(null);
   const [verificationRank, setVerificationRank] = useState<number | null>(null);
@@ -161,10 +186,26 @@ export default function MobileAppPage() {
   const recommendMutation = useApRecommendation();
   const recommendationRunsQuery = useApRecommendationRuns(sceneVersionId, 10);
   const createLayout = useCreateApLayout();
-  const createVerificationRun = useCreateRfRun(floorId, { page_size: 5 });
   const verificationPoll = useRfRun(verificationRunId);
   const verificationMapsQuery = useRfMaps(verificationRunId, verificationPoll.isSucceeded);
   const baselineRunDetail = useRfRun(latestRfRunId);
+  const autoVerificationRuns = useMemo(
+    () =>
+      (recommendMutation.data?.verification_jobs ?? [])
+        .filter((job): job is typeof job & { rf_run_id: string } => typeof job.rf_run_id === 'string')
+        .map((job) => ({ rank: job.candidate_rank, runId: job.rf_run_id })),
+    [recommendMutation.data?.verification_jobs],
+  );
+  const autoVerificationRunQueries = useQueries({
+    queries: autoVerificationRuns.map((job) => ({
+      queryKey: ['rf-run', job.runId] as const,
+      queryFn: () => rfRunApi.get(job.runId),
+      enabled: !!job.runId,
+      refetchInterval: (query: { state: { data?: { status?: string } } }) =>
+        isRfRunTerminal(query.state.data?.status) ? false : 3_000,
+      refetchIntervalInBackground: false,
+    })),
+  });
   const measurementSessionsQuery = useFloorMeasurementSessions(floorId);
   const storedMeasurementView = useMemo(
     () => readStoredMeasurementView(floorId),
@@ -290,6 +331,18 @@ export default function MobileAppPage() {
       source: 'measurement' as const,
     };
   }, [calibrationComparisonQuery.data]);
+  const baselineHeatmap = useMemo(
+    () =>
+      extractRadioMapHeatmap(baselineRunDetail.rfRun?.metrics_json) ??
+      extractRadioMapHeatmap(latestRfRun?.metrics_json),
+    [baselineRunDetail.rfRun?.metrics_json, latestRfRun?.metrics_json],
+  );
+  const baselineCoverageMetrics = useMemo(
+    () => computeGridCoverageMetricsFromValues(baselineHeatmap?.valuesDbm),
+    [baselineHeatmap],
+  );
+  const integratedCoverageMetrics = measurementCoverageMetrics ?? baselineCoverageMetrics;
+  const integratedHeatmap = measurementHeatmap ?? baselineHeatmap;
   const verificationCalibratedHeatmap = useMemo(() => {
     const evaluation = verificationCalibrationQuery.data;
     const map = evaluation?.maps.calibrated;
@@ -304,9 +357,40 @@ export default function MobileAppPage() {
       source: 'measurement' as const,
     };
   }, [verificationCalibrationQuery.data]);
+  const verificationScoresByRank = useMemo(() => {
+    const scores = new Map<number, VerificationScore>();
+    autoVerificationRuns.forEach((job, index) => {
+      const run = autoVerificationRunQueries[index]?.data;
+      const heatmap = extractRadioMapHeatmap(run?.metrics_json);
+      const coverage = computeGridCoverageMetricsFromValues(heatmap?.valuesDbm);
+      scores.set(job.rank, {
+        score: computeVerificationScore(coverage),
+        status: run?.status ?? null,
+        coverage,
+      });
+    });
+    return scores;
+  }, [autoVerificationRunQueries, autoVerificationRuns]);
+  const rankedRecommendations = useMemo(() => {
+    return recommendations
+      .map((rec) => {
+        const verification = verificationScoresByRank.get(rec.rank);
+        return {
+          ...rec,
+          verified_score: verification?.score ?? rec.verified_score ?? null,
+          verification_status: verification?.status ?? rec.verification_status ?? null,
+        };
+      })
+      .sort((a, b) => {
+        const aScore = a.verified_score ?? a.score;
+        const bScore = b.verified_score ?? b.score;
+        if (bScore !== aScore) return bScore - aScore;
+        return b.score - a.score;
+      });
+  }, [recommendations, verificationScoresByRank]);
   const selectedRecommendation = useMemo(
-    () => recommendations.find((rec) => rec.rank === selectedRank) ?? recommendations[0] ?? null,
-    [recommendations, selectedRank],
+    () => rankedRecommendations.find((rec) => rec.rank === selectedRank) ?? rankedRecommendations[0] ?? null,
+    [rankedRecommendations, selectedRank],
   );
   const verificationHeatmap = useMemo(() => {
     const fromRun = extractRadioMapHeatmap(verificationPoll.rfRun?.metrics_json);
@@ -323,19 +407,8 @@ export default function MobileAppPage() {
     () => computeGridCoverageMetrics(verificationCalibrationQuery.data),
     [verificationCalibrationQuery.data],
   );
-  const comparisonHeatmap = verificationCalibratedHeatmap ?? verificationHeatmap ?? measurementHeatmap;
+  const comparisonHeatmap = verificationCalibratedHeatmap ?? verificationHeatmap ?? integratedHeatmap;
   const showComparisonHeatmap = compareWithMeasurement && !!comparisonHeatmap;
-
-  const baselineHeatmap = useMemo(
-    () =>
-      extractRadioMapHeatmap(baselineRunDetail.rfRun?.metrics_json) ??
-      extractRadioMapHeatmap(latestRfRun?.metrics_json),
-    [baselineRunDetail.rfRun?.metrics_json, latestRfRun?.metrics_json],
-  );
-  const baselineCoverageMetrics = useMemo(
-    () => computeGridCoverageMetricsFromValues(baselineHeatmap?.valuesDbm),
-    [baselineHeatmap],
-  );
   const verificationMatchesSelection =
     selectedRecommendation != null && verificationRank === selectedRecommendation.rank;
 
@@ -478,16 +551,32 @@ export default function MobileAppPage() {
       return;
     }
 
+    if (modeValidationError) {
+      setPageError(modeValidationError);
+      return;
+    }
+
     const payload = buildApRecommendationPayload({
       sceneVersionId,
       areas: validAreas,
       existingAps,
+      physicalAps,
       txPowerDbm: DEFAULT_TX_POWER_DBM,
       nAps,
+      targetBands,
+      combinePolicy,
+      verifyWithSionna,
+      verificationTopK,
+      verificationBackend: inferenceMode as RfBackend,
       recommendationMode,
       replaceTargetApIds: recommendationMode === 'replace' ? replaceTargetApIds : undefined,
+      fixedApIds: recommendationMode === 'relocate_selected' ? fixedApIds : undefined,
+      movableApIds: recommendationMode === 'relocate_selected' ? relocateTargetApIds : undefined,
       relocateTargetApIds: recommendationMode === 'relocate_selected' ? relocateTargetApIds : undefined,
-      targetTotalAps: recommendationMode === 'relocate_all' ? (targetTotalAps ?? undefined) : undefined,
+      targetTotalAps:
+        recommendationMode === 'relocate_all'
+          ? (targetTotalAps ?? Math.max(existingAps.length, 2))
+          : undefined,
     });
 
     if (import.meta.env.DEV) {
@@ -506,17 +595,24 @@ export default function MobileAppPage() {
     recommendMutation.mutate(payload, {
       onSuccess: (data) => {
         const normalized = normalizeRecommendations(data);
+        const firstVerificationJob = data.verification_jobs?.find((job) => job.rf_run_id);
+        const firstVerificationRunId =
+          typeof firstVerificationJob?.rf_run_id === 'string' ? firstVerificationJob.rf_run_id : null;
+        const firstVerificationRank =
+          typeof firstVerificationJob?.candidate_rank === 'number'
+            ? firstVerificationJob.candidate_rank
+            : null;
         setRecommendations(normalized);
         setSelectedRank(normalized[0]?.rank ?? null);
-        setCompareWithMeasurement(false);
-        setVerificationRunId(null);
-        setVerificationRank(null);
+        setCompareWithMeasurement(!!firstVerificationRunId);
+        setVerificationRunId(firstVerificationRunId);
+        setVerificationRank(firstVerificationRank);
         persistRecommendationSession({
           areas: validAreas,
           recommendations: normalized,
           selectedRank: normalized[0]?.rank ?? null,
           savedRank: null,
-          compareWithMeasurement: false,
+          compareWithMeasurement: !!firstVerificationRunId,
         });
         if (import.meta.env.DEV) {
           console.debug('[AP Recommendation] response:', data, 'normalized:', normalized);
@@ -529,18 +625,52 @@ export default function MobileAppPage() {
     });
   };
 
-  const handleSelectRecommendation = (rec: ApRecommendationResult) => {
+  const handleSelectRecommendation = async (rec: ApRecommendationResult) => {
     if (!latestRfRunId) {
       setPageError('와이파이 위치를 저장하려면 먼저 시뮬레이션을 실행해 주세요.');
       return;
     }
 
     setSelectedRank(rec.rank);
+    const verificationRunForRank = getVerificationRunIdForRank(recommendMutation.data ?? null, rec.rank);
+    setVerificationRunId(verificationRunForRank);
+    setVerificationRank(verificationRunForRank ? rec.rank : null);
     setPageError(null);
     persistRecommendationSession({ selectedRank: rec.rank });
 
-    const apName = nextApLayoutName(apLayoutsQuery.data ?? [], existingAps);
+    if (rec.final_aps && rec.final_aps.length > 0) {
+      // relocate_all / relocate_selected: final_aps의 모든 공유기를 한 번에 저장
+      const baseLayouts = apLayoutsQuery.data ?? [];
+      const fakePrevious: { ap_name: string }[] = [...baseLayouts];
+      const entries = rec.final_aps.map((ap) => {
+        const apName = ap.name ?? nextApLayoutName(fakePrevious, existingAps);
+        fakePrevious.push({ ap_name: apName });
+        return { ap, apName };
+      });
+      try {
+        await Promise.all(
+          entries.map(({ ap, apName }) =>
+            createLayout.mutateAsync({
+              rf_run_id: latestRfRunId,
+              ap_name: apName,
+              point_geom: { type: 'Point', coordinates: [ap.x, ap.y] },
+              z_m: ap.z ?? AP_DEFAULT_Z_M,
+              power_dbm: DEFAULT_TX_POWER_DBM,
+            }),
+          ),
+        );
+        setSavedRank(rec.rank);
+        persistRecommendationSession({ selectedRank: rec.rank, savedRank: rec.rank });
+      } catch (err) {
+        const e = err as HttpError | null;
+        setPageError(e?.message ?? '와이파이 위치 저장에 실패했습니다.');
+        setSelectedRank(null);
+        persistRecommendationSession({ selectedRank: null });
+      }
+      return;
+    }
 
+    const apName = nextApLayoutName(apLayoutsQuery.data ?? [], existingAps);
     createLayout.mutate(
       {
         rf_run_id: latestRfRunId,
@@ -569,6 +699,9 @@ export default function MobileAppPage() {
 
   const handlePreviewRecommendation = (rec: ApRecommendationResult) => {
     setSelectedRank(rec.rank);
+    const verificationRunForRank = getVerificationRunIdForRank(recommendMutation.data ?? null, rec.rank);
+    setVerificationRunId(verificationRunForRank);
+    setVerificationRank(verificationRunForRank ? rec.rank : null);
     setCompareWithMeasurement(false);
     setPageError(null);
     persistRecommendationSession({
@@ -583,75 +716,20 @@ export default function MobileAppPage() {
     persistRecommendationSession({ compareWithMeasurement: next });
   };
 
-  const handleVerifyRecommendation = () => {
-    if (!sceneVersionId || !selectedRecommendation) {
-      setPageError('Sionna 검증할 추천 위치가 없습니다.');
-      return;
-    }
-
-    const selected = selectedRecommendation;
-
-    // 선택된 순위의 모든 AP 위치만 검증에 사용.
-    // 모드/고정AP 분기 없이 추천 배치 자체의 커버리지를 측정.
-    const positions =
-      selected.ap_positions && selected.ap_positions.length > 0
-        ? selected.ap_positions.map((p) => ({ x: p.x, y: p.y }))
-        : [{ x: selected.recommended_x, y: selected.recommended_y }];
-
-    const originalAccessPoints = positions.map((p, i) => ({
-      id: `recommended_${i + 1}`,
-      label: `추천${selected.rank} AP${i + 1}`,
-      x_m: p.x,
-      y_m: p.y,
-      z_m: AP_DEFAULT_Z_M,
-    }));
-    const accessPoints = originalAccessPoints.map((ap) => ({
-      id: ap.id,
-      x_m: ap.x_m,
-      y_m: ap.y_m,
-      z_m: ap.z_m,
-    }));
-
-    setPageError(null);
-    createVerificationRun.mutate(
-      {
-        scene_version_id: sceneVersionId,
-        run_type: 'ap_recommendation_verify',
-        access_points: accessPoints,
-        simulation: {
-          tx_power_dbm: DEFAULT_TX_POWER_DBM,
-        },
-        metadata: {
-          source: 'ap_recommendation_verification',
-          recommendation_rank: selected.rank,
-          recommendation_score: selected.score,
-          recommendation_mode: recommendMutation.data?.recommendation_mode ?? null,
-          baseline_rf_run_id: latestRfRunId,
-          comparison_measurement_session_ids: comparisonEvaluationSessionIds,
-          comparison_ap_bssid: comparisonApBssid,
-          original_access_points: originalAccessPoints,
-        },
-        apply_calibration: true,
-        backend: inferenceMode as RfBackend,
-      },
-      {
-        onSuccess: (data) => {
-          setVerificationRunId(data.id);
-          setVerificationRank(selected.rank);
-          setCompareWithMeasurement(true);
-          persistRecommendationSession({ compareWithMeasurement: true });
-        },
-        onError: (err) => {
-          const e = err as HttpError | null;
-          setPageError(e?.message ?? 'Sionna 검증 실행에 실패했습니다.');
-        },
-      },
-    );
-  };
+  const modeValidationError = getRecommendationModeError({
+    mode: recommendationMode,
+    existingApIds: existingAps.map((ap) => ap.id),
+    additionalApCount: nAps,
+    replaceTargetApIds,
+    relocateTargetApIds,
+    targetTotalAps,
+    targetBands,
+  });
 
   const canRecommend =
     !!sceneVersionId &&
     validRecommendationAreas(selectedAreas).some((area) => area.type === 'candidate') &&
+    !modeValidationError &&
     !recommendMutation.isPending;
 
   const sceneLoading =
@@ -668,21 +746,21 @@ export default function MobileAppPage() {
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <h1 className="text-2xl font-bold tracking-tight text-foreground">
-              와이파이 설치 위치 추천
+              공유기 위치 추천
             </h1>
             <p className="mt-1.5 text-sm text-muted-foreground">
-              설치 가능 영역과 우선 평가 영역을 표시하면 좋은 설치 위치를 추천합니다.
+              설치 가능 영역과 우선 평가 영역을 표시하면 신호가 잘 닿는 공유기 위치를 추천합니다.
             </p>
           </div>
           <div className="flex shrink-0 flex-col items-stretch gap-1.5 sm:items-end">
             {/* 추천 모드 */}
             <div className="flex items-center gap-2 sm:justify-end">
-              <span className="text-[12px] text-slate-500">추천 모드</span>
+              <span className="text-[12px] text-slate-500">추천 방식</span>
               <div className="inline-flex items-center rounded-lg bg-slate-100 p-0.5">
                 {(
                   [
-                    { value: 'add', label: '추가' },
-                    { value: 'replace', label: '교체' },
+                    { value: 'add', label: '공유기 추가' },
+                    { value: 'replace', label: '공유기 교체' },
                     { value: 'relocate_all', label: '전체 재배치' },
                     { value: 'relocate_selected', label: '선택 재배치' },
                   ] as const
@@ -705,9 +783,18 @@ export default function MobileAppPage() {
             </div>
 
             {/* 모드별 부가 입력 */}
+            <TargetBandControls
+              targetBands={targetBands}
+              combinePolicy={combinePolicy}
+              onTargetBandsChange={setTargetBands}
+              onCombinePolicyChange={setCombinePolicy}
+              disabled={recommendMutation.isPending}
+            />
+            <RecommendationAdvancedControls />
+
             {recommendationMode === 'replace' && (
               <div className="flex items-center gap-2 sm:justify-end">
-                <span className="text-[12px] text-slate-500">교체할 AP</span>
+                <span className="text-[12px] text-slate-500">교체할 공유기</span>
                 <select
                   multiple
                   value={replaceTargetApIds}
@@ -729,7 +816,7 @@ export default function MobileAppPage() {
 
             {recommendationMode === 'relocate_selected' && (
               <div className="flex items-center gap-2 sm:justify-end">
-                <span className="text-[12px] text-slate-500">재배치할 AP</span>
+                <span className="text-[12px] text-slate-500">재배치할 공유기</span>
                 <select
                   multiple
                   value={relocateTargetApIds}
@@ -751,7 +838,7 @@ export default function MobileAppPage() {
 
             {recommendationMode === 'relocate_all' && (
               <div className="flex items-center gap-2 sm:justify-end">
-                <span className="text-[12px] text-slate-500">새 AP 총 개수</span>
+                <span className="text-[12px] text-slate-500">최종 공유기 수</span>
                 <div className="flex gap-1">
                   {[1, 2, 3, 4, 5].map((n) => (
                     <button
@@ -795,6 +882,15 @@ export default function MobileAppPage() {
               </div>
             </div>
             )}
+            <label className="flex cursor-pointer select-none items-center gap-2 text-[12px] text-slate-500 sm:justify-end">
+              <input
+                type="checkbox"
+                checked={verifyWithSionna}
+                onChange={(e) => setVerifyWithSionna(e.target.checked)}
+                className="h-3.5 w-3.5"
+              />
+              Sionna 검증 (상위 {verificationTopK}개)
+            </label>
             <button
               type="button"
               onClick={handleRecommend}
@@ -809,23 +905,28 @@ export default function MobileAppPage() {
               {recommendMutation.isPending ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  최적 위치 계산 중…
+                  좋은 위치 계산 중…
                 </>
               ) : (
                 <>
                   <Sparkles className="h-4 w-4" />
-                  추천 위치 찾기
+                  공유기 위치 찾기
                 </>
               )}
             </button>
             {!latestRfRunId && sceneVersionId && (
               <p className="text-[11px] text-amber-600 sm:text-right">
-                와이파이 위치 저장은 시뮬레이션 실행 후 가능합니다.
+                공유기 위치 저장은 시뮬레이션 실행 후 가능합니다.
+              </p>
+            )}
+            {modeValidationError && !recommendMutation.isPending && (
+              <p className="text-[11px] text-amber-600 sm:text-right">
+                {modeValidationError}
               </p>
             )}
             {sceneVersionId && !canRecommend && !recommendMutation.isPending && (
               <p className="text-[11px] text-muted-foreground sm:text-right">
-                설치 가능 영역을 먼저 지정하면 추천을 실행할 수 있습니다.
+                공유기를 둘 수 있는 영역을 먼저 지정하면 추천을 실행할 수 있습니다.
               </p>
             )}
           </div>
@@ -890,6 +991,9 @@ export default function MobileAppPage() {
                   activeAreaType={activeAreaType}
                   onAreasChange={handleAreasChange}
                   recommendations={recommendations}
+                  recommendationMode={recommendationMode}
+                  selectedReplacementIds={replaceTargetApIds}
+                  movableApIds={relocateTargetApIds}
                   selectedRecommendationRank={selectedRank}
                   heatmapMode={useComparisonMode ? 'measurement' : 'prediction'}
                   measurementHeatmap={canvasHeatmap}
@@ -959,7 +1063,7 @@ export default function MobileAppPage() {
               <p className="mt-1 text-[11px] text-muted-foreground">
                 {showComparisonHeatmap
                   ? verificationCalibratedHeatmap
-                    ? '선택 후보의 Sionna 결과에 예측·실측 보정을 적용한 통합맵을 보고 있습니다.'
+                    ? '선택 후보의 정밀 검증 결과에 예측·실측 보정을 적용한 통합맵을 보고 있습니다.'
                     : '측정 페이지의 예측·실측 통합 분석맵을 보고 있습니다.'
                   : '추천 후보를 클릭하면 해당 위치의 예측 신호 지도가 표시됩니다.'}
               </p>
@@ -988,14 +1092,19 @@ export default function MobileAppPage() {
               </div>
             ) : (
               <div className="space-y-3">
+                <RecommendationSummaryCard
+                  response={recommendMutation.data ?? null}
+                  selectedRecommendation={selectedRecommendation}
+                />
                 <CoverageComparisonCard
                   recommendation={selectedRecommendation}
-                  coverage={measurementCoverageMetrics}
+                  coverage={integratedCoverageMetrics}
+                  usingFallback={!measurementCoverageMetrics && !!baselineCoverageMetrics}
                   loading={calibrationComparisonQuery.isLoading}
                 />
                 <SionnaVerificationCard
                   recommendation={selectedRecommendation}
-                  integratedCoverage={measurementCoverageMetrics}
+                  integratedCoverage={integratedCoverageMetrics}
                   sionnaCoverage={verificationMatchesSelection ? verificationCoverageMetrics : null}
                   calibratedSionnaCoverage={
                     verificationMatchesSelection ? verificationCalibratedCoverageMetrics : null
@@ -1004,10 +1113,8 @@ export default function MobileAppPage() {
                   loadingIntegrated={
                     calibrationComparisonQuery.isLoading || verificationCalibrationQuery.isLoading
                   }
-                  starting={createVerificationRun.isPending}
+                  starting={recommendMutation.isPending}
                   polling={verificationMatchesSelection && verificationPoll.isPolling}
-                  canVerify={!!selectedRecommendation && !!sceneVersionId}
-                  onVerify={handleVerifyRecommendation}
                   canCompare={verificationMatchesSelection && verificationPoll.isSucceeded}
                   showComparison={showSimComparison}
                   onCompare={() => {
@@ -1033,7 +1140,7 @@ export default function MobileAppPage() {
                     onTabChange={setSimComparisonTab}
                   />
                 )}
-                {recommendations.map((rec) => (
+                {rankedRecommendations.map((rec) => (
                   <RecommendationCard
                     key={rec.rank}
                     rec={rec}
@@ -1157,6 +1264,168 @@ function AreaControls({
   );
 }
 
+function canvasApToPhysicalAp(ap: CanvasExistingAp, targetBands: WifiBand[]): PhysicalAp {
+  const enabledRadios = (ap.radios ?? []).filter((radio) => radio.enabled !== false);
+  const matchingRadios = enabledRadios.filter((radio) => targetBands.includes(radio.band));
+  const radios =
+    matchingRadios.length > 0
+      ? matchingRadios
+      : targetBands.map((band) => ({
+          id: `${ap.id}-${band === '5G' ? '5g' : '2g'}`,
+          band,
+          enabled: true,
+          frequency_mhz: band === '5G' ? 5180 : 2437,
+          frequency_ghz: band === '5G' ? 5.18 : 2.437,
+          channel: band === '5G' ? 36 : 6,
+          tx_power_dbm: DEFAULT_TX_POWER_DBM,
+        }));
+
+  return {
+    id: ap.id,
+    name: ap.label ?? ap.id.toUpperCase(),
+    x: ap.x_m,
+    y: ap.y_m,
+    z: ap.z_m ?? AP_DEFAULT_Z_M,
+    movable: ap.movable ?? true,
+    radios,
+  };
+}
+
+function getRecommendationModeError({
+  mode,
+  existingApIds,
+  additionalApCount,
+  replaceTargetApIds,
+  relocateTargetApIds,
+  targetTotalAps,
+  targetBands,
+}: {
+  mode: RecommendationMode;
+  existingApIds: string[];
+  additionalApCount: number;
+  replaceTargetApIds: string[];
+  relocateTargetApIds: string[];
+  targetTotalAps: number | null;
+  targetBands: WifiBand[];
+}): string | null {
+  if (targetBands.length === 0) return '평가할 주파수를 하나 이상 선택해 주세요.';
+  if (mode === 'add' && additionalApCount < 1) {
+    return '추가할 공유기 수는 1개 이상이어야 합니다.';
+  }
+  if (mode === 'replace') {
+    if (existingApIds.length === 0) return '교체할 기존 공유기가 필요합니다.';
+    if (replaceTargetApIds.length === 0) return '교체할 공유기를 선택해 주세요.';
+  }
+  if (mode === 'relocate_all') {
+    if ((targetTotalAps ?? existingApIds.length) < 1) {
+      return '최종 공유기 수는 1개 이상이어야 합니다.';
+    }
+  }
+  if (mode === 'relocate_selected') {
+    if (existingApIds.length === 0) return '재배치할 기존 공유기가 필요합니다.';
+    if (relocateTargetApIds.length === 0) return '재배치할 공유기를 하나 이상 선택해 주세요.';
+    const fixed = existingApIds.filter((id) => !relocateTargetApIds.includes(id));
+    if (fixed.some((id) => relocateTargetApIds.includes(id))) {
+      return '고정 공유기와 재배치 공유기가 중복될 수 없습니다.';
+    }
+  }
+  return null;
+}
+
+function getVerificationRunIdForRank(
+  response: ApRecommendationResponse | null,
+  rank: number,
+): string | null {
+  const job = response?.verification_jobs?.find((entry) => entry.candidate_rank === rank);
+  return typeof job?.rf_run_id === 'string' ? job.rf_run_id : null;
+}
+
+function TargetBandControls({
+  targetBands,
+  combinePolicy,
+  onTargetBandsChange,
+  onCombinePolicyChange,
+  disabled,
+}: {
+  targetBands: WifiBand[];
+  combinePolicy: CombinePolicy;
+  onTargetBandsChange: (bands: WifiBand[]) => void;
+  onCombinePolicyChange: (policy: CombinePolicy) => void;
+  disabled?: boolean;
+}) {
+  const bandModes: Array<{ key: string; label: string; bands: WifiBand[] }> = [
+    { key: '5g', label: '5GHz', bands: ['5G'] },
+    { key: '2g', label: '2.4GHz', bands: ['2.4G'] },
+    { key: 'dual', label: '5GHz + 2.4GHz', bands: ['5G', '2.4G'] },
+  ];
+  const currentKey =
+    targetBands.length > 1 ? 'dual' : targetBands[0] === '2.4G' ? '2g' : '5g';
+  const policies: Array<{ value: CombinePolicy; label: string }> = [
+    { value: 'prefer_5g_then_2g', label: '5GHz 우선' },
+    { value: 'max', label: '더 강한 신호' },
+    { value: 'weighted', label: '가중 평균' },
+  ];
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+      <span className="text-[12px] text-slate-500">주파수</span>
+      <div
+        className="inline-flex items-center rounded-lg bg-slate-100 p-0.5"
+        title="2.4GHz와 5GHz는 전파 특성이 달라 추천 평가에 주파수 정보를 함께 전달합니다."
+      >
+        {bandModes.map((mode) => (
+          <button
+            key={mode.key}
+            type="button"
+            disabled={disabled}
+            onClick={() => onTargetBandsChange(mode.bands)}
+            className={cn(
+              'inline-flex h-6 items-center rounded-md px-2 text-[11px] transition-colors',
+              currentKey === mode.key
+                ? 'bg-white font-semibold text-blue-700 shadow-sm'
+                : 'text-slate-500 hover:text-slate-800',
+            )}
+          >
+            {mode.label}
+          </button>
+        ))}
+      </div>
+      <select
+        value={combinePolicy}
+        disabled={disabled}
+        onChange={(event) => onCombinePolicyChange(event.target.value as CombinePolicy)}
+        className="h-7 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-medium text-slate-700 focus:border-blue-300 focus:outline-none disabled:opacity-50"
+        aria-label="주파수 통합 방식"
+      >
+        {policies.map((policy) => (
+          <option key={policy.value} value={policy.value}>
+            {policy.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function RecommendationAdvancedControls() {
+  return (
+    <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+      <span
+        className="inline-flex h-7 items-center rounded-md border border-slate-200 bg-white px-2 text-[11px] font-medium text-slate-700"
+        title="실측 데이터가 있으면 시스템이 위치별 오차를 약하게 자동 보정합니다."
+      >
+        오차 자동 보정
+      </span>
+      <span
+        className="inline-flex h-7 items-center rounded-md border border-emerald-200 bg-emerald-50 px-2 text-[11px] font-semibold text-emerald-700"
+        title="추천을 실행하면 상위 5개 후보를 자동으로 정밀 검증하고 결과를 저장합니다."
+      >
+        상위 5개 자동 비교
+      </span>
+    </div>
+  );
+}
+
 function formatBBox(bbox: ApRecommendationArea['bbox']): string {
   return `${bbox.x_min.toFixed(1)},${bbox.y_min.toFixed(1)}-${bbox.x_max.toFixed(1)},${bbox.y_max.toFixed(1)}`;
 }
@@ -1215,6 +1484,12 @@ interface GridCoverageMetrics {
   coverage_score: number | null;
   average_rssi_dbm: number | null;
   bottom_10_percent_rssi_dbm: number | null;
+}
+
+interface VerificationScore {
+  score: number | null;
+  status: string | null;
+  coverage: GridCoverageMetrics | null;
 }
 
 function computeGridCoverageMetrics(
@@ -1362,13 +1637,51 @@ function coerceRssiRange(raw: unknown): { min: number; max: number } | undefined
   return { min, max };
 }
 
+function isRfRunTerminal(status: string | null | undefined): boolean {
+  return ['done', 'completed', 'succeeded', 'failed', 'error', 'cancelled'].includes(String(status ?? '').toLowerCase());
+}
+
+function computeVerificationScore(coverage: GridCoverageMetrics | null): number | null {
+  if (!coverage) return null;
+  const coverageScore = coverage.coverage_ratio ?? coverage.coverage_score ?? null;
+  const averageScore =
+    coverage.average_rssi_dbm == null ? null : normalizeRange(coverage.average_rssi_dbm, -85, -45);
+  const bottomScore =
+    coverage.bottom_10_percent_rssi_dbm == null
+      ? null
+      : normalizeRange(coverage.bottom_10_percent_rssi_dbm, -85, -67);
+  return weightedAverage([
+    [coverageScore, 0.45],
+    [averageScore, 0.35],
+    [bottomScore, 0.2],
+  ]);
+}
+
+function normalizeRange(value: number, min: number, max: number): number {
+  if (max <= min) return 0;
+  return Math.max(0, Math.min(1, (value - min) / (max - min)));
+}
+
+function weightedAverage(values: Array<[number | null | undefined, number]>): number | null {
+  let numerator = 0;
+  let denominator = 0;
+  for (const [value, weight] of values) {
+    if (value == null || !Number.isFinite(value)) continue;
+    numerator += value * weight;
+    denominator += weight;
+  }
+  return denominator > 0 ? numerator / denominator : null;
+}
+
 function CoverageComparisonCard({
   recommendation,
   coverage,
+  usingFallback,
   loading,
 }: {
   recommendation: ApRecommendationResult | null;
   coverage: GridCoverageMetrics | null;
+  usingFallback: boolean;
   loading: boolean;
 }) {
   const predictionCoverage = recommendation?.coverage_ratio ?? recommendation?.coverage_score ?? null;
@@ -1384,7 +1697,9 @@ function CoverageComparisonCard({
         <div>
           <h3 className="text-sm font-bold text-foreground">예측 · 실측 통합 비교</h3>
           <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-            선택한 추천안의 예측맵과 최신 실측 통합 분석값을 같은 기준으로 비교합니다.
+            {usingFallback
+              ? '실측 통합맵이 없어 최신 시뮬레이션 맵을 기준으로 비교합니다.'
+              : '선택한 추천안의 예측맵과 최신 실측 통합 분석값을 같은 기준으로 비교합니다.'}
           </p>
         </div>
         {loading && <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-muted-foreground" />}
@@ -1392,28 +1707,154 @@ function CoverageComparisonCard({
 
       <div className="mt-3 grid grid-cols-2 gap-2">
         <MetricTile label="추천 예측 커버리지" value={formatCoveragePercent(predictionCoverage)} />
-        <MetricTile label="통합 분석 커버리지" value={formatCoveragePercent(measuredCoverage)} />
+        <MetricTile label={usingFallback ? '시뮬레이션 커버리지' : '통합 분석 커버리지'} value={formatCoveragePercent(measuredCoverage)} />
         <MetricTile label="커버리지 차이" value={formatCoverageDelta(coverageDelta)} />
         <MetricTile
-          label="기준 RSSI"
+          label="기준 신호"
           value={coverage?.coverage_threshold_dbm != null ? `${coverage.coverage_threshold_dbm.toFixed(0)} dBm` : '-67 dBm'}
         />
         <MetricTile
-          label="예측 평균 RSSI"
+          label="예측 평균 신호"
           value={formatDbm(recommendation?.average_rssi_dbm)}
         />
-        <MetricTile label="통합 평균 RSSI" value={formatDbm(coverage?.average_rssi_dbm)} />
+        <MetricTile label={usingFallback ? '시뮬레이션 평균 신호' : '통합 평균 신호'} value={formatDbm(coverage?.average_rssi_dbm)} />
         <MetricTile
           label="예측 하위 10%"
           value={formatDbm(recommendation?.bottom_10_percent_rssi_dbm)}
         />
         <MetricTile
-          label="통합 하위 10%"
+          label={usingFallback ? '시뮬레이션 하위 10%' : '통합 하위 10%'}
           value={formatDbm(coverage?.bottom_10_percent_rssi_dbm)}
         />
       </div>
     </section>
   );
+}
+
+function RecommendationSummaryCard({
+  response,
+  selectedRecommendation,
+}: {
+  response: ApRecommendationResponse | null;
+  selectedRecommendation: ApRecommendationResult | null;
+}) {
+  const score = selectedRecommendation?.score_breakdown ?? response?.score_breakdown ?? {};
+  const bandScores = (score['band_scores'] ?? {}) as Record<string, Record<string, unknown>>;
+  const bandMeta = response?.band_metadata as Record<string, unknown> | null | undefined;
+  const coverageSemantics = response?.coverage_semantics;
+  const targetBands = Array.isArray(bandMeta?.['requested_bands'])
+    ? (bandMeta?.['requested_bands'] as unknown[]).map(formatBandLabel).join(', ')
+    : Array.isArray(response?.physical_aps_snapshot)
+      ? '공유기 설정값'
+      : '-';
+  const combinePolicy =
+    typeof bandMeta?.['combine_policy'] === 'string' ? bandMeta['combine_policy'] : '-';
+  const mode = formatRecommendationModeLabel(response?.recommendation_mode);
+
+  return (
+    <section className="rounded-xl border border-[#D8E3F0] bg-[#F8FAFC] p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-bold text-foreground">추천 결과 요약</h3>
+          {response?.mode_explanation && (
+            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+              {response.mode_explanation}
+            </p>
+          )}
+        </div>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <MetricTile label="추천 방식" value={mode} />
+        <MetricTile label="평가 주파수" value={targetBands} />
+        <MetricTile label="통합 방식" value={formatCombinePolicyLabel(String(combinePolicy))} />
+        <MetricTile label="빠른 평가 점수" value={selectedRecommendation ? selectedRecommendation.score.toFixed(3) : '-'} />
+        <MetricTile label="정밀 평가 점수" value={selectedRecommendation?.verified_score != null ? selectedRecommendation.verified_score.toFixed(3) : '-'} />
+        <MetricTile label="커버리지" value={formatCoveragePercent(pickScoreNumber(score, 'coverage_ratio', 'coverage_score'))} />
+        <MetricTile label="평균 신호" value={formatDbm(pickScoreNumber(score, 'average_rssi_dbm', 'average_rssi'))} />
+        <MetricTile label="약한 구역 개선" value={formatDbm(pickScoreNumber(score, 'weak_zone_improvement_db', 'weak_zone_improvement'))} />
+        <MetricTile label="하위 10% 신호" value={formatDbm(pickScoreNumber(score, 'bottom_10_percent_rssi_dbm', 'bottom_10_percent'))} />
+      </div>
+      {coverageSemantics?.rssi_is_not_summed === true && (
+        <p className="mt-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] leading-relaxed text-blue-700">
+          여러 공유기의 신호는 단순히 더하지 않고, 각 위치에서 가장 잘 잡히는 공유기 신호를 기준으로 커버리지를 평가합니다.
+        </p>
+      )}
+      {Object.keys(bandScores).length > 0 && (
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          {(['5G', '2.4G', 'overall'] as const).map((band) => {
+            const data = bandScores[band];
+            if (!data) return null;
+            return (
+              <MetricTile
+                key={band}
+                label={`${formatBandLabel(band)} 커버리지`}
+                value={formatCoveragePercent(numberFromRecord(data, 'coverage_ratio'))}
+              />
+            );
+          })}
+        </div>
+      )}
+      {response?.verification_jobs && response.verification_jobs.length > 0 && (
+        <div className="mt-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
+          <p className="text-[11px] font-semibold text-slate-700">
+            정밀 검증: {formatVerificationStatus(response.verification_status)}
+          </p>
+          <div className="mt-1 space-y-1">
+            {response.verification_jobs.map((job) => (
+              <p key={job.candidate_id} className="text-[11px] text-muted-foreground">
+                {job.candidate_rank}순위: 빠른 평가 {job.fast_score?.toFixed(3) ?? '-'} / {formatVerificationStatus(job.status)}
+                {job.rf_run_id ? ` · Run ${String(job.rf_run_id).slice(0, 8)}` : ''}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function formatBandLabel(value: unknown): string {
+  if (value === '5G') return '5GHz';
+  if (value === '2.4G') return '2.4GHz';
+  if (value === 'overall') return '전체';
+  return String(value ?? '-');
+}
+
+function formatCombinePolicyLabel(value: string): string {
+  if (value === 'prefer_5g_then_2g') return '5GHz 우선, 2.4GHz 보완';
+  if (value === 'max') return '더 강한 신호 기준';
+  if (value === 'weighted') return '가중 평균';
+  return value === '-' ? '-' : value;
+}
+
+function formatRecommendationModeLabel(value: unknown): string {
+  if (value === 'add') return '공유기 추가';
+  if (value === 'replace') return '공유기 교체';
+  if (value === 'relocate_all') return '전체 재배치';
+  if (value === 'relocate_selected') return '선택 재배치';
+  return String(value ?? '-');
+}
+
+function formatVerificationStatus(value: unknown): string {
+  if (value === 'deferred') return '대기 중';
+  if (value === 'pending') return '준비 중';
+  if (value === 'running') return '검증 중';
+  if (value === 'succeeded' || value === 'success') return '완료';
+  if (value === 'failed' || value === 'error') return '실패';
+  return String(value ?? '-');
+}
+
+function numberFromRecord(source: Record<string, unknown>, key: string): number | null {
+  const value = source[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function pickScoreNumber(source: Record<string, unknown>, ...keys: string[]): number | null {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+  }
+  return null;
 }
 
 function SionnaVerificationCard({
@@ -1425,8 +1866,6 @@ function SionnaVerificationCard({
   loadingIntegrated,
   starting,
   polling,
-  canVerify,
-  onVerify,
   canCompare,
   showComparison,
   onCompare,
@@ -1439,8 +1878,6 @@ function SionnaVerificationCard({
   loadingIntegrated: boolean;
   starting: boolean;
   polling: boolean;
-  canVerify: boolean;
-  onVerify: () => void;
   canCompare: boolean;
   showComparison: boolean;
   onCompare: () => void;
@@ -1460,9 +1897,9 @@ function SionnaVerificationCard({
     <section className="rounded-xl border border-[#D8E3F0] bg-white p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="text-sm font-bold text-foreground">Sionna 검증 비교</h3>
+          <h3 className="text-sm font-bold text-foreground">정밀 검증 비교</h3>
           <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-            선택 후보를 실제 RF 시뮬레이션으로 다시 돌리고 현재 통합맵과 비교합니다.
+            선택한 후보를 더 정밀한 전파 시뮬레이션으로 다시 확인하고 현재 통합맵과 비교합니다.
           </p>
         </div>
         {(isBusy || loadingIntegrated) && (
@@ -1471,56 +1908,43 @@ function SionnaVerificationCard({
       </div>
 
       <div className="mt-3 flex gap-2">
-        <button
-          type="button"
-          onClick={onVerify}
-          disabled={!canVerify || isBusy}
-          className={cn(
-            'flex-1 rounded-lg border py-2.5 text-sm font-medium transition-colors',
-            canVerify && !isBusy
-              ? 'border-blue-500 bg-blue-600 text-white hover:bg-blue-700'
-              : 'cursor-not-allowed border-[#E5EAF2] bg-muted text-muted-foreground',
-          )}
-        >
-        {starting ? (
-          <span className="inline-flex items-center justify-center gap-1.5">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            검증 시작 중
-          </span>
-        ) : polling ? (
-          <span className="inline-flex items-center justify-center gap-1.5">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Sionna 검증 중
-          </span>
-        ) : (
-          '선택 후보 Sionna 검증'
+        {!canCompare && (
+          <div className="flex-1 rounded-lg border border-[#E5EAF2] bg-muted px-3 py-2.5 text-center text-sm font-medium text-muted-foreground">
+            {isBusy ? (
+              <span className="inline-flex items-center justify-center gap-1.5">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                자동 검증 중
+              </span>
+            ) : (
+              '자동 검증 결과 대기'
+            )}
+          </div>
         )}
-        </button>
         {canCompare && (
           <button
             type="button"
             onClick={onCompare}
             className={cn(
-              'rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors',
+              'flex-1 rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors',
               showComparison
                 ? 'border-emerald-400 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
                 : 'border-[#D8E3F0] bg-white text-slate-600 hover:bg-muted/60',
             )}
           >
-            {showComparison ? '비교 종료' : '비교하기'}
+            {showComparison ? '비교 닫기' : '비교하기'}
           </button>
         )}
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <MetricTile label="간이 예측 커버리지" value={formatCoveragePercent(predictionCoverage)} />
-        <MetricTile label="Sionna raw 커버리지" value={formatCoveragePercent(sionnaRatio)} />
-        <MetricTile label="보정 Sionna 커버리지" value={formatCoveragePercent(calibratedSionnaRatio)} />
+        <MetricTile label="빠른 예측 커버리지" value={formatCoveragePercent(predictionCoverage)} />
+        <MetricTile label="정밀 예측 커버리지" value={formatCoveragePercent(sionnaRatio)} />
+        <MetricTile label="보정 후 정밀 커버리지" value={formatCoveragePercent(calibratedSionnaRatio)} />
         <MetricTile label="현재 통합맵 커버리지" value={formatCoveragePercent(integratedRatio)} />
-        <MetricTile label="보정 Sionna-통합 차이" value={formatCoverageDelta(sionnaVsIntegrated)} />
-        <MetricTile label="Sionna 평균 RSSI" value={formatDbm(sionnaCoverage?.average_rssi_dbm)} />
-        <MetricTile label="보정 Sionna 평균" value={formatDbm(calibratedSionnaCoverage?.average_rssi_dbm)} />
-        <MetricTile label="Sionna 하위 10%" value={formatDbm(sionnaCoverage?.bottom_10_percent_rssi_dbm)} />
+        <MetricTile label="정밀-통합 차이" value={formatCoverageDelta(sionnaVsIntegrated)} />
+        <MetricTile label="정밀 평균 신호" value={formatDbm(sionnaCoverage?.average_rssi_dbm)} />
+        <MetricTile label="보정 후 평균 신호" value={formatDbm(calibratedSionnaCoverage?.average_rssi_dbm)} />
+        <MetricTile label="정밀 하위 10%" value={formatDbm(sionnaCoverage?.bottom_10_percent_rssi_dbm)} />
         <MetricTile label="실행 상태" value={runStatus ?? '-'} />
       </div>
     </section>
@@ -1575,7 +1999,7 @@ function SimComparisonCard({
           {formatCoveragePercent(vCov)}
         </div>
 
-        <div className="rounded-lg bg-white px-2 py-2 text-[10px] font-medium text-muted-foreground">평균 RSSI</div>
+        <div className="rounded-lg bg-white px-2 py-2 text-[10px] font-medium text-muted-foreground">평균 신호</div>
         <div className={cn('rounded-lg px-2 py-2 text-sm font-bold', simComparisonTab === 'baseline' ? 'bg-slate-100 text-slate-800' : 'bg-white text-slate-600')}>
           {formatDbm(baselineCoverage?.average_rssi_dbm)}
         </div>
@@ -1594,7 +2018,7 @@ function SimComparisonCard({
 
       <div className="mt-3 grid grid-cols-3 gap-2">
         <DeltaTile label="커버리지 변화" delta={covDelta} isRatio />
-        <DeltaTile label="평균 RSSI 변화" delta={rssiDelta} unit="dBm" />
+        <DeltaTile label="평균 신호 변화" delta={rssiDelta} unit="dBm" />
         <DeltaTile label="하위 10% 변화" delta={botDelta} unit="dBm" />
       </div>
 
@@ -1771,9 +2195,20 @@ function RecommendationCard({
             우선 평가 영역에 가장 잘 닿는 위치
           </p>
           <p className="mt-2 text-xs text-muted-foreground">
-            후보 점수{' '}
-            <span className="font-semibold text-foreground">{rec.score.toFixed(1)}</span>
+            빠른 평가{' '}
+            <span className="font-semibold text-foreground">{rec.score.toFixed(3)}</span>
+            {rec.verified_score != null && (
+              <>
+                {' '}· 정밀 평가{' '}
+                <span className="font-semibold text-emerald-700">{rec.verified_score.toFixed(3)}</span>
+              </>
+            )}
           </p>
+          {rec.verification_status && (
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              자동 검증 {formatVerificationStatus(rec.verification_status)}
+            </p>
+          )}
           <p className="mt-0.5 text-[11px] text-muted-foreground">
             탐색 후보 수 {rec.candidates_evaluated}
           </p>

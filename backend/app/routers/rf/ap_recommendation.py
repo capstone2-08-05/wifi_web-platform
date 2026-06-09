@@ -25,12 +25,12 @@ router = APIRouter(prefix="/ap-recommendation", tags=["ap-recommendation"])
     response_model=ApRecommendationResponse,
     summary="Grid Search 기반 AP 최적 위치 추천",
 )
-def recommend_ap(
+async def recommend_ap(
     request: ApRecommendationRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ApRecommendationResponse:
-    return ap_recommendation_service.recommend_ap_location(db, request, current_user)
+    return await ap_recommendation_service.recommend_ap_location(db, request, current_user)
 
 
 @router.get(

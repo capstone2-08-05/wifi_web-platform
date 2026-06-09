@@ -41,6 +41,13 @@ JOB_STATUS_FAILED = "failed"
 RF_BACKEND_SAGEMAKER = "sagemaker"
 RF_BACKEND_LOCAL = "local"
 
+RF_REQUEST_METADATA_KEYS = (
+    "physical_aps_snapshot",
+    "band_metadata",
+    "coverage_semantics",
+    "normalization_warnings",
+)
+
 
 # ============================================================
 # Submit
@@ -179,6 +186,7 @@ async def _submit_via_sagemaker(
             "metadata": metadata or {},
             "calibration": calibration_meta,
             "backend": RF_BACKEND_SAGEMAKER,
+            **_request_metadata_fields(metadata),
         },
         metrics_json={},
     )
@@ -188,6 +196,7 @@ async def _submit_via_sagemaker(
         "scene_version_id": str(sv.id),
         "access_points": access_points,
         "simulation": simulation,
+        "metadata": metadata or {},
         "requested_by": current_user.email,
         "backend": RF_BACKEND_SAGEMAKER,
         "sagemaker": {
@@ -480,6 +489,12 @@ def _mark_job_failed(
 # ============================================================
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _request_metadata_fields(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    if not metadata:
+        return {}
+    return {key: metadata[key] for key in RF_REQUEST_METADATA_KEYS if key in metadata}
 
 
 def create_ap_layouts_from_request(

@@ -117,6 +117,63 @@ def _load_session(db: Session, session_id: str) -> MeasurementSession:
     return session_row
 
 
+def _compact_dict(values: dict[str, object | None]) -> dict[str, object]:
+    return {key: value for key, value in values.items() if value is not None}
+
+
+def _build_channel_observation(point) -> dict[str, object]:
+    connected_ap = _compact_dict(
+        {
+            "bssid": point.ap_bssid,
+            "ssid": point.ap_ssid,
+            "channel": point.channel,
+            "frequency_mhz": point.frequency_mhz,
+            "channel_width_mhz": point.channel_width_mhz,
+            "center_frequency_mhz": point.center_frequency_mhz,
+            "link_speed_mbps": point.link_speed_mbps,
+            "tx_link_speed_mbps": point.tx_link_speed_mbps,
+            "rx_link_speed_mbps": point.rx_link_speed_mbps,
+            "noise_dbm": point.noise_dbm,
+            "wifi_standard": point.wifi_standard,
+        }
+    )
+    scan_results = [
+        scan.model_dump(mode="json", exclude_none=True)
+        for scan in point.wifi_scan_results
+    ]
+    same_channel_count = 0
+    adjacent_channel_count = 0
+    if point.channel is not None:
+        for scan in point.wifi_scan_results:
+            if scan.channel is None:
+                continue
+            if scan.channel == point.channel:
+                same_channel_count += 1
+            elif abs(scan.channel - point.channel) <= 4:
+                adjacent_channel_count += 1
+
+    return _compact_dict(
+        {
+            "connected_ap": connected_ap or None,
+            "scan_results": scan_results or None,
+            "scan_result_count": len(scan_results) if scan_results else None,
+            "same_channel_count": same_channel_count if scan_results else None,
+            "adjacent_channel_count": adjacent_channel_count if scan_results else None,
+        }
+    )
+
+
+def _measurement_point_metadata(point) -> dict[str, object]:
+    metadata = dict(point.metadata_json or {})
+    channel_observation = _build_channel_observation(point)
+    if channel_observation:
+        existing = metadata.get("channel_observation")
+        if isinstance(existing, dict):
+            channel_observation = {**existing, **channel_observation}
+        metadata["channel_observation"] = channel_observation
+    return metadata
+
+
 def _latest_floorplan_asset(db: Session, floor_id: str) -> Asset | None:
     stmt = (
         select(Asset)
@@ -597,6 +654,9 @@ def upload_measurement_points(
             point_geom=wkt_geom,
             z_m=point.floor_position.z,
             rssi_dbm=point.rssi_dbm,
+            sinr_db=point.sinr_db,
+            latency_ms=point.latency_ms,
+            throughput_mbps=point.throughput_mbps,
             measurement_purpose=point.measurement_purpose,
             ap_bssid=point.ap_bssid,
             ap_ssid=point.ap_ssid,
@@ -608,7 +668,7 @@ def upload_measurement_points(
             step_index=point.step_index,
             batch_id=request.batch_id,
             client_point_id=point.client_point_id,
-            metadata_json=point.metadata_json or {},
+            metadata_json=_measurement_point_metadata(point),
         )
         try:
             with db.begin_nested():
@@ -758,6 +818,9 @@ def _point_to_response(row: MeasurementPoint) -> MeasurementPointResponseDTO:
             x=float(coords[0]), y=float(coords[1]), z=z
         ),
         rssi_dbm=float(row.rssi_dbm) if row.rssi_dbm is not None else None,
+        sinr_db=float(row.sinr_db) if row.sinr_db is not None else None,
+        latency_ms=float(row.latency_ms) if row.latency_ms is not None else None,
+        throughput_mbps=float(row.throughput_mbps) if row.throughput_mbps is not None else None,
         measurement_purpose=row.measurement_purpose,
         ap_bssid=row.ap_bssid,
         ap_ssid=row.ap_ssid,

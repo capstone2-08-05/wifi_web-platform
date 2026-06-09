@@ -11,6 +11,7 @@ export type RfRunStatus =
 
 /** Physical AP 의 2.4GHz / 5GHz radio band. */
 export type WifiBand = '2.4G' | '5G';
+export type CombinePolicy = 'max' | 'prefer_5g_then_2g' | 'weighted';
 
 /** Physical AP 내부의 단일 radio interface. 좌표는 parent PhysicalAp 를 사용한다. */
 export interface RadioInterface {
@@ -38,7 +39,7 @@ export interface PhysicalAp {
 
 export interface BandSimulationParams {
   bands: WifiBand[];
-  combine_policy?: 'max' | 'prefer_5g_then_2g' | 'weighted';
+  combine_policy?: CombinePolicy;
 }
 
 /** §13.1 시뮬 실행 백엔드. sagemaker(기본)=클라우드, local=로컬 ai_api(테스트용). */
