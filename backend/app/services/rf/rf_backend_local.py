@@ -447,16 +447,30 @@ def _create_local_rf_maps(
     # S3 업로드 실패 시 원본 URL 유지 (fallback).
     storage_url = image_url
     try:
+        import os as _os
         import uuid as _uuid
+        from urllib.parse import urlparse as _urlparse
         import httpx
         from app.services import _s3
-        resp = httpx.get(image_url, timeout=60)
+        from app.services import ai_api_client as _ai_client
+
+        # image_url 이 "http://localhost:9000/..." 형태면 실제 AI 서버 주소로 교체.
+        actual_base = _ai_client._base_url().rstrip("/")
+        parsed = _urlparse(image_url)
+        download_url = actual_base + parsed.path + (f"?{parsed.query}" if parsed.query else "")
+
+        headers: dict = {}
+        _key = _os.getenv("AI_INTERNAL_API_KEY") or _os.getenv("INTERNAL_API_KEY") or ""
+        if _key:
+            headers["X-Internal-API-Key"] = _key
+
+        resp = httpx.get(download_url, headers=headers, timeout=60)
         resp.raise_for_status()
         content_type = resp.headers.get("content-type", "image/png")
         ext = "png" if "png" in content_type else "jpg"
         key = f"rf-maps/{rf_run.id}/{_uuid.uuid4()}.{ext}"
         storage_url = _s3.upload_bytes(key, resp.content, content_type=content_type)
-        logger.info("RF 히트맵 S3 업로드 완료: %s", storage_url)
+        logger.info("RF 히트맵 S3 업로드 완료: %s → %s", download_url, storage_url)
     except Exception as exc:
         logger.warning("RF 히트맵 S3 업로드 실패, 원본 URL 유지: %s", exc)
 
