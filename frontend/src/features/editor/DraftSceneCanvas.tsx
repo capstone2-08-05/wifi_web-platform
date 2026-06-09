@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { materialColor, materialLabel, MATERIAL_COLORS } from '@/lib/labels';
 import type {
   DraftEntityKind,
   DraftObject,
@@ -22,6 +23,7 @@ import {
 } from './viewbox-cache';
 import {
   deriveImageExtent as deriveImageExtentShared,
+  inferImageExtentFromWallBounds,
   saveCachedRealWidth,
   saveCachedScaleRatio,
   useImageNaturalDimensions,
@@ -158,12 +160,28 @@ function deriveImageExtent(
     storage?: { real_width_m?: number };
     scale_ratio_m_per_px?: number;
   };
-  return deriveImageExtentShared(imageDims, {
+
+  // 1순위: summary 직접 보유 (draft 모드 — rescale 후 백엔드가 갱신해 반환).
+  const fromSummary = deriveImageExtentShared(imageDims, {
     realWidthM: summary.storage?.real_width_m ?? null,
     scaleRatioMPerPx: summary.scale_ratio_m_per_px ?? null,
+  });
+  if (fromSummary) return fromSummary;
+
+  // 2순위: localStorage 캐시 — promote 후 version-as-draft(summary_json:{})에서
+  // 정확한 scale_ratio 복원. rescale 시에도 EditorPage 가 캐시를 factor 배 갱신하므로 정확.
+  const fromCache = deriveImageExtentShared(imageDims, {
     sourceAssetId: draft.source_asset_id ?? null,
     floorId: draft.floor_id ?? null,
   });
+  if (fromCache) return fromCache;
+
+  // 3순위: 도형 bounds 역추정 — localStorage 캐시도 없을 때 마지막 fallback.
+  const bounds = computeShapeBounds(draft);
+  return inferImageExtentFromWallBounds(
+    imageDims,
+    isFinite(bounds.minX) ? bounds : null,
+  );
 }
 
 const DRAG_THRESHOLD_M = 0.05;
@@ -652,6 +670,8 @@ interface Props {
   onCreate?: (kind: DraftEntityKind, body: Record<string, unknown>) => void;
   /** 원본 도면 이미지 URL — 벡터 도형 뒤에 연하게 깔아 비교용. */
   backgroundImageUrl?: string | null;
+  /** backgroundImageUrl 로드 실패 시 호출 (CORS / PDF 등) — EditorPage 가 fallback 처리. */
+  onImageError?: () => void;
 }
 
 export function DraftSceneCanvas({
@@ -665,6 +685,7 @@ export function DraftSceneCanvas({
   tool = 'select',
   onCreate,
   backgroundImageUrl,
+  onImageError,
 }: Props) {
   // 배경 도면 이미지의 natural 픽셀 dim → real_width_m 와 조합해 실제 미터 크기 산출.
   // 이미지 extent 가 있으면 viewBox 는 (이미지 + 도형) 합집합 → 도형을 줄여도 캔버스가
@@ -1088,6 +1109,7 @@ export function DraftSceneCanvas({
             height_m: 2.1,
             source_method: 'user_drawn',
             line_geom: { type: 'LineString', coordinates: [start, pt] },
+            metadata_json: { material: tool === 'door' ? 'itu_wood' : 'itu_glass' },
           });
         }
         setCreating(null);
@@ -1188,13 +1210,12 @@ export function DraftSceneCanvas({
             y={imageExtent ? 0 : vb.y}
             width={imageExtent ? imageExtent.w : vb.w}
             height={imageExtent ? imageExtent.h : vb.h}
-            opacity={0.25}
+            opacity={0.4}
             preserveAspectRatio={imageExtent ? 'none' : 'xMidYMid meet'}
             pointerEvents="none"
-            crossOrigin="anonymous"
             onError={() => {
-              // 이미지 로드 실패: CORS / private S3 / 잘못된 URL 가능성.
               console.warn('[Canvas] 배경 도면 이미지 로드 실패:', backgroundImageUrl);
+              onImageError?.();
             }}
           />
         )}
@@ -1644,6 +1665,28 @@ export function DraftSceneCanvas({
 
       <ScaleHint draft={draft} bounds={vb} dragging={!!drag} />
       {isCreationMode && <CreationHint tool={tool} creating={creating} />}
+      <WallMaterialLegend walls={draft.walls} />
+    </div>
+  );
+}
+
+function WallMaterialLegend({ walls }: { walls: DraftWall[] }) {
+  const usedKeys = [...new Set(walls.map((w) => w.material_label ?? ''))].filter(
+    (k) => k in MATERIAL_COLORS || k === '',
+  );
+  if (usedKeys.length === 0) return null;
+  return (
+    <div className="pointer-events-none absolute bottom-4 left-4 rounded-lg border bg-white/90 p-2.5 text-[11px] shadow-sm backdrop-blur-sm space-y-1">
+      <p className="font-semibold text-foreground/60 mb-1">벽 재질</p>
+      {usedKeys.map((k) => (
+        <div key={k || '_none'} className="flex items-center gap-1.5">
+          <span
+            className="h-2 w-5 rounded-[2px] shrink-0"
+            style={{ backgroundColor: materialColor(k || null) }}
+          />
+          <span className="text-foreground/75">{k ? materialLabel(k) : '미지정'}</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -1956,7 +1999,7 @@ function WallShape({
         y1={start[1]}
         x2={end[0]}
         y2={end[1]}
-        stroke={selected ? 'oklch(0.55 0.22 264)' : 'oklch(0.25 0 0)'}
+        stroke={selected ? 'oklch(0.55 0.22 264)' : materialColor(wall.material_label)}
         strokeWidth={selected ? 6 : 4}
         strokeLinecap="butt"
         vectorEffect="non-scaling-stroke"

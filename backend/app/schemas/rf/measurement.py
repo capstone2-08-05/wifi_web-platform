@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_serializer
 
 
 def _utc_iso_z(value: datetime) -> str:
@@ -68,6 +68,27 @@ class FloorPositionDTO(BaseModel):
     z: float = 0.0
 
 
+class WifiScanResultDTO(BaseModel):
+    """Single Wi-Fi scan result sent by the Android measurement client.
+
+    These values are kept separate from RSSI calibration. They are raw material
+    for channel/capacity/congestion analysis.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    bssid: str | None = None
+    ssid: str | None = None
+    rssi_dbm: float | None = Field(default=None, validation_alias=AliasChoices("rssi_dbm", "rssiDbm", "level"))
+    channel: int | None = None
+    frequency_mhz: int | None = Field(default=None, validation_alias=AliasChoices("frequency_mhz", "frequencyMhz", "frequency"))
+    band: str | None = None
+    channel_width_mhz: int | None = Field(default=None, validation_alias=AliasChoices("channel_width_mhz", "channelWidthMhz", "channelWidth"))
+    center_frequency_mhz: int | None = Field(default=None, validation_alias=AliasChoices("center_frequency_mhz", "centerFrequencyMhz", "centerFreq0"))
+    security: str | None = None
+    capabilities: str | None = None
+
+
 class DeviceInfoDTO(BaseModel):
     model: str | None = None
     os: str | None = None
@@ -105,14 +126,30 @@ class MeasurementSessionResponseDTO(BaseModel):
 
 
 class MeasurementPointInputDTO(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     client_point_id: str | None = None
     floor_position: FloorPositionDTO
     rssi_dbm: float | None = None
+    sinr_db: float | None = Field(default=None, validation_alias=AliasChoices("sinr_db", "sinrDb"))
+    latency_ms: float | None = Field(default=None, validation_alias=AliasChoices("latency_ms", "latencyMs"))
+    throughput_mbps: float | None = Field(default=None, validation_alias=AliasChoices("throughput_mbps", "throughputMbps"))
     measurement_purpose: Literal["calibration", "validation", "reference", "unknown"] | None = None
     ap_bssid: str | None = None
     ap_ssid: str | None = None
     channel: int | None = None
-    frequency_mhz: int | None = None
+    frequency_mhz: int | None = Field(default=None, validation_alias=AliasChoices("frequency_mhz", "frequencyMhz", "frequency"))
+    channel_width_mhz: int | None = Field(default=None, validation_alias=AliasChoices("channel_width_mhz", "channelWidthMhz", "channelWidth"))
+    center_frequency_mhz: int | None = Field(default=None, validation_alias=AliasChoices("center_frequency_mhz", "centerFrequencyMhz", "centerFreq0"))
+    link_speed_mbps: float | None = Field(default=None, validation_alias=AliasChoices("link_speed_mbps", "linkSpeedMbps", "linkSpeed"))
+    tx_link_speed_mbps: float | None = Field(default=None, validation_alias=AliasChoices("tx_link_speed_mbps", "txLinkSpeedMbps"))
+    rx_link_speed_mbps: float | None = Field(default=None, validation_alias=AliasChoices("rx_link_speed_mbps", "rxLinkSpeedMbps"))
+    noise_dbm: float | None = Field(default=None, validation_alias=AliasChoices("noise_dbm", "noiseDbm"))
+    wifi_standard: str | None = Field(default=None, validation_alias=AliasChoices("wifi_standard", "wifiStandard"))
+    wifi_scan_results: list[WifiScanResultDTO] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("wifi_scan_results", "wifiScanResults", "scan_results", "scanResults"),
+    )
     timestamp_at_point: datetime | None = None
     ar_tracking_state: str | None = None
     ar_confidence: float | None = None
@@ -161,6 +198,9 @@ class MeasurementPointResponseDTO(BaseModel):
     batch_id: str | None = None
     floor_position: FloorPositionDTO
     rssi_dbm: float | None = None
+    sinr_db: float | None = None
+    latency_ms: float | None = None
+    throughput_mbps: float | None = None
     measurement_purpose: str | None = None
     ap_bssid: str | None = None
     ap_ssid: str | None = None

@@ -3,6 +3,7 @@ import { parseGeometry, type Coord } from '@/features/editor/geometry-utils';
 import { loadCachedViewBox } from '@/features/editor/viewbox-cache';
 import {
   deriveImageExtent,
+  inferImageExtentFromWallBounds,
   useImageNaturalDimensions,
 } from '@/features/editor/floorplan-image-extent';
 import type {
@@ -12,6 +13,7 @@ import type {
   DraftWall,
   SceneVersion,
 } from '@/types/scene';
+import type { RadioInterface } from '@/types/rf';
 import { cn } from '@/lib/utils';
 
 export interface PlacedAp {
@@ -19,6 +21,8 @@ export interface PlacedAp {
   x_m: number;
   y_m: number;
   z_m: number;
+  /** Radio interface 목록. 없으면 기본 5G 단일 radio 로 취급. */
+  radios?: RadioInterface[];
 }
 
 /** 모든 AP 에 공통 적용되는 출력 파워 (백엔드 simulation.tx_power_dbm 으로 보냄). */
@@ -46,6 +50,10 @@ interface Props {
   heatmapBounds?: { minX: number; minY: number; maxX: number; maxY: number } | null;
   /** true 면 AP 추가/드래그/삭제 모두 비활성화 — 결과 보기 전용. */
   readOnly?: boolean;
+  /** AP 라벨 클릭 시 호출 — radio 설정 패널 열기용. */
+  onApClick?: (id: string) => void;
+  /** 현재 선택된 AP id (패널 열림 표시용). */
+  selectedApId?: string | null;
 }
 
 interface Bounds {
@@ -127,31 +135,40 @@ export function SimulationCanvas({
   heatmapUrl,
   heatmapBounds,
   readOnly = false,
+  onApClick,
+  selectedApId,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const sceneId = sceneVersion?.id ?? null;
 
   // 배경 이미지를 editor 와 동일한 좌표계로 배치하기 위해 imageExtent (미터) 계산.
   // 있으면 image 는 (0,0)~(extent.w, extent.h) 에 그림 → 벽과 정확히 정렬.
   // 없으면 viewBox 영역에 fit 으로 fallback (정렬은 안 맞아도 결과는 보임).
   const imageDims = useImageNaturalDimensions(backgroundImageUrl ?? null);
-  const imageExtent = useMemo(
-    () =>
-      deriveImageExtent(imageDims, {
-        sourceAssetId: sceneVersion?.source_asset_id ?? null,
-        floorId: sceneVersion?.floor_id ?? null,
-      }),
-    [imageDims, sceneVersion?.source_asset_id, sceneVersion?.floor_id],
-  );
+  const imageExtent = useMemo(() => {
+    // 1순위: localStorage 캐시 — rescale 시에도 EditorPage 가 factor 배 갱신하므로 정확.
+    const fromCache = deriveImageExtent(imageDims, {
+      sourceAssetId: sceneVersion?.source_asset_id ?? null,
+      floorId: sceneVersion?.floor_id ?? null,
+    });
+    if (fromCache) return fromCache;
+    // 2순위: 도형 bounds 역추정 — 캐시도 없을 때 마지막 fallback.
+    const b = emptyBounds();
+    for (const wall of sceneVersion?.walls ?? []) {
+      const g = parseGeometry(wall.centerline_geom);
+      if (g?.type === 'LineString') for (const [x, y] of g.coordinates) extendBounds(b, x, y);
+    }
+    return inferImageExtentFromWallBounds(imageDims, isFinite(b.minX) ? b : null);
+  }, [imageDims, sceneVersion?.source_asset_id, sceneVersion?.floor_id, sceneVersion?.walls]);
 
-  // viewBox: editor/measurement 와 같은 floor 캐시를 우선 사용해 페이지 간 도면 크기를 고정.
-  // 캐시가 없을 때만 image+shape union 으로 계산.
+  // imageExtent 가 있으면 항상 image+shape union 으로 계산 (editor 와 동일한 로직).
+  // 캐시는 imageExtent 없이 저장된 경우 배경 이미지가 clipPath 에 잘리는 문제를 일으킬 수 있어
+  // imageExtent 확보 이후엔 무시.
   const vb = useMemo(() => {
+    if (imageExtent) return computeViewBox(sceneVersion, imageExtent);
     const cached = loadCachedViewBox(sceneVersion?.floor_id ?? null);
     if (cached) return cached;
-    if (imageExtent) return computeViewBox(sceneVersion, imageExtent);
     return computeViewBox(sceneVersion, null);
-  }, [sceneId, sceneVersion?.floor_id, imageExtent]);
+  }, [sceneVersion, imageExtent]);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<Coord>([0, 0]);
 
@@ -253,32 +270,37 @@ export function SimulationCanvas({
             preserveAspectRatio={imageExtent ? 'none' : 'xMidYMid meet'}
             opacity={0.35}
             pointerEvents="none"
-            crossOrigin="anonymous"
             onError={() => {
               console.warn('[SimulationCanvas] 배경 도면 이미지 로드 실패:', backgroundImageUrl);
             }}
           />
         )}
-        {/* RF 시뮬레이션 히트맵 오버레이 — 배경 도면 위, 도형 아래.
-            bounds_json 이 있으면 그 미터 좌표에 정확히 배치(도면과 1:1 정렬).
-            없으면(파싱 실패) fallback 으로 viewBox 영역에 fitting → 정렬은 안 맞아도
-            적어도 결과가 보이게는 함. */}
-        {heatmapUrl && (
-          <image
-            href={heatmapUrl}
-            xlinkHref={heatmapUrl}
-            x={heatmapBounds ? heatmapBounds.minX : vb.x}
-            y={heatmapBounds ? heatmapBounds.minY : vb.y}
-            width={heatmapBounds ? heatmapBounds.maxX - heatmapBounds.minX : vb.w}
-            height={heatmapBounds ? heatmapBounds.maxY - heatmapBounds.minY : vb.h}
-            preserveAspectRatio={heatmapBounds ? 'none' : 'xMidYMid meet'}
-            opacity={0.6}
-            pointerEvents="none"
-            onError={() => {
-              console.warn('[SimulationCanvas] 히트맵 이미지 로드 실패:', heatmapUrl);
-            }}
-          />
-        )}
+        {/* RF 시뮬레이션 히트맵 오버레이 — 바운딩 박스 정밀 정렬 버전 */}
+        {heatmapUrl && (() => {
+          // 백엔드가 준 마진(0.5m)이 포함된 타이트한 영역(heatmapBounds)을 1순위로 정확히 매핑합니다.
+          const hx = heatmapBounds ? heatmapBounds.minX : (imageExtent ? 0 : vb.x);
+          const hy = heatmapBounds ? heatmapBounds.minY : (imageExtent ? 0 : vb.y);
+          const hw = heatmapBounds ? heatmapBounds.maxX - heatmapBounds.minX : (imageExtent ? imageExtent.w : vb.w);
+          const hh = heatmapBounds ? heatmapBounds.maxY - heatmapBounds.minY : (imageExtent ? imageExtent.h : vb.h);
+          
+          return (
+            <image
+              href={heatmapUrl}
+              xlinkHref={heatmapUrl}
+              x={hx}
+              y={hy}
+              width={hw}
+              height={hh}
+              // 백엔드가 준 고유 영역 해상도에 맞게 1:1로 강제 매칭하기 위해 'none' 처리
+              preserveAspectRatio="none"
+              opacity={0.6}
+              pointerEvents="none"
+              onError={() => {
+                console.warn('[SimulationCanvas] 히트맵 이미지 로드 실패:', heatmapUrl);
+              }}
+            />
+          );
+        })()}
         {/* [room 비활성화] 시뮬레이션 캔버스에서 room 영역 렌더 제거. 다시 켜려면 아래 블록 주석 해제. */}
         {/* {(sceneVersion?.rooms ?? []).map((r) => (
           <RoomShape key={r.id} room={r} />
@@ -300,8 +322,10 @@ export function SimulationCanvas({
             key={ap.id}
             ap={ap}
             isDragging={dragId === ap.id}
+            isSelected={selectedApId === ap.id}
             onPointerDown={(e) => handleApPointerDown(e, ap)}
             onRemove={() => onRemove(ap.id)}
+            onSettings={onApClick ? () => onApClick(ap.id) : undefined}
           />
         ))}
         </g>
@@ -474,21 +498,53 @@ function ObjectShape({ object }: { object: DraftObject }) {
 function ApMarker({
   ap,
   isDragging,
+  isSelected,
   onPointerDown,
   onRemove,
+  onSettings,
 }: {
   ap: PlacedAp;
   isDragging: boolean;
+  isSelected?: boolean;
   onPointerDown: (e: React.PointerEvent) => void;
   onRemove: () => void;
+  onSettings?: () => void;
 }) {
-  const fill = 'oklch(0.55 0.22 254)';
+  const fill = isSelected ? 'oklch(0.45 0.22 254)' : 'oklch(0.55 0.22 254)';
   const r = AP_MARKER_RADIUS_M;
-  // lucide Wifi 아이콘 (24x24 viewBox) 을 r 안에 들어갈 크기로 스케일.
-  const iconSize = r * 1.1; // 원 지름의 약 55%
+  const iconSize = r * 1.1;
   const iconScale = iconSize / 24;
+
+  // enabled radio의 band badge 목록.
+  const enabledBands = (ap.radios ?? []).filter((radio) => radio.enabled).map((radio) => radio.band);
+  const badgesToShow = enabledBands.length > 0 ? [...new Set(enabledBands)] : ['5G'];
+
+  const badgeW = r * 0.9;
+  const badgeH = r * 0.46;
+  const badgeGap = r * 0.08;
+  const totalBadgeW = badgesToShow.length * badgeW + (badgesToShow.length - 1) * badgeGap;
+  const badgeStartX = ap.x_m - totalBadgeW / 2;
+  const labelBoxY = ap.y_m + r + 0.04;
+  const labelBoxH = r * 0.75;
+  const badgeRowY = labelBoxY + labelBoxH + r * 0.06;
+
   return (
     <g className={isDragging ? 'cursor-grabbing' : 'cursor-grab'}>
+      {/* 선택 링 (패널 열림 표시) */}
+      {isSelected && (
+        <circle
+          cx={ap.x_m}
+          cy={ap.y_m}
+          r={r + 0.06}
+          fill="none"
+          stroke="oklch(0.55 0.22 254)"
+          strokeWidth="2"
+          strokeDasharray={`${r * 0.4} ${r * 0.2}`}
+          vectorEffect="non-scaling-stroke"
+          pointerEvents="none"
+          opacity={0.7}
+        />
+      )}
       <circle
         cx={ap.x_m}
         cy={ap.y_m}
@@ -496,7 +552,7 @@ function ApMarker({
         fill={fill}
         onPointerDown={onPointerDown}
       />
-      {/* lucide Wifi 아이콘 path 인라인 — 우측 "AP 추가" 패널과 동일 모양. */}
+      {/* lucide Wifi 아이콘 path 인라인 */}
       <g
         transform={`translate(${ap.x_m - iconSize / 2}, ${ap.y_m - iconSize / 2}) scale(${iconScale})`}
         pointerEvents="none"
@@ -511,33 +567,69 @@ function ApMarker({
         <path d="M5 12.859a10 10 0 0 1 14 0" />
         <path d="M8.5 16.429a5 5 0 0 1 7 0" />
       </g>
-      {/* 라벨 박스 */}
-      <g pointerEvents="none">
+      {/* 라벨 박스 — 클릭으로 radio 설정 패널 열기. */}
+      <g
+        onPointerDown={onSettings ? (e) => { e.stopPropagation(); onSettings(); } : undefined}
+        className={onSettings ? 'cursor-pointer' : ''}
+      >
         <rect
           x={ap.x_m - 0.18}
-          y={ap.y_m + r + 0.04}
+          y={labelBoxY}
           width={r * 1.8}
-          height={r * 0.75}
+          height={labelBoxH}
           rx={r * 0.18}
-          fill="white"
-          stroke="oklch(0.85 0.02 240)"
+          fill={isSelected ? 'oklch(0.94 0.05 254)' : 'white'}
+          stroke={isSelected ? 'oklch(0.65 0.18 254)' : 'oklch(0.85 0.02 240)'}
           strokeWidth="1"
           vectorEffect="non-scaling-stroke"
         />
         <text
           x={ap.x_m}
-          y={ap.y_m + r + r * 0.38}
+          y={labelBoxY + labelBoxH / 2}
           textAnchor="middle"
           dominantBaseline="middle"
           fontSize={AP_LABEL_FONT_SIZE_M}
           fontWeight="600"
           fill="oklch(0.25 0.04 240)"
+          pointerEvents="none"
           style={{ userSelect: 'none' }}
         >
           {ap.id.toUpperCase()}
         </text>
       </g>
-      {/* 삭제 버튼 — AP 크기에 맞춰 우측 상단에 충분히 크게 표시. */}
+      {/* Band badge 행 */}
+      <g pointerEvents="none">
+        {badgesToShow.map((band, i) => {
+          const bx = badgeStartX + i * (badgeW + badgeGap);
+          const by = badgeRowY;
+          const badgeFill = band === '5G' ? 'oklch(0.55 0.16 145)' : 'oklch(0.60 0.15 55)';
+          return (
+            <g key={band}>
+              <rect
+                x={bx}
+                y={by}
+                width={badgeW}
+                height={badgeH}
+                rx={badgeH * 0.4}
+                fill={badgeFill}
+              />
+              <text
+                x={bx + badgeW / 2}
+                y={by + badgeH / 2}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fontSize={badgeH * 0.62}
+                fontWeight="700"
+                fill="white"
+                style={{ userSelect: 'none' }}
+              >
+                {band}
+              </text>
+            </g>
+          );
+        })}
+      </g>
+      {/* 삭제 버튼 */}
       <g
         onPointerDown={(e) => {
           e.stopPropagation();

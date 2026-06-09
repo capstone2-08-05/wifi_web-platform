@@ -9,6 +9,39 @@ export type RfRunStatus =
   | 'failed'
   | string;
 
+/** Physical AP 의 2.4GHz / 5GHz radio band. */
+export type WifiBand = '2.4G' | '5G';
+export type CombinePolicy = 'max' | 'prefer_5g_then_2g' | 'weighted';
+
+/** Physical AP 내부의 단일 radio interface. 좌표는 parent PhysicalAp 를 사용한다. */
+export interface RadioInterface {
+  id: string;
+  band: WifiBand;
+  enabled: boolean;
+  frequency_mhz?: number;
+  frequency_ghz?: number;
+  channel?: number;
+  ssid?: string;
+  bssid?: string;
+  tx_power_dbm?: number;
+}
+
+/** 지도 위 AP 아이콘 1개 = Physical AP 1대 (장비 단위). */
+export interface PhysicalAp {
+  id: string;
+  name?: string;
+  x: number;
+  y: number;
+  z?: number;
+  movable?: boolean;
+  radios: RadioInterface[];
+}
+
+export interface BandSimulationParams {
+  bands: WifiBand[];
+  combine_policy?: CombinePolicy;
+}
+
 /** §13.1 시뮬 실행 백엔드. sagemaker(기본)=클라우드, local=로컬 ai_api(테스트용). */
 export type RfBackend = 'sagemaker' | 'local';
 
@@ -48,6 +81,10 @@ export interface RfRunCreate {
   backend?: RfBackend;
   /** Legacy 호환 (deprecated). */
   request_json?: Record<string, unknown>;
+  /** Physical AP + Radio Interface 구조. 있으면 access_points 보다 우선 처리. */
+  physical_aps?: PhysicalAp[];
+  /** band 별 시뮬 파라미터. 미지정 시 single 5G band 로 동작. */
+  band_simulation?: BandSimulationParams;
 }
 
 export interface RfRun {

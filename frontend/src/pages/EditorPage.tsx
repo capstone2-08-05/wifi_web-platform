@@ -15,6 +15,7 @@ import { useFloorplanJob } from '@/hooks/use-floorplan-job';
 import {
   useFloorVersions,
   usePromoteDraft,
+  useRescaleSceneVersion,
   useSceneVersion,
 } from '@/hooks/use-scene-version';
 import { useAssetDownloadUrl, useFloorAssets } from '@/hooks/use-assets';
@@ -45,6 +46,12 @@ import {
   type GeoJsonGeometry,
 } from '@/features/editor/geometry-utils';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
+import {
+  loadCachedScaleRatio,
+  saveCachedScaleRatio,
+  loadCachedRealWidth,
+  saveCachedRealWidth,
+} from '@/features/editor/floorplan-image-extent';
 import { toast } from '@/stores/toast-store';
 import type { DraftEntityKind } from '@/types/scene';
 import type { HttpError } from '@/api/client';
@@ -74,6 +81,7 @@ export default function EditorPage() {
   const promote = usePromoteDraft();
   const removeDraft = useDeleteSceneDraft();
   const rescaleSceneDraft = useRescaleSceneDraft();
+  const rescaleSceneVersion = useRescaleSceneVersion();
   const patchEntity = usePatchDraftEntity();
   const deleteEntity = useDeleteDraftEntity();
   const createEntity = useCreateDraftEntity();
@@ -166,9 +174,11 @@ export default function EditorPage() {
   const baseScene: SceneDraft | null = activeDraft ?? versionAsDraft;
   // 원본 도면 이미지(asset) — 캔버스 배경에 연하게 깔기 위해 가져옴.
   // 1순위: scene 의 source_asset_id (백엔드가 null 로 응답하는 경우 많음)
-  // 2순위: 층의 floorplan 자산 중 가장 최근 것 (fallback).
+  // 2순위: activeDraftSummary.source_asset_id — draft detail 로드 전 조기 확보 (list 응답에 포함)
+  // 3순위: 층의 floorplan 자산 중 가장 최근 것 (fallback).
   // Asset.storage_url 이 s3:// URI 라서 직접 못 쓰고, /download-url 로 presigned 받음.
-  const sourceAssetId = baseScene?.source_asset_id ?? null;
+  const sourceAssetId =
+    baseScene?.source_asset_id ?? activeDraftSummary?.source_asset_id ?? null;
   const allowUnversionedImageFallback = !!activeDraftSummary;
   const floorAssetsQuery = useFloorAssets(floorId, 'floorplan_image');
   const fallbackAsset = useMemo(() => {
@@ -200,7 +210,12 @@ export default function EditorPage() {
   const assetUrl = assetUrlQuery.data?.url ?? null;
   const usableAssetUrl =
     assetUrl && /^https?:\/\//i.test(assetUrl) ? assetUrl : null;
-  const backgroundImageUrl = usableAssetUrl ?? localImage ?? null;
+  // usableAssetUrl 이 CORS/PDF 등으로 로드 실패하면 localImage 로 전환.
+  const [assetUrlFailed, setAssetUrlFailed] = useState(false);
+  useEffect(() => { setAssetUrlFailed(false); }, [usableAssetUrl]);
+  const backgroundImageUrl =
+    (assetUrlFailed ? null : usableAssetUrl) ?? localImage ?? null;
+
   const editingScene: SceneDraft | null = baseScene;
   const resolvedSelected = useMemo<SelectedEntityResolved | null>(() => {
     const scene = editingScene;
@@ -306,7 +321,14 @@ export default function EditorPage() {
         });
       }
     }
-    const vars = { kind, id, body, silent: options?.silent };
+    // opening 이면 현재 엔티티의 opening_type 으로 토스트 레이블 결정.
+    let label: string | undefined;
+    if (kind === 'opening') {
+      const op = baseScene?.openings.find((o) => o.id === id);
+      const ot = op?.opening_type;
+      label = ot === 'door' ? '문' : ot === 'window' ? '창문' : '문·창';
+    }
+    const vars = { kind, id, body, silent: options?.silent, label };
     if (isVersionEditing) patchVersionEntity.mutate(vars);
     else patchEntity.mutate(vars);
   };
@@ -564,7 +586,7 @@ export default function EditorPage() {
     });
   };
 
-  // 벽 재질 변경
+  // 재질 변경 (벽/개구부/기둥 객체)
   const handleUpdateMaterial = (material: string) => {
     if (!selectedRef) return;
     if (selectedRef.kind === 'wall') {
@@ -573,9 +595,9 @@ export default function EditorPage() {
     }
     if (selectedRef.kind === 'opening' && baseScene) {
       const opening = baseScene.openings.find((o) => o.id === selectedRef.id);
-      const meta = (opening?.metadata_json ?? {}) as Record<string, unknown>;
+      const { material_label: _ml, ...meta } = (opening?.metadata_json ?? {}) as Record<string, unknown>;
       runPatch('opening', selectedRef.id, {
-        metadata_json: { ...meta, material_label: material },
+        metadata_json: { ...meta, material },
       });
       return;
     }
@@ -587,6 +609,55 @@ export default function EditorPage() {
         metadata_json: { ...meta, material_label: material },
       });
     }
+  };
+
+  // 선택된 벽들 재질 변경 (멀티셀렉트)
+  const handleUpdateSelectedWallMaterial = (material: string) => {
+    const wallRefs = selectedRefs.filter((r) => r.kind === 'wall');
+    wallRefs.forEach((r, i) => {
+      runPatch('wall', r.id, { material_label: material }, {
+        skipHistory: i > 0,
+        silent: i < wallRefs.length - 1,
+      });
+    });
+  };
+
+  // 모든 벽 재질 일괄 변경
+  const handleBulkUpdateWallMaterial = (material: string) => {
+    if (!baseScene) return;
+    const walls = baseScene.walls;
+    walls.forEach((w, i) => {
+      runPatch('wall', w.id, { material_label: material }, {
+        skipHistory: i > 0,
+        silent: i < walls.length - 1,
+      });
+    });
+  };
+
+  // 모든 문 재질 일괄 변경
+  const handleBulkUpdateDoorMaterial = (material: string) => {
+    if (!baseScene) return;
+    const doors = baseScene.openings.filter((o) => o.opening_type === 'door');
+    doors.forEach((op, i) => {
+      const { material_label: _ml, ...meta } = (op.metadata_json ?? {}) as Record<string, unknown>;
+      runPatch('opening', op.id, { metadata_json: { ...meta, material } }, {
+        skipHistory: i > 0,
+        silent: i < doors.length - 1,
+      });
+    });
+  };
+
+  // 모든 창문 재질 일괄 변경
+  const handleBulkUpdateWindowMaterial = (material: string) => {
+    if (!baseScene) return;
+    const windows = baseScene.openings.filter((o) => o.opening_type === 'window');
+    windows.forEach((op, i) => {
+      const { material_label: _ml, ...meta } = (op.metadata_json ?? {}) as Record<string, unknown>;
+      runPatch('opening', op.id, { metadata_json: { ...meta, material } }, {
+        skipHistory: i > 0,
+        silent: i < windows.length - 1,
+      });
+    });
   };
 
   // 벽 실측 길이 (m) 갱신 — metadata_json.dimension_match.user_meters 에 저장.
@@ -604,19 +675,11 @@ export default function EditorPage() {
 
   /**
    * 선택된 벽/문/창의 실측값(m)을 기준으로 도면 전체를 비례 스케일.
-   * - factor = targetMeters / 현재 도형 길이(centerline_geom 또는 line_geom).
-   * - 백엔드 POST /scene-drafts/{id}/rescale 단일 호출 — walls·openings·rooms·objects
-   *   geometry 와 종속 metadata(dimension_length, dimension_match, object size 등)
-   *   + summary.scale_ratio 까지 한 트랜잭션 안에서 ×factor.
-   * - 프론트가 N-PATCH 보내던 패턴을 1요청으로 통합 → 큰 도면에서 네트워크·캐시 폭주 방지.
+   * draft 모드: POST /scene-drafts/{id}/rescale
+   * version 모드: POST /scene-versions/{id}/rescale (동일 로직, 다른 엔드포인트)
    */
   const handleScaleAll = (targetMeters: number) => {
     if (!selectedRef || (selectedRef.kind !== 'wall' && selectedRef.kind !== 'opening')) return;
-    if (isVersionEditing) {
-      toast.error('Scale 보정은 Draft 모드에서만 가능합니다');
-      return;
-    }
-    if (!activeDraft) return;
     if (!Number.isFinite(targetMeters) || targetMeters <= 0) return;
 
     const geomLength = (g: GeoJsonGeometry): number => {
@@ -630,14 +693,14 @@ export default function EditorPage() {
       return len;
     };
 
-    // 소스 엔티티의 현재 길이로 factor 계산
+    // 소스 엔티티의 현재 길이로 factor 계산 — draft/version 공통으로 baseScene 사용.
     let currentLength: number | null = null;
     if (selectedRef.kind === 'wall') {
-      const wall = activeDraft.walls.find((w) => w.id === selectedRef.id);
+      const wall = baseScene?.walls.find((w) => w.id === selectedRef.id);
       const g = parseGeometry(wall?.centerline_geom);
       if (g?.type === 'LineString' && g.coordinates.length >= 2) currentLength = geomLength(g);
     } else {
-      const op = activeDraft.openings.find((o) => o.id === selectedRef.id);
+      const op = baseScene?.openings.find((o) => o.id === selectedRef.id);
       const g = parseGeometry(op?.line_geom);
       if (g?.type === 'LineString' && g.coordinates.length >= 2) {
         currentLength = geomLength(g);
@@ -668,17 +731,42 @@ export default function EditorPage() {
     );
     if (!ok) return;
 
-    rescaleSceneDraft.mutate(
-      { id: activeDraft.id, factor, scaleSource: 'manual_rescale' },
-      {
-        onSuccess: () => {
-          toast.info(
-            '도면 전체를 재스케일했습니다',
-            `${factor.toFixed(3)}× — ${currentLength.toFixed(2)} m → ${targetMeters.toFixed(2)} m`,
-          );
+    const successMsg = () =>
+      toast.info(
+        '도면 전체를 재스케일했습니다',
+        `${factor.toFixed(3)}× — ${currentLength!.toFixed(2)} m → ${targetMeters.toFixed(2)} m`,
+      );
+
+    if (isVersionEditing) {
+      const versionId = versionDetailQuery.data?.id;
+      if (!versionId) return;
+      const vFloorId = versionDetailQuery.data?.floor_id ?? null;
+      const vAssetId = versionDetailQuery.data?.source_asset_id ?? null;
+      rescaleSceneVersion.mutate(
+        { id: versionId, factor, scaleSource: 'manual_rescale' },
+        {
+          onSuccess: () => {
+            // versionToDraftShape 가 summary_json:{} 를 반환하므로 imageExtent 계산이
+            // localStorage 캐시에 의존한다. 캐시 갱신 없이는 배경 이미지 크기가 구 scale
+            // 로 고정돼 벡터와 어긋남 → factor 를 곱해 직접 갱신.
+            for (const key of [vAssetId, vFloorId]) {
+              if (!key) continue;
+              const oldRatio = loadCachedScaleRatio(key);
+              if (oldRatio != null) saveCachedScaleRatio(key, oldRatio * factor);
+              const oldW = loadCachedRealWidth(key);
+              if (oldW != null) saveCachedRealWidth(key, oldW * factor);
+            }
+            successMsg();
+          },
         },
-      },
-    );
+      );
+    } else {
+      if (!activeDraft) return;
+      rescaleSceneDraft.mutate(
+        { id: activeDraft.id, factor, scaleSource: 'manual_rescale' },
+        { onSuccess: successMsg },
+      );
+    }
   };
 
   // 객체 종류 변경
@@ -921,6 +1009,7 @@ export default function EditorPage() {
                 tool={tool}
                 onCreate={handleCreate}
                 backgroundImageUrl={backgroundImageUrl}
+                onImageError={() => setAssetUrlFailed(true)}
               />
             ) : currentVersion ? (
               // 버전이 선택돼있고 detail 로딩 중 — 파일 업로드 화면 대신 스피너.
@@ -1035,6 +1124,14 @@ export default function EditorPage() {
         onScaleAll={handleScaleAll}
         onUpdateObjectPosition={handleUpdateObjectPosition}
         onUpdateObjectSize={handleResizeObject}
+        onUpdateSelectedMaterial={selectedRefs.some((r) => r.kind === 'wall') ? handleUpdateSelectedWallMaterial : undefined}
+        selectedWallCount={selectedRefs.filter((r) => r.kind === 'wall').length}
+        onBulkUpdateWallMaterial={baseScene ? handleBulkUpdateWallMaterial : undefined}
+        onBulkUpdateDoorMaterial={baseScene ? handleBulkUpdateDoorMaterial : undefined}
+        onBulkUpdateWindowMaterial={baseScene ? handleBulkUpdateWindowMaterial : undefined}
+        wallCount={baseScene?.walls.length ?? 0}
+        doorCount={baseScene?.openings.filter((o) => o.opening_type === 'door').length ?? 0}
+        windowCount={baseScene?.openings.filter((o) => o.opening_type === 'window').length ?? 0}
         isSaving={patchEntity.isPending || patchVersionEntity.isPending}
         isDeleting={deleteEntity.isPending || deleteVersionEntity.isPending}
       />

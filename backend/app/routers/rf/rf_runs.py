@@ -56,6 +56,19 @@ async def create_rf_run(
     return await rf_run_service.create_rf_run(db, payload=payload, user=current_user)
 
 
+@router.delete(
+    "/{rf_run_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="RF Run 삭제",
+)
+def delete_rf_run(
+    rf_run_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    rf_run_service.delete_rf_run(db, rf_run_id=rf_run_id, user=current_user)
+
+
 @router.get(
     "/{rf_run_id}",
     response_model=RfRunResponse,

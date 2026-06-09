@@ -25,6 +25,9 @@ export const rfRunApi = {
     api
       .get<Paginated<RfRun>>(`/floors/${floorId}/rf-runs`, { params })
       .then((r) => r.data),
+
+  // DELETE /rf-runs/{rf_run_id}
+  delete: (id: UUID) => api.delete(`/rf-runs/${id}`),
 };
 
 export const rfJobApi = {

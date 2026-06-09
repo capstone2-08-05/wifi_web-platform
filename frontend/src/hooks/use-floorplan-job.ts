@@ -41,6 +41,7 @@ export function useFloorplanJob(jobId: UUID | null) {
     if (isJobSucceeded(data.status)) {
       settledRef.current = jobId;
       qc.invalidateQueries({ queryKey: ['scene-drafts'] });
+      qc.invalidateQueries({ queryKey: ['floor-assets'] });
       toast.success('도면 분석 완료', '결과를 확인하고 확정해주세요.');
     } else if (isJobFailed(data.status)) {
       settledRef.current = jobId;

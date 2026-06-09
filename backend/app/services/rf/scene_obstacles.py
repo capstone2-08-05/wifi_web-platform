@@ -11,17 +11,43 @@ DEFAULT_COLUMN_SIZE_M = 0.6
 MIN_COLUMN_SIZE_M = 0.05
 
 MATERIAL_ALIASES: dict[str, str] = {
+    # English codes / synonyms
     "drywall": "plasterboard",
     "plywood": "wood",
     "marble": "concrete",
+    "stone": "concrete",
+    "cement": "concrete",
     "glass": "glass",
     "wood": "wood",
     "concrete": "concrete",
     "plastic": "plastic",
-    "\uc720\ub9ac": "glass",
-    "\ub098\ubb34": "wood",
-    "\ucf58\ud06c\ub9ac\ud2b8": "concrete",
-    "\ud50c\ub77c\uc2a4\ud2f1": "plastic",
+    "brick": "brick",
+    "metal": "metal",
+    "steel": "metal",
+    "aluminum": "metal",
+    "aluminium": "metal",
+    # \ud55c\uad6d\uc5b4 \ub3d9\uc758\uc5b4 (\ud504\ub860\ud2b8 KO_ALIASES \uc640 \ub3d9\uae30)
+    "\ub098\ubb34": "wood",       # \ub098\ubb34
+    "\ubaa9\uc7ac": "wood",       # \ubaa9\uc7ac
+    "\ud569\ud310": "wood",       # \ud569\ud310
+    "\uc6d0\ubaa9": "wood",       # \uc6d0\ubaa9
+    "\ucf58\ud06c\ub9ac\ud2b8": "concrete",  # \ucf58\ud06c\ub9ac\ud2b8
+    "\uc2dc\uba58\ud2b8": "concrete",         # \uc2dc\uba58\ud2b8
+    "\uc11d\uc7ac": "concrete",               # \uc11d\uc7ac
+    "\ub3cc": "concrete",                     # \ub3cc
+    "\ub300\ub9ac\uc11d": "concrete",         # \ub300\ub9ac\uc11d
+    "\ubcbd\ub3cc": "brick",                  # \ubcbd\ub3cc
+    "\uc801\ubcbd\ub3cc": "brick",            # \uc801\ubcbd\ub3cc
+    "\uc11d\uace0\ubcf4\ub4dc": "plasterboard",  # \uc11d\uace0\ubcf4\ub4dc
+    "\uc11d\uace0": "plasterboard",               # \uc11d\uace0
+    "\ub0b4\uc7a5\uc7ac": "plasterboard",         # \ub0b4\uc7a5\uc7ac
+    "\uc720\ub9ac": "glass",      # \uc720\ub9ac
+    "\uae08\uc18d": "metal",      # \uae08\uc18d
+    "\ucca0": "metal",            # \ucca0
+    "\uac15\ucca0": "metal",      # \uac15\ucca0
+    "\uc54c\ub8e8\ubbf8\ub284": "metal",  # \uc54c\ub8e8\ubbf8\ub284
+    "\uc2a4\ud2f8": "metal",      # \uc2a4\ud2f8
+    "\ud50c\ub77c\uc2a4\ud2f1": "plastic",  # \ud50c\ub77c\uc2a4\ud2f1
 }
 
 

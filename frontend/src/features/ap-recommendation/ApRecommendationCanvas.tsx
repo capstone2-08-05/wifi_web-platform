@@ -1,13 +1,15 @@
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { parseGeometry, type Coord } from '@/features/editor/geometry-utils';
 import {
   deriveImageExtent,
   useImageNaturalDimensions,
 } from '@/features/editor/floorplan-image-extent';
 import type { ApRecommendationResult } from '@/types/ap-recommendation';
+import type { PhysicalAp, RadioInterface } from '@/types/rf';
 import type { DraftObject, DraftOpening, DraftWall, SceneVersion } from '@/types/scene';
 import { cn } from '@/lib/utils';
 import { dbmToHeatmapColor } from '@/lib/rssi-colormap';
+import { DbmColorBar } from '@/features/simulation/DbmColorBar';
 import {
   clampCoord,
   clampMeterBBox,
@@ -25,7 +27,10 @@ export interface CanvasExistingAp {
   id: string;
   x_m: number;
   y_m: number;
+  z_m?: number;
   label?: string;
+  radios?: RadioInterface[];
+  movable?: boolean;
 }
 
 const RECOMMEND_RADIUS_M = 0.28;
@@ -69,6 +74,9 @@ interface Props {
   activeAreaType: ApRecommendationAreaType;
   onAreasChange: (areas: ApRecommendationArea[]) => void;
   recommendations: ApRecommendationResult[];
+  recommendationMode?: 'add' | 'replace' | 'relocate_all' | 'relocate_selected';
+  selectedReplacementIds?: string[];
+  movableApIds?: string[];
   selectedRecommendationRank: number | null;
   heatmapMode?: 'prediction' | 'measurement';
   measurementHeatmap?: {
@@ -126,10 +134,14 @@ function computeViewBox(
 export function ApRecommendationCanvas({
   sceneVersion,
   backgroundImageUrl,
+  existingAps,
   selectedAreas,
   activeAreaType,
   onAreasChange,
   recommendations,
+  recommendationMode = 'add',
+  selectedReplacementIds = [],
+  movableApIds = [],
   selectedRecommendationRank,
   heatmapMode = 'prediction',
   measurementHeatmap,
@@ -137,6 +149,7 @@ export function ApRecommendationCanvas({
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<{ start: Coord; current: Coord } | null>(null);
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; dbm: number } | null>(null);
 
   const imageDims = useImageNaturalDimensions(backgroundImageUrl ?? null);
   const imageExtent = useMemo(
@@ -238,6 +251,58 @@ export function ApRecommendationCanvas({
     onAreasChange(selectedAreas.filter((area) => area.id !== id));
   };
 
+  const handleSvgMouseMove = useCallback(
+    (e: React.MouseEvent<SVGSVGElement>) => {
+      const svg = svgRef.current;
+      if (!svg) return;
+      const pt = svg.createSVGPoint();
+      pt.x = e.clientX;
+      pt.y = e.clientY;
+      const ctm = svg.getScreenCTM();
+      if (!ctm) return;
+      const sp = pt.matrixTransform(ctm.inverse());
+
+      if (heatmapMode === 'measurement' && measurementHeatmap?.valuesDbm && measurementHeatmap.bounds) {
+        const { min_x, min_y, max_x, max_y } = measurementHeatmap.bounds;
+        const rows = measurementHeatmap.valuesDbm.length;
+        const cols = measurementHeatmap.valuesDbm[0]?.length ?? 0;
+        if (rows > 0 && cols > 0) {
+          const cellW = (max_x - min_x) / cols;
+          const cellH = (max_y - min_y) / rows;
+          const col = Math.floor((sp.x - min_x) / cellW);
+          const row = Math.floor((sp.y - min_y) / cellH);
+          if (row >= 0 && row < rows && col >= 0 && col < cols) {
+            const dbm = measurementHeatmap.valuesDbm[row][col];
+            if (dbm != null && Number.isFinite(dbm)) {
+              setTooltip({ x: e.clientX, y: e.clientY, dbm });
+              return;
+            }
+          }
+        }
+      } else if (heatmapMode === 'prediction' && predictionCells) {
+        const half = Math.max(predictionCells.cellW, predictionCells.cellH) * 0.6;
+        let best: { dist: number; dbm: number } | null = null;
+        for (const pt2 of predictionCells.points) {
+          if (Math.abs(pt2.x - sp.x) < half && Math.abs(pt2.y - sp.y) < half) {
+            const dist = Math.hypot(pt2.x - sp.x, pt2.y - sp.y);
+            if (!best || dist < best.dist) best = { dist, dbm: pt2.rssi_dbm };
+          }
+        }
+        if (best) { setTooltip({ x: e.clientX, y: e.clientY, dbm: best.dbm }); return; }
+      }
+      setTooltip(null);
+    },
+    [heatmapMode, measurementHeatmap, predictionCells],
+  );
+
+  const heatmapRssiRange = heatmapMode === 'measurement'
+    ? (measurementHeatmap?.rssiRange ?? null)
+    : predictionCells?.range ?? null;
+  const showLegend = heatmapRssiRange !== null && (
+    (heatmapMode === 'measurement' && !!measurementHeatmap) ||
+    (heatmapMode === 'prediction' && !!predictionCells)
+  );
+
   return (
     <div className="relative h-full w-full overflow-hidden bg-[#f8fafc] [background-image:radial-gradient(circle,oklch(0.92_0_0)_1px,transparent_1px)] bg-size-[18px_18px] bg-position-[0_0]">
       <svg
@@ -253,6 +318,8 @@ export function ApRecommendationCanvas({
         onPointerMove={handlePointerMove}
         onPointerUp={finishDrag}
         onPointerCancel={finishDrag}
+        onMouseMove={handleSvgMouseMove}
+        onMouseLeave={() => setTooltip(null)}
       >
         <defs>
           <clipPath id="ap-rec-scene-clip">
@@ -276,7 +343,6 @@ export function ApRecommendationCanvas({
               preserveAspectRatio={imageExtent ? 'none' : 'xMidYMid meet'}
               opacity={0.35}
               pointerEvents="none"
-              crossOrigin="anonymous"
             />
           )}
 
@@ -299,13 +365,13 @@ export function ApRecommendationCanvas({
             </g>
           )}
 
-          {heatmapMode === 'measurement' && measurementHeatmap?.valuesDbm ? (
+          {heatmapMode === 'measurement' && measurementHeatmap?.valuesDbm && measurementHeatmap.bounds ? (
             <g opacity={0.65} pointerEvents="none">
               {measurementHeatmap.valuesDbm.map((row, rowIdx) =>
                 row.map((value, colIdx) => {
                   const rows = measurementHeatmap.valuesDbm?.length ?? 1;
                   const cols = row.length || 1;
-                  const bounds = measurementHeatmap.bounds;
+                  const bounds = measurementHeatmap.bounds!;
                   const cellW = (bounds.max_x - bounds.min_x) / cols;
                   const cellH = (bounds.max_y - bounds.min_y) / rows;
                   const range = measurementHeatmap.rssiRange ?? { min: -90, max: -30 };
@@ -322,7 +388,7 @@ export function ApRecommendationCanvas({
                 }),
               )}
             </g>
-          ) : heatmapMode === 'measurement' && measurementHeatmap?.url && (
+          ) : heatmapMode === 'measurement' && measurementHeatmap?.url && measurementHeatmap.bounds && (
             <image
               href={measurementHeatmap.url}
               xlinkHref={measurementHeatmap.url}
@@ -346,14 +412,32 @@ export function ApRecommendationCanvas({
             <ObjectShape key={o.id} object={o} />
           ))}
 
-          {recommendations.map((rec) => (
-            <RecommendationMarker
-              key={rec.rank}
-              rec={rec}
-              selected={selectedRecommendationRank === rec.rank}
+          {existingAps.map((ap) => (
+            <ExistingApMarker
+              key={ap.id}
+              ap={ap}
+              state={getExistingApState(ap.id, recommendationMode, selectedReplacementIds, movableApIds)}
               labelFontM={labelFontM}
             />
           ))}
+
+          {[...recommendations]
+            .sort((a, b) => {
+              // 선택된 순위를 맨 위에 (마지막 렌더 = SVG 최상단)
+              if (a.rank === selectedRecommendationRank) return 1;
+              if (b.rank === selectedRecommendationRank) return -1;
+              // 나머지는 역순 (낮은 순위일수록 위에 — 1순위가 가장 마지막)
+              return b.rank - a.rank;
+            })
+            .map((rec) => (
+              <RecommendationMarker
+                key={rec.rank}
+                rec={rec}
+                selected={selectedRecommendationRank === rec.rank}
+                labelFontM={labelFontM}
+                mode={recommendationMode}
+              />
+            ))}
         </g>
 
         {/* 선택 영역 — clamp된 좌표, clipPath 밖(배지가 상단에서 잘리지 않도록) */}
@@ -441,6 +525,28 @@ export function ApRecommendationCanvas({
           )}
         </g>
       </svg>
+
+      {/* 색 범례 — 히트맵이 보일 때만 표시 */}
+      {showLegend && heatmapRssiRange && (
+        <div className="pointer-events-none absolute left-2 top-2 z-10 w-52">
+          <DbmColorBar
+            vmin={heatmapRssiRange.min}
+            vmax={heatmapRssiRange.max}
+            label={heatmapMode === 'measurement' ? '실측/보정 신호' : '예측 신호'}
+            className="pointer-events-auto"
+          />
+        </div>
+      )}
+
+      {/* 마우스 호버 툴팁 */}
+      {tooltip && (
+        <div
+          className="pointer-events-none fixed z-50 rounded-md bg-slate-800/90 px-2 py-1 text-[11px] font-medium text-white shadow-lg"
+          style={{ left: tooltip.x + 14, top: tooltip.y - 28 }}
+        >
+          {tooltip.dbm.toFixed(1)} dBm
+        </div>
+      )}
     </div>
   );
 }
@@ -537,6 +643,94 @@ function ExistingApMarker({ ap }: { ap: CanvasExistingAp }) {
 }
 */
 
+type ExistingApMarkerState = 'current' | 'fixed' | 'movable' | 'replace-target';
+
+function getExistingApState(
+  apId: string,
+  mode: 'add' | 'replace' | 'relocate_all' | 'relocate_selected',
+  replacementIds: string[],
+  movableIds: string[],
+): ExistingApMarkerState {
+  if (mode === 'replace' && replacementIds.includes(apId)) return 'replace-target';
+  if (mode === 'relocate_all') return 'movable';
+  if (mode === 'relocate_selected') return movableIds.includes(apId) ? 'movable' : 'fixed';
+  return 'current';
+}
+
+function ExistingApMarker({
+  ap,
+  state,
+  labelFontM,
+}: {
+  ap: CanvasExistingAp;
+  state: ExistingApMarkerState;
+  labelFontM: number;
+}) {
+  const r = 0.22;
+  const label = ap.label ?? ap.id.toUpperCase();
+  const styles: Record<ExistingApMarkerState, { fill: string; stroke: string; badge: string }> = {
+    current: { fill: 'oklch(0.48 0.12 250)', stroke: 'white', badge: '' },
+    fixed: { fill: 'oklch(0.42 0.02 250)', stroke: 'oklch(0.85 0.02 250)', badge: 'L' },
+    movable: { fill: 'oklch(0.62 0.16 45)', stroke: 'white', badge: 'M' },
+    'replace-target': { fill: 'oklch(0.58 0.2 25)', stroke: 'white', badge: 'R' },
+  };
+  const style = styles[state];
+  return (
+    <g pointerEvents="none">
+      <circle
+        cx={ap.x_m}
+        cy={ap.y_m}
+        r={r}
+        fill={style.fill}
+        stroke={style.stroke}
+        strokeWidth="2"
+        vectorEffect="non-scaling-stroke"
+        opacity={state === 'current' ? 0.85 : 0.95}
+      />
+      {style.badge && (
+        <g>
+          <circle
+            cx={ap.x_m + r * 0.72}
+            cy={ap.y_m - r * 0.72}
+            r={r * 0.48}
+            fill="white"
+            stroke={style.fill}
+            strokeWidth="1.5"
+            vectorEffect="non-scaling-stroke"
+          />
+          <text
+            x={ap.x_m + r * 0.72}
+            y={ap.y_m - r * 0.72}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            fontSize={Math.max(labelFontM * 0.72, r * 0.54)}
+            fontWeight="800"
+            fill={style.fill}
+            style={{ userSelect: 'none' }}
+          >
+            {style.badge}
+          </text>
+        </g>
+      )}
+      <text
+        x={ap.x_m}
+        y={ap.y_m + r + labelFontM * 0.8}
+        textAnchor="middle"
+        dominantBaseline="middle"
+        fontSize={labelFontM * 0.92}
+        fontWeight="600"
+        fill="oklch(0.25 0.04 240)"
+        stroke="white"
+        strokeWidth={labelFontM * 0.12}
+        paintOrder="stroke fill"
+        style={{ userSelect: 'none' }}
+      >
+        {label}
+      </text>
+    </g>
+  );
+}
+
 function ObjectShape({ object }: { object: DraftObject }) {
   const g = parseGeometry(object.point_geom);
   if (g?.type !== 'Point') return null;
@@ -577,53 +771,121 @@ function RecommendationMarker({
   rec,
   selected,
   labelFontM,
+  mode,
 }: {
   rec: ApRecommendationResult;
   selected: boolean;
   labelFontM: number;
+  mode: 'add' | 'replace' | 'relocate_all' | 'relocate_selected';
 }) {
   const r = RECOMMEND_RADIUS_M;
-  const fill = selected ? 'oklch(0.62 0.19 145)' : 'oklch(0.72 0.19 145)';
+
+  // 순위별 색상 — 선택 시 진하게, 비선택 시 연하게
+  const RANK_COLORS: Record<number, { base: string; dim: string; label: string }> = {
+    1: { base: 'oklch(0.55 0.20 145)', dim: 'oklch(0.72 0.18 145)', label: 'oklch(0.28 0.10 145)' },  // 초록
+    2: { base: 'oklch(0.55 0.20 260)', dim: 'oklch(0.72 0.18 260)', label: 'oklch(0.28 0.10 260)' },  // 파랑
+    3: { base: 'oklch(0.55 0.20 50)',  dim: 'oklch(0.72 0.18 50)',  label: 'oklch(0.28 0.10 50)'  },  // 주황
+  };
+  const color = RANK_COLORS[rec.rank] ?? RANK_COLORS[1];
+  const fill = selected ? color.base : color.dim;
+  const labelColor = color.label;
+
+  // 멀티 AP일 때 ap_positions 전체 표시, 단일 AP면 recommended_x/y 사용
+  const positions = getRecommendationPositions(rec);
+  const showMoves = mode === 'replace' || mode === 'relocate_all' || mode === 'relocate_selected';
+
   return (
     <g pointerEvents="none">
-      <circle
-        cx={rec.recommended_x}
-        cy={rec.recommended_y}
-        r={r}
-        fill={fill}
-        stroke="white"
-        strokeWidth="2"
-        vectorEffect="non-scaling-stroke"
-      />
-      <text
-        x={rec.recommended_x}
-        y={rec.recommended_y}
-        textAnchor="middle"
-        dominantBaseline="middle"
-        fontSize={Math.max(r * 0.75, labelFontM * 0.85)}
-        fontWeight="700"
-        fill="white"
-        style={{ userSelect: 'none' }}
-      >
-        {rec.rank}
-      </text>
-      <text
-        x={rec.recommended_x}
-        y={rec.recommended_y + r + labelFontM * 1.05}
-        textAnchor="middle"
-        dominantBaseline="middle"
-        fontSize={labelFontM}
-        fontWeight="700"
-        fill="oklch(0.28 0.1 145)"
-        stroke="white"
-        strokeWidth={labelFontM * 0.12}
-        paintOrder="stroke fill"
-        style={{ userSelect: 'none' }}
-      >
-        추천 {rec.rank}
-      </text>
+      {showMoves &&
+        (rec.relocation_moves ?? []).map((move) => (
+          <g key={`${move.ap_id}-${move.to_x}-${move.to_y}`}>
+            <line
+              x1={move.from_x}
+              y1={move.from_y}
+              x2={move.to_x}
+              y2={move.to_y}
+              stroke={selected ? 'oklch(0.55 0.2 145)' : 'oklch(0.62 0.16 45)'}
+              strokeWidth="2"
+              strokeDasharray="5 4"
+              vectorEffect="non-scaling-stroke"
+            />
+            <circle
+              cx={move.from_x}
+              cy={move.from_y}
+              r={r * 0.5}
+              fill="white"
+              stroke="oklch(0.62 0.16 45)"
+              strokeWidth="1.5"
+              vectorEffect="non-scaling-stroke"
+            />
+          </g>
+        ))}
+      {positions.map((pos) => (
+        <g key={`${pos.id ?? pos.index}-${pos.x}-${pos.y}`}>
+          <circle
+            cx={pos.x}
+            cy={pos.y}
+            r={r}
+            fill={fill}
+            stroke="white"
+            strokeWidth="2"
+            vectorEffect="non-scaling-stroke"
+          />
+          <text
+            x={pos.x}
+            y={pos.y}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            fontSize={Math.max(r * 0.75, labelFontM * 0.85)}
+            fontWeight="700"
+            fill="white"
+            style={{ userSelect: 'none' }}
+          >
+            {positions.length > 1 ? `${rec.rank}-${pos.index}` : rec.rank}
+          </text>
+          <text
+            x={pos.x}
+            y={pos.y + r + labelFontM * 1.05}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            fontSize={labelFontM}
+            fontWeight="700"
+            fill={labelColor}
+            stroke="white"
+            strokeWidth={labelFontM * 0.12}
+            paintOrder="stroke fill"
+            style={{ userSelect: 'none' }}
+          >
+            {positions.length > 1 ? `추천${rec.rank} 공유기${pos.index}` : `추천 ${rec.rank}`}
+          </text>
+        </g>
+      ))}
     </g>
   );
+}
+
+function getRecommendationPositions(rec: ApRecommendationResult): Array<{
+  x: number;
+  y: number;
+  index: number;
+  id?: string;
+}> {
+  type RecommendationPosition = { x: number; y: number; index: number; id?: string };
+  const finalAps = (rec.final_aps ?? rec.recommended_aps ?? []) as Array<
+    Partial<PhysicalAp> & { x?: number; y?: number; x_m?: number; y_m?: number }
+  >;
+  const fromFinal: RecommendationPosition[] = [];
+  finalAps.forEach((ap, idx) => {
+    const x = Number(ap.x ?? ap.x_m);
+    const y = Number(ap.y ?? ap.y_m);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    fromFinal.push({ x, y, index: idx + 1, id: ap.id });
+  });
+  if (fromFinal.length > 0) return fromFinal;
+  if (rec.ap_positions && rec.ap_positions.length > 0) {
+    return rec.ap_positions.map((p) => ({ x: p.x, y: p.y, index: p.ap_index }));
+  }
+  return [{ x: rec.recommended_x, y: rec.recommended_y, index: 1 }];
 }
 
 function buildPredictionCells(points: ApRecommendationResult['prediction_points']) {

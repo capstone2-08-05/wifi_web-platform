@@ -3,6 +3,7 @@ import { parseGeometry } from '@/features/editor/geometry-utils';
 import { loadCachedViewBox } from '@/features/editor/viewbox-cache';
 import {
   deriveImageExtent,
+  inferImageExtentFromWallBounds,
   useImageNaturalDimensions,
 } from '@/features/editor/floorplan-image-extent';
 import type {
@@ -159,21 +160,29 @@ export function MeasurementCanvas({
   // 배경 이미지를 editor 와 동일한 좌표계로 배치하기 위해 imageExtent (미터) 계산.
   // image 는 (0,0)~(extent.w, extent.h) 에 그림 → 벽과 정확히 정렬.
   const imageDims = useImageNaturalDimensions(backgroundImageUrl ?? null);
-  const imageExtent = useMemo(
-    () =>
-      deriveImageExtent(imageDims, {
-        sourceAssetId: sceneVersion?.source_asset_id ?? null,
-        floorId: sceneVersion?.floor_id ?? null,
-      }),
-    [imageDims, sceneVersion?.source_asset_id, sceneVersion?.floor_id],
-  );
+  const imageExtent = useMemo(() => {
+    // 1순위: localStorage 캐시 — rescale 시에도 EditorPage 가 factor 배 갱신하므로 정확.
+    const fromCache = deriveImageExtent(imageDims, {
+      sourceAssetId: sceneVersion?.source_asset_id ?? null,
+      floorId: sceneVersion?.floor_id ?? null,
+    });
+    if (fromCache) return fromCache;
+    // 2순위: 도형 bounds 역추정 — 캐시도 없을 때 마지막 fallback.
+    const b = emptyBounds();
+    for (const wall of sceneVersion?.walls ?? []) {
+      const g = parseGeometry(wall.centerline_geom);
+      if (g?.type === 'LineString') for (const [x, y] of g.coordinates) extendBounds(b, x, y);
+    }
+    return inferImageExtentFromWallBounds(imageDims, isFinite(b.minX) ? b : null);
+  }, [imageDims, sceneVersion?.source_asset_id, sceneVersion?.floor_id, sceneVersion?.walls]);
 
-  // viewBox: editor/simulation 과 같은 floor 캐시를 우선 사용해 페이지 간 도면 크기를 고정.
-  // 캐시가 없을 때만 image+shape union 으로 계산.
+  // imageExtent 가 있으면 항상 image+shape union 으로 계산 (editor 와 동일한 로직).
+  // 캐시는 imageExtent 없이 저장된 경우 도면 이미지가 viewBox 밖으로 나가 clipPath 에
+  // 잘리는 문제를 일으킬 수 있으므로, imageExtent 가 확보된 이후엔 캐시를 무시한다.
   const vb = useMemo(() => {
+    if (imageExtent) return computeViewBox(sceneVersion, imageExtent);
     const cached = loadCachedViewBox(sceneVersion?.floor_id ?? null);
     if (cached) return cached;
-    if (imageExtent) return computeViewBox(sceneVersion, imageExtent);
     return computeViewBox(sceneVersion, null);
   }, [sceneVersion, imageExtent]);
   const sortedPoints = useMemo(
@@ -303,7 +312,6 @@ export function MeasurementCanvas({
             preserveAspectRatio={imageExtent ? 'none' : 'xMidYMid meet'}
             opacity={0.35}
             pointerEvents="none"
-            crossOrigin="anonymous"
             onError={() => {
               console.warn(
                 '[MeasurementCanvas] 배경 도면 이미지 로드 실패:',
