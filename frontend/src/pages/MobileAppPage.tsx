@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQueries, useQuery } from '@tanstack/react-query';
-import { Ban, CheckCircle2, Loader2, MapPin, Sparkles, Target } from 'lucide-react';
+import { Ban, CheckCircle2, Info, Loader2, MapPin, MousePointer2, Sparkles, Target } from 'lucide-react';
 import type { HttpError } from '@/api/client';
 import { calibrationRunApi } from '@/api/calibration-run';
 import { rfRunApi } from '@/api/rf-run';
@@ -737,7 +737,10 @@ export default function MobileAppPage() {
     versionDetailQuery.isLoading ||
     (floorId != null && !sceneVersionId && !versionsQuery.isError);
 
-  const statusHint = getStatusHint(pageStatus, pageError, savedRank);
+  const hasCandidateArea = validRecommendationAreas(selectedAreas).some((a) => a.type === 'candidate');
+  const statusHint = hasCandidateArea
+    ? getStatusHint(pageStatus, pageError, savedRank)
+    : getStatusHint('idle', null, null);
 
   return (
     <div className="flex h-full flex-col overflow-auto bg-[#F8FAFC]">
@@ -934,9 +937,46 @@ export default function MobileAppPage() {
       </header>
 
       {/* 본문 — lg: 캔버스(좌) + 추천 패널(우), md↓ 단일 컬럼 */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 px-6 pb-6 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-6 lg:px-8">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 px-6 pb-8 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-6 lg:px-8">
         {/* 좌측: 캔버스 + 진행 단계 */}
         <div className="flex min-h-0 flex-col gap-4">
+          {sceneVersionId && statusHint && pageStatus !== 'loading' && (
+            <div
+              key={pageStatus}
+              style={{ animation: 'hint-enter 1.5s cubic-bezier(0.16, 1, 0.3, 1) both' }}
+              className={cn(
+                'flex items-start gap-3 rounded-lg border px-4 py-3',
+                statusHint.variant === 'success' && 'border-emerald-200 bg-emerald-50/60',
+                statusHint.variant === 'error' && 'border-red-200 bg-red-50/60',
+                statusHint.variant === 'info' && 'border-blue-200 bg-blue-50/50',
+              )}
+            >
+              <div className="mt-0.5 shrink-0">
+                {statusHint.variant === 'info' && pageStatus === 'idle'
+                  ? <MousePointer2 className="h-4 w-4 text-blue-500" />
+                  : statusHint.variant === 'success'
+                    ? <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                    : statusHint.variant === 'error'
+                      ? <Ban className="h-4 w-4 text-red-500" />
+                      : <Info className="h-4 w-4 text-blue-500" />
+                }
+              </div>
+              <div className="min-w-0">
+                <p className={cn(
+                  'text-xs font-semibold',
+                  statusHint.variant === 'success' && 'text-emerald-700',
+                  statusHint.variant === 'error' && 'text-red-700',
+                  statusHint.variant === 'info' && 'text-blue-700',
+                )}>
+                  {statusHint.title}
+                </p>
+                {statusHint.desc && (
+                  <p className="mt-0.5 text-xs text-muted-foreground">{statusHint.desc}</p>
+                )}
+              </div>
+            </div>
+          )}
+
           <div
             className={cn(
               'relative flex min-h-[min(72vh,46rem)] flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-sm lg:min-h-[min(78vh,54rem)]',
@@ -1003,16 +1043,10 @@ export default function MobileAppPage() {
             )}
           </div>
 
-          {sceneVersionId && statusHint && pageStatus !== 'loading' && (
-            <p className="rounded-lg border border-[#E5EAF2] bg-white px-4 py-2.5 text-center text-xs text-muted-foreground shadow-sm">
-              {statusHint}
-            </p>
-          )}
-
           {/* 진행 단계 카드 — 캔버스 아래 */}
           <div
             className={cn(
-              'shrink-0 rounded-2xl bg-white px-6 py-5 shadow-sm',
+              'shrink-0 rounded-2xl bg-white px-6 py-5 shadow-sm mb-6',
               CARD_BORDER,
               'border',
             )}
@@ -1029,6 +1063,7 @@ export default function MobileAppPage() {
               <ProgressStepper activeStep={activeStep} pageStatus={pageStatus} />
             </div>
           </div>
+          <div className="h-1.5 shrink-0" />
         </div>
 
         {/* 우측: 추천 결과 패널 (모바일에서는 하단 카드) */}
@@ -1077,18 +1112,29 @@ export default function MobileAppPage() {
 
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
             {recommendations.length === 0 ? (
-              <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-2 px-4 text-center">
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-muted">
-                  <Sparkles className="h-5 w-5 text-muted-foreground" />
+              <div style={{ animation: 'hint-enter 1.5s cubic-bezier(0.16, 1, 0.3, 1) both' }} className="flex h-full min-h-[200px] flex-col items-center justify-center gap-4 px-6 text-center">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-50">
+                  <Sparkles className="h-5 w-5 text-blue-500" />
                 </div>
-                <p className="text-sm font-medium text-foreground/80">
-                  {pageStatus === 'loading'
-                    ? '최적 위치를 계산하고 있습니다…'
-                    : '추천 결과가 여기에 표시됩니다'}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  도면에서 설치 가능 영역을 먼저 지정한 뒤 추천을 실행해 주세요.
-                </p>
+                <div className="space-y-1.5">
+                  <p className="text-sm font-semibold text-slate-800">
+                    {pageStatus === 'loading'
+                      ? '최적 위치를 계산하고 있습니다…'
+                      : '추천 결과가 여기에 표시됩니다'}
+                  </p>
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    {pageStatus === 'loading'
+                      ? '잠시만 기다려 주세요.'
+                      : <>도면에서 설치 가능 영역을 지정한 뒤,<br />상단의 '추천 위치 찾기'를 실행해 주세요.</>}
+                  </p>
+                </div>
+                {pageStatus !== 'loading' && (
+                  <div className="rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2">
+                    <p className="text-[11px] text-blue-600">
+                      설치 가능 영역을 먼저 도면에 지정해 주세요
+                    </p>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="space-y-3">
@@ -1165,18 +1211,33 @@ function getStatusHint(
   pageStatus: PageStatus,
   pageError: string | null,
   savedRank: number | null,
-): string | null {
+): { title: string; desc?: string; variant: 'info' | 'success' | 'error' } | null {
   switch (pageStatus) {
     case 'idle':
-      return '도면 위에서 설치 가능 영역을 먼저 드래그해 주세요.';
+      return {
+        title: '설치 가능 영역을 먼저 지정해 주세요.',
+        desc: '도면 위에서 공유기를 설치할 수 있는 범위를 드래그해 선택하세요.',
+        variant: 'info',
+      };
     case 'areaSelected':
-      return '필요하면 우선 평가 영역이나 제외 영역을 추가한 뒤 추천을 실행하세요.';
+      return {
+        title: '영역이 지정되었습니다.',
+        desc: '더 정확한 추천이 필요하다면 우선 평가 영역이나 제외 영역도 함께 설정할 수 있습니다.',
+        variant: 'info',
+      };
     case 'success':
-      return savedRank != null
-        ? '추천 위치가 와이파이 설치 위치로 저장되었습니다.'
-        : '추천 위치를 확인하고 우측 패널에서 선택하세요.';
+      return {
+        title: savedRank != null
+          ? '추천 위치가 설치 위치로 저장되었습니다.'
+          : '추천이 완료되었습니다.',
+        desc: savedRank == null ? '우측 패널에서 추천 위치를 확인하고 선택해 주세요.' : undefined,
+        variant: 'success',
+      };
     case 'error':
-      return pageError ?? '추천 계산에 실패했습니다. 다시 시도해 주세요.';
+      return {
+        title: pageError ?? '추천 계산에 실패했습니다. 다시 시도해 주세요.',
+        variant: 'error',
+      };
     default:
       return null;
   }
@@ -1706,9 +1767,9 @@ function CoverageComparisonCard({
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <MetricTile label="추천 예측 커버리지" value={formatCoveragePercent(predictionCoverage)} />
-        <MetricTile label={usingFallback ? '시뮬레이션 커버리지' : '통합 분석 커버리지'} value={formatCoveragePercent(measuredCoverage)} />
-        <MetricTile label="커버리지 차이" value={formatCoverageDelta(coverageDelta)} />
+        <MetricTile label="추천 예측 신호 범위" value={formatCoveragePercent(predictionCoverage)} />
+        <MetricTile label={usingFallback ? '시뮬레이션 신호 범위' : '통합 분석 신호 범위'} value={formatCoveragePercent(measuredCoverage)} />
+        <MetricTile label="신호 범위 차이" value={formatCoverageDelta(coverageDelta)} />
         <MetricTile
           label="기준 신호"
           value={coverage?.coverage_threshold_dbm != null ? `${coverage.coverage_threshold_dbm.toFixed(0)} dBm` : '-67 dBm'}
@@ -1937,10 +1998,10 @@ function SionnaVerificationCard({
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <MetricTile label="빠른 예측 커버리지" value={formatCoveragePercent(predictionCoverage)} />
-        <MetricTile label="정밀 예측 커버리지" value={formatCoveragePercent(sionnaRatio)} />
-        <MetricTile label="보정 후 정밀 커버리지" value={formatCoveragePercent(calibratedSionnaRatio)} />
-        <MetricTile label="현재 통합맵 커버리지" value={formatCoveragePercent(integratedRatio)} />
+        <MetricTile label="빠른 예측 신호 범위" value={formatCoveragePercent(predictionCoverage)} />
+        <MetricTile label="정밀 예측 신호 범위" value={formatCoveragePercent(sionnaRatio)} />
+        <MetricTile label="보정 후 정밀 신호 범위" value={formatCoveragePercent(calibratedSionnaRatio)} />
+        <MetricTile label="현재 통합맵 신호 범위" value={formatCoveragePercent(integratedRatio)} />
         <MetricTile label="정밀-통합 차이" value={formatCoverageDelta(sionnaVsIntegrated)} />
         <MetricTile label="정밀 평균 신호" value={formatDbm(sionnaCoverage?.average_rssi_dbm)} />
         <MetricTile label="보정 후 평균 신호" value={formatDbm(calibratedSionnaCoverage?.average_rssi_dbm)} />
@@ -2253,52 +2314,48 @@ function ProgressStepper({
   activeStep: number;
   pageStatus: PageStatus;
 }) {
-  return (
-    <ol className="flex items-start">
-      {PROGRESS_STEPS.map((step, index) => {
-        const done =
-          step.id < activeStep ||
-          (step.id === 1 && pageStatus !== 'idle') ||
-          (step.id === 2 && (pageStatus === 'success' || pageStatus === 'loading')) ||
-          (step.id === 3 && activeStep >= 3);
-        const current = step.id === activeStep && pageStatus !== 'error';
-        const isLast = index === PROGRESS_STEPS.length - 1;
+  const steps = PROGRESS_STEPS.map((step) => ({
+    ...step,
+    done:
+      step.id < activeStep ||
+      (step.id === 1 && pageStatus !== 'idle') ||
+      (step.id === 2 && (pageStatus === 'success' || pageStatus === 'loading')) ||
+      (step.id === 3 && activeStep >= 3),
+    current: step.id === activeStep && pageStatus !== 'error',
+  }));
 
+  return (
+    <ol className="flex w-full">
+      {steps.map((step, index) => {
+        const isFirst = index === 0;
+        const isLast = index === steps.length - 1;
+        const connectorDone = step.id <= activeStep;
         return (
-          <li key={step.id} className="flex min-w-0 flex-1 items-start">
-            <div className="flex min-w-0 flex-1 flex-col items-center gap-2">
+          <li key={step.id} className="flex min-w-0 flex-1 flex-col items-center">
+            {/* 원 + 양쪽 연결선 */}
+            <div className="flex w-full items-center">
+              <div className={cn('h-0.5 flex-1', isFirst ? 'invisible' : connectorDone ? 'bg-emerald-400' : 'bg-[#E5EAF2]')} aria-hidden="true" />
               <div
                 className={cn(
                   'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold',
-                  done && !current && 'bg-emerald-500 text-white',
-                  current && 'bg-blue-600 text-white',
-                  !done && !current && 'bg-muted text-muted-foreground',
+                  step.done && !step.current && 'bg-emerald-500 text-white',
+                  step.current && 'bg-blue-600 text-white',
+                  !step.done && !step.current && 'bg-muted text-muted-foreground',
                 )}
               >
-                {done && !current ? (
-                  <CheckCircle2 className="h-4 w-4" />
-                ) : (
-                  step.id
-                )}
+                {step.done && !step.current ? <CheckCircle2 className="h-4 w-4" /> : step.id}
               </div>
-              <span
-                className={cn(
-                  'max-w-28 text-center text-xs leading-tight',
-                  current ? 'font-semibold text-foreground' : 'text-muted-foreground',
-                )}
-              >
-                {step.label}
-              </span>
+              <div className={cn('h-0.5 flex-1', isLast ? 'invisible' : step.id < activeStep ? 'bg-emerald-400' : 'bg-[#E5EAF2]')} aria-hidden="true" />
             </div>
-            {!isLast && (
-              <div
-                className={cn(
-                  'mt-4 h-0.5 min-w-4 flex-1',
-                  step.id < activeStep ? 'bg-emerald-400' : 'bg-[#E5EAF2]',
-                )}
-                aria-hidden="true"
-              />
-            )}
+            {/* 라벨 */}
+            <span
+              className={cn(
+                'mt-2 text-center text-xs leading-tight',
+                step.current ? 'font-semibold text-foreground' : 'text-muted-foreground',
+              )}
+            >
+              {step.label}
+            </span>
           </li>
         );
       })}

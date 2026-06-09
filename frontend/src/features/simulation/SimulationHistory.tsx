@@ -125,16 +125,16 @@ function HistoryCard({
         onClick={() => onSelect?.(item.id)}
         disabled={!onSelect || isRunning}
         className={cn(
-          'relative w-full rounded-md border bg-white p-2.5 text-left transition-colors disabled:cursor-default',
-          isBest && !item.active && 'border-blue-400',
-          !isBest && 'border-slate-200',
+          'relative w-full rounded-md border p-2.5 text-left transition-colors disabled:cursor-default',
+          isBest && !item.active && 'border-amber-300 bg-linear-to-br from-amber-50/70 to-white shadow-sm shadow-amber-100',
+          !isBest && 'border-slate-200 bg-white',
           item.active && 'border-blue-400 bg-blue-50/60',
           !item.active && !isRunning && 'hover:border-slate-300',
           onDelete && 'pr-8',
         )}
       >
       <div className="flex items-start justify-between gap-2">
-        <span className="text-[13px] font-medium text-slate-800">{title}</span>
+        <span className={cn('text-[13px] font-medium', isBest ? 'text-slate-900' : 'text-slate-800')}>{title}</span>
         {runStatus ? (
           <span
             className={cn(
@@ -146,7 +146,10 @@ function HistoryCard({
             {runStatus.label}
           </span>
         ) : isBest ? (
-          <span className="shrink-0 rounded border border-blue-100 bg-blue-50 px-2 py-0.5 text-xs text-blue-600">
+          <span
+            className="shrink-0 rounded border px-2 py-0.5 text-xs font-semibold"
+            style={{ background: '#FFF3C4', color: '#9A6700', borderColor: '#F2C94C' }}
+          >
             최고
           </span>
         ) : (
@@ -172,7 +175,7 @@ function HistoryCard({
         </p>
         <p className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
           <span>
-            안정 커버리지
+            안정 신호 범위
             <span className="ml-2 font-medium tabular-nums text-slate-700">
               {item.coveragePercent == null ? '—' : formatCoverage(item.coveragePercent)}
             </span>
@@ -246,18 +249,18 @@ function getCoverageStatus(coverage: number | null): CoverageStatus | null {
   if (coverage >= 70) {
     return {
       label: '양호',
-      badgeClass: 'border-slate-100 bg-slate-50 text-slate-600',
+      badgeClass: 'border-indigo-200 bg-indigo-50 text-indigo-700',
     };
   }
   if (coverage >= 40) {
     return {
       label: '일부 개선 필요',
-      badgeClass: 'border-amber-100/80 bg-amber-50 text-amber-600',
+      badgeClass: 'border-slate-200 bg-slate-50 text-slate-500',
     };
   }
   return {
     label: '개선 필요',
-    badgeClass: 'border-slate-100 bg-slate-50 text-slate-500',
+    badgeClass: 'border-slate-200 bg-slate-50 text-slate-500',
   };
 }
 

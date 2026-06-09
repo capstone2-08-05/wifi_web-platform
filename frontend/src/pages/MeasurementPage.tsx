@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Activity,
@@ -219,7 +219,7 @@ export default function MeasurementPage() {
     const stillDetected = detectedAps.some(
       (ap) => ap.ap_bssid.toLowerCase() === selectedApBssid.toLowerCase(),
     );
-    if (!stillDetected) setSelectedApBssid(null);
+    if (!stillDetected) startTransition(() => setSelectedApBssid(null));
   }, [detectedAps, selectedApBssid]);
 
   // #81 RSSI 맵 추정 — 탭별로 다른 method 호출 (의미 분리):
@@ -244,8 +244,6 @@ export default function MeasurementPage() {
 
     if (!requestedSessionId && !requestedSceneVersionId) {
       setSelectedSessionId(stored.sessionId);
-      // 세션을 명시적으로 선택한 경우에만 sceneVersionId 복원.
-      // 미선택이면 null 유지 → fallback이 currentVersion (최신 도면) 사용.
       if (stored.sessionId != null) {
         setSelectedSceneVersionId(stored.sceneVersionId);
       }
@@ -299,9 +297,7 @@ export default function MeasurementPage() {
     !!latestRfRunId &&
     !!activeSceneVersionId &&
     hasEnoughMeasurements;
-  const evaluationSessionIds = useMemo(() => {
-    return activeSession?.id ? [activeSession.id] : [];
-  }, [activeSession?.id]);
+  const evaluationSessionIds = activeSession?.id ? [activeSession.id] : [];
   const calibrationDisabledReason = !hasMeasurement
     ? '먼저 측정을 진행해주세요.'
     : !hasEnoughMeasurements
@@ -338,7 +334,7 @@ export default function MeasurementPage() {
 
   const lastAutoCalibrationKey = useRef<string | null>(null);
   useEffect(() => {
-    setCalibrationEvaluation(null);
+    startTransition(() => setCalibrationEvaluation(null));
     lastAutoCalibrationKey.current = null;
   }, [activeSession?.id, activeSceneVersionId, latestRfRunId]);
 
@@ -1497,7 +1493,7 @@ function ActionGuideModal({ open, onClose }: { open: boolean; onClose: () => voi
           <GuideStep n={1} title="공유기 위치 재배치" body="해당 지점과 가까운 위치로 공유기를 옮기거나, 벽·금속 구조물에서 떨어뜨려 보세요. 시뮬레이션 페이지에서 후보 위치를 재생성할 수 있습니다." />
           <GuideStep n={2} title="벽 재질 확인" body="콘크리트·금속 가벽은 전파 흡수가 큽니다. 도면 편집에서 해당 벽의 재질을 실제와 맞게 수정하면 시뮬레이션 정확도가 올라갑니다." />
           <GuideStep n={3} title="채널·대역 점검" body="2.4GHz 대역은 간섭이 심합니다. 발견된 공유기 목록에서 동일 채널이 많이 잡히면 공유기 채널을 변경하거나 5GHz 우선 사용을 검토하세요." />
-          <GuideStep n={4} title="송신 출력 조정" body="공유기 송신 출력이 너무 낮으면 외곽 커버리지가 부족합니다. 시뮬레이션 파라미터의 tx_power_dbm 을 올려 재시뮬레이션 해보세요." />
+          <GuideStep n={4} title="송신 출력 조정" body="공유기 송신 출력이 너무 낮으면 외곽 신호 범위가 부족합니다. 시뮬레이션 파라미터의 tx_power_dbm 을 올려 재시뮬레이션 해보세요." />
         </ol>
         <button
           type="button"

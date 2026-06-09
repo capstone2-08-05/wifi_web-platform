@@ -60,7 +60,7 @@ const STEPS = [
     emoji: '📡',
     icon: Radio,
     title: '시뮬레이션',
-    desc: '도면 위에 공유기를 자유롭게 배치하고 예상 Wi-Fi 커버리지를 열지도로 확인합니다. 위치를 바꿔가며 최적 배치를 찾아보세요.',
+    desc: '도면 위에 공유기를 자유롭게 배치하고 예상 Wi-Fi 신호 범위를 열지도로 확인합니다. 위치를 바꿔가며 최적 배치를 찾아보세요.',
   },
   {
     num: '03',
@@ -82,7 +82,7 @@ const STEPS = [
 /* 텍스트 순환 컴포넌트                                                  */
 /* ------------------------------------------------------------------ */
 const CYCLE_ITEMS = [
-  '도면 위에 공유기를 배치하고 커버리지를 예측하세요',
+  '도면 위에 공유기를 배치하고 신호 범위를 예측하세요',
   '모바일로 실측해 사각지대를 바로 확인하세요',
   'AI가 분석한 최적 공유기 위치를 추천받으세요',
   '실측 데이터로 시뮬레이션 정확도를 높이세요',
@@ -178,7 +178,7 @@ export default function LandingPage() {
               animation: 'lp-shimmer 2.5s linear infinite',
             }}
           >
-            Wi-Fi 커버리지 최적화 플랫폼
+            Wi-Fi 신호 범위 최적화 플랫폼
           </div>
           <h1 className="text-4xl font-bold leading-[1.2] tracking-tight sm:text-5xl">
             우리 매장 Wi-Fi<br />상태를 확인하고<br />
@@ -264,7 +264,7 @@ export default function LandingPage() {
                   <div className="absolute right-12 top-6 rounded-full bg-blue-600 px-2 py-0.5 text-[9px] font-bold text-white shadow-md">공유기2</div>
                   <div className="absolute bottom-2.5 left-2.5 right-2.5 rounded-xl bg-white/90 px-3 py-2 backdrop-blur-sm">
                     <div className="flex items-center justify-between text-[9px]">
-                      <span className="text-slate-500">커버리지</span>
+                      <span className="text-slate-500">신호 범위</span>
                       <span className="font-bold text-blue-600">78%</span>
                     </div>
                     <div className="mt-1 h-1 rounded-full bg-slate-200">
@@ -299,7 +299,7 @@ export default function LandingPage() {
       <CtaSection />
 
       <footer className="border-t border-slate-800 bg-slate-900 px-6 py-8 text-center text-sm text-slate-500">
-        Wi-Fi Space · 실내 Wi-Fi 커버리지 최적화
+        Wi-Fi Space · 실내 Wi-Fi 신호 범위 최적화
       </footer>
     </div>
   );

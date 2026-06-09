@@ -64,7 +64,7 @@ const QUICK_ACTIONS = [
     to: '/simulation',
     icon: Radio,
     label: '품질 시뮬레이션',
-    sub: '가상 공유기 배치 및 커버리지 확인',
+    sub: '가상 공유기 배치 및 신호 범위 확인',
     tone: 'green',
   },
 ] as const satisfies ReadonlyArray<{
