@@ -120,15 +120,15 @@ function HistoryCard({
       onClick={() => onSelect?.(item.id)}
       disabled={!onSelect || isRunning}
       className={cn(
-        'relative w-full rounded-md border bg-white p-2.5 text-left transition-colors disabled:cursor-default',
-        isBest && !item.active && 'border-blue-400',
-        !isBest && 'border-slate-200',
+        'relative w-full rounded-md border p-2.5 text-left transition-colors disabled:cursor-default',
+        isBest && !item.active && 'border-blue-400 bg-gradient-to-br from-blue-50/80 to-white shadow-sm shadow-blue-100',
+        !isBest && 'border-slate-200 bg-white',
         item.active && 'border-blue-400 bg-blue-50/60',
         !item.active && !isRunning && 'hover:border-slate-300',
       )}
     >
       <div className="flex items-start justify-between gap-2">
-        <span className="text-[13px] font-medium text-slate-800">{title}</span>
+        <span className={cn('text-[13px] font-medium', isBest ? 'text-slate-900' : 'text-slate-800')}>{title}</span>
         {runStatus ? (
           <span
             className={cn(
@@ -140,7 +140,7 @@ function HistoryCard({
             {runStatus.label}
           </span>
         ) : isBest ? (
-          <span className="shrink-0 rounded border border-blue-100 bg-blue-50 px-2 py-0.5 text-xs text-blue-600">
+          <span className="shrink-0 rounded bg-blue-600 px-2 py-0.5 text-xs font-semibold text-white shadow-sm shadow-blue-300">
             최고
           </span>
         ) : (
@@ -166,7 +166,7 @@ function HistoryCard({
         </p>
         <p className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
           <span>
-            안정 커버리지
+            안정 신호 범위
             <span className="ml-2 font-medium tabular-nums text-slate-700">
               {item.coveragePercent == null ? '—' : formatCoverage(item.coveragePercent)}
             </span>

@@ -603,7 +603,7 @@ const OBJECT_TYPE_LABEL: Record<string, string> = {
   desk: '책상',
   sofa: '소파',
   bed: '침대',
-  ap: 'AP',
+  ap: '공유기',
   furniture: '가구',
   counter: '카운터',
   refrigerator: '냉장고',

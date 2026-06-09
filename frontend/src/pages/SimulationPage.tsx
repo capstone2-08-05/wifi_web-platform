@@ -179,7 +179,7 @@ export default function SimulationPage() {
   const handleStart = () => {
     if (!currentVersion) return;
     if (aps.length === 0) {
-      toast.info('AP 를 1개 이상 배치해주세요', '캔버스 우측의 "AP 추가하기" 에서 종류를 선택하고 클릭하세요.');
+      toast.info('공유기를 1개 이상 배치해주세요', '캔버스 우측의 "공유기 추가하기" 에서 종류를 선택하고 클릭하세요.');
       return;
     }
     createRfRun.mutate(
@@ -431,10 +431,10 @@ function HistoricalRunBubble() {
 function CanvasModeBar({ apsCount }: { apsCount: number }) {
   return (
     <div className="pointer-events-none absolute left-3 top-3 z-10 flex items-center gap-1.5 rounded-md border border-slate-200/80 bg-white/90 px-2.5 py-1 text-[11px] text-slate-600 backdrop-blur-sm">
-      <span className="font-medium text-slate-700">AP 배치 모드</span>
+      <span className="font-medium text-slate-700">공유기 배치 모드</span>
       <span className="text-slate-400">·</span>
       <span className="text-slate-500">
-        AP 추가 후 도면 클릭 ({apsCount}/8)
+        공유기 추가 후 도면 클릭 ({apsCount}/8)
       </span>
     </div>
   );
@@ -471,8 +471,8 @@ function ApAddPanel({
       type="button"
       onClick={onToggle}
       disabled={disabled}
-      title={disabled ? 'AP는 최대 8개까지 배치할 수 있습니다' : 'AP 추가 모드 시작'}
-      aria-label="AP 추가"
+      title={disabled ? '공유기는 최대 8개까지 배치할 수 있습니다' : '공유기 추가 모드 시작'}
+      aria-label="공유기 추가"
       className={cn(
         'absolute right-3 top-3 z-10 flex w-[5.5rem] flex-col items-center gap-2 rounded-lg border border-slate-200 bg-white/95 p-2 backdrop-blur-sm transition-colors',
         !disabled && 'cursor-pointer hover:border-slate-300 hover:bg-slate-50/95',
@@ -480,7 +480,7 @@ function ApAddPanel({
       )}
     >
       <span className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-700">
-        AP 추가
+        공유기 추가
       </span>
       <span
         className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-500 text-white shadow-sm shadow-blue-500/20"
@@ -568,7 +568,7 @@ function PageHeader({
                 disabled={!hasVersion || isStarting || apsCount === 0}
                 title={
                   apsCount === 0
-                    ? 'AP 를 1개 이상 배치해주세요'
+                    ? '공유기를 1개 이상 배치해주세요'
                     : '시뮬레이션 실행'
                 }
                 className="inline-flex h-8 items-center gap-1.5 rounded-md bg-blue-500 px-3 text-xs font-medium text-white shadow-sm shadow-blue-500/20 transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
@@ -650,7 +650,7 @@ function RfPhysicalControls({
           value={txPowerDbm}
           onChange={(event) => handleTxPowerChange(event.target.value)}
           disabled={disabled}
-          aria-label="AP 출력 (dBm)"
+          aria-label="공유기 출력 (dBm)"
           className="h-6 min-w-11 w-11 rounded border border-slate-200 bg-white px-1.5 text-center text-xs font-medium tabular-nums text-slate-800 [appearance:textfield] focus:border-blue-300 focus:outline-none focus:ring-1 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-50 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
         />
         <span className="text-[10px] text-slate-400">dBm</span>
@@ -864,7 +864,7 @@ function ApPlacementPanel({ rfRunId }: { rfRunId: string }) {
           <p className="py-2 text-[11px] text-muted-foreground">불러오는 중...</p>
         ) : layouts.length === 0 ? (
           <p className="py-2 text-[11px] text-muted-foreground">
-            아직 확정된 AP 배치가 없습니다.
+            아직 확정된 공유기 배치가 없습니다.
           </p>
         ) : (
           <ul className="space-y-1.5">

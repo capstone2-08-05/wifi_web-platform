@@ -1177,9 +1177,9 @@ function CoverageComparisonCard({
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <MetricTile label="추천 예측 커버리지" value={formatCoveragePercent(predictionCoverage)} />
-        <MetricTile label="통합 분석 커버리지" value={formatCoveragePercent(measuredCoverage)} />
-        <MetricTile label="커버리지 차이" value={formatCoverageDelta(coverageDelta)} />
+        <MetricTile label="추천 예측 신호 범위" value={formatCoveragePercent(predictionCoverage)} />
+        <MetricTile label="통합 분석 신호 범위" value={formatCoveragePercent(measuredCoverage)} />
+        <MetricTile label="신호 범위 차이" value={formatCoverageDelta(coverageDelta)} />
         <MetricTile
           label="기준 RSSI"
           value={coverage?.coverage_threshold_dbm != null ? `${coverage.coverage_threshold_dbm.toFixed(0)} dBm` : '-67 dBm'}
@@ -1277,10 +1277,10 @@ function SionnaVerificationCard({
       </button>
 
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <MetricTile label="간이 예측 커버리지" value={formatCoveragePercent(predictionCoverage)} />
-        <MetricTile label="Sionna raw 커버리지" value={formatCoveragePercent(sionnaRatio)} />
-        <MetricTile label="보정 Sionna 커버리지" value={formatCoveragePercent(calibratedSionnaRatio)} />
-        <MetricTile label="현재 통합맵 커버리지" value={formatCoveragePercent(integratedRatio)} />
+        <MetricTile label="간이 예측 신호 범위" value={formatCoveragePercent(predictionCoverage)} />
+        <MetricTile label="Sionna raw 신호 범위" value={formatCoveragePercent(sionnaRatio)} />
+        <MetricTile label="보정 Sionna 신호 범위" value={formatCoveragePercent(calibratedSionnaRatio)} />
+        <MetricTile label="현재 통합맵 신호 범위" value={formatCoveragePercent(integratedRatio)} />
         <MetricTile label="보정 Sionna-통합 차이" value={formatCoverageDelta(sionnaVsIntegrated)} />
         <MetricTile label="Sionna 평균 RSSI" value={formatDbm(sionnaCoverage?.average_rssi_dbm)} />
         <MetricTile label="보정 Sionna 평균" value={formatDbm(calibratedSionnaCoverage?.average_rssi_dbm)} />

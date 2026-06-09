@@ -49,7 +49,7 @@ const QUICK_ACTIONS = [
   {
     to: '/mobile',
     icon: Sparkles,
-    label: 'AP 배치 추천',
+    label: '공유기 배치 추천',
     sub: '우선 개선 영역 기반 최적 설치 위치',
     tone: 'blue',
   },
@@ -64,7 +64,7 @@ const QUICK_ACTIONS = [
     to: '/simulation',
     icon: Radio,
     label: '품질 시뮬레이션',
-    sub: '가상 AP 배치 및 커버리지 확인',
+    sub: '가상 공유기 배치 및 신호 범위 확인',
     tone: 'green',
   },
 ] as const satisfies ReadonlyArray<{

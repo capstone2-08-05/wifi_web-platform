@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Activity,
@@ -219,7 +219,7 @@ export default function MeasurementPage() {
     const stillDetected = detectedAps.some(
       (ap) => ap.ap_bssid.toLowerCase() === selectedApBssid.toLowerCase(),
     );
-    if (!stillDetected) setSelectedApBssid(null);
+    if (!stillDetected) startTransition(() => setSelectedApBssid(null));
   }, [detectedAps, selectedApBssid]);
 
   // #81 RSSI 맵 추정 — 탭별로 다른 method 호출 (의미 분리):
@@ -242,12 +242,14 @@ export default function MeasurementPage() {
     const stored = readStoredMeasurementView(floorId);
     if (!stored) return;
 
-    if (!requestedSessionId && !requestedSceneVersionId) {
-      setSelectedSessionId(stored.sessionId);
-      setSelectedSceneVersionId(stored.sceneVersionId);
-      setSelectedApBssid(stored.apBssid);
-    }
-    setMode(stored.mode);
+    startTransition(() => {
+      if (!requestedSessionId && !requestedSceneVersionId) {
+        setSelectedSessionId(stored.sessionId);
+        setSelectedSceneVersionId(stored.sceneVersionId);
+        setSelectedApBssid(stored.apBssid);
+      }
+      setMode(stored.mode);
+    });
   }, [floorId, requestedSceneVersionId, requestedSessionId]);
 
   const activeCoverage = useMemo(() => {
@@ -295,9 +297,7 @@ export default function MeasurementPage() {
     !!latestRfRunId &&
     !!activeSceneVersionId &&
     hasEnoughMeasurements;
-  const evaluationSessionIds = useMemo(() => {
-    return activeSession?.id ? [activeSession.id] : [];
-  }, [activeSession?.id]);
+  const evaluationSessionIds = activeSession?.id ? [activeSession.id] : [];
   const calibrationDisabledReason = !hasMeasurement
     ? '먼저 측정을 진행해주세요.'
     : !hasEnoughMeasurements
@@ -334,7 +334,7 @@ export default function MeasurementPage() {
 
   const lastAutoCalibrationKey = useRef<string | null>(null);
   useEffect(() => {
-    setCalibrationEvaluation(null);
+    startTransition(() => setCalibrationEvaluation(null));
     lastAutoCalibrationKey.current = null;
   }, [activeSession?.id, activeSceneVersionId, latestRfRunId]);
 
@@ -1348,7 +1348,7 @@ function DetectedApsCard({
     <div className="rounded-xl border bg-card p-4 shadow-sm">
       <h3 className="flex items-center gap-1.5 text-sm font-semibold">
         <Wifi className="h-4 w-4 text-primary" />
-        발견된 AP ({sorted.length})
+        발견된 공유기 ({sorted.length})
       </h3>
       <button
         type="button"
@@ -1490,10 +1490,10 @@ function ActionGuideModal({ open, onClose }: { open: boolean; onClose: () => voi
           예측보다 실측이 크게 낮은 지점에서 시도해볼 수 있는 일반적인 조치들입니다.
         </p>
         <ol className="mt-4 space-y-3">
-          <GuideStep n={1} title="AP 위치 재배치" body="해당 지점과 가까운 위치로 AP 를 옮기거나, 벽·금속 구조물에서 떨어뜨려 보세요. 시뮬레이션 페이지에서 후보 위치를 재생성할 수 있습니다." />
+          <GuideStep n={1} title="공유기 위치 재배치" body="해당 지점과 가까운 위치로 공유기를 옮기거나, 벽·금속 구조물에서 떨어뜨려 보세요. 시뮬레이션 페이지에서 후보 위치를 재생성할 수 있습니다." />
           <GuideStep n={2} title="벽 재질 확인" body="콘크리트·금속 가벽은 전파 흡수가 큽니다. 도면 편집에서 해당 벽의 재질을 실제와 맞게 수정하면 시뮬레이션 정확도가 올라갑니다." />
-          <GuideStep n={3} title="채널·대역 점검" body="2.4GHz 대역은 간섭이 심합니다. 발견된 AP 목록에서 동일 채널이 많이 잡히면 AP 채널을 변경하거나 5GHz 우선 사용을 검토하세요." />
-          <GuideStep n={4} title="송신 출력 조정" body="AP 송신 출력이 너무 낮으면 외곽 커버리지가 부족합니다. 시뮬레이션 파라미터의 tx_power_dbm 을 올려 재시뮬레이션 해보세요." />
+          <GuideStep n={3} title="채널·대역 점검" body="2.4GHz 대역은 간섭이 심합니다. 발견된 공유기 목록에서 동일 채널이 많이 잡히면 공유기 채널을 변경하거나 5GHz 우선 사용을 검토하세요." />
+          <GuideStep n={4} title="송신 출력 조정" body="공유기 송신 출력이 너무 낮으면 외곽 신호 범위가 부족합니다. 시뮬레이션 파라미터의 tx_power_dbm 을 올려 재시뮬레이션 해보세요." />
         </ol>
         <button
           type="button"

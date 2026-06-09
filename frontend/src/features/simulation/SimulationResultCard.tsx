@@ -37,7 +37,7 @@ export function SimulationResultCard({
 
       <div className="mt-5">
         <Metric
-          label="안정 커버리지"
+          label="안정 신호 범위"
           valueText={coveragePercent == null ? '—' : formatNum(coveragePercent)}
           unit={coveragePercent == null ? '' : '%'}
           fillPct={coverageFillPct}
