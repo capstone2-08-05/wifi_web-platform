@@ -8,8 +8,10 @@ import type {
   ApLayoutCreate,
 } from '@/types/ap-layout';
 
-interface ItemsEnvelope<T> {
-  items: T[];
+type ItemsResponse<T> = T[] | { items?: T[] };
+
+function itemsFromResponse<T>(data: ItemsResponse<T>): T[] {
+  return Array.isArray(data) ? data : data.items ?? [];
 }
 
 export const apLayoutApi = {
@@ -22,8 +24,8 @@ export const apLayoutApi = {
   // §14.2 GET /rf-runs/{rf_run_id}/ap-candidates
   listCandidates: (rfRunId: UUID) =>
     api
-      .get<ItemsEnvelope<ApCandidate>>(`/rf-runs/${rfRunId}/ap-candidates`)
-      .then((r) => r.data.items),
+      .get<ItemsResponse<ApCandidate>>(`/rf-runs/${rfRunId}/ap-candidates`)
+      .then((r) => itemsFromResponse(r.data)),
 
   // §14.3 POST /ap-layouts
   createLayout: (body: ApLayoutCreate) =>
@@ -32,8 +34,8 @@ export const apLayoutApi = {
   // §14.4 GET /rf-runs/{rf_run_id}/ap-layouts
   listLayouts: (rfRunId: UUID) =>
     api
-      .get<ItemsEnvelope<ApLayout>>(`/rf-runs/${rfRunId}/ap-layouts`)
-      .then((r) => r.data.items),
+      .get<ItemsResponse<ApLayout>>(`/rf-runs/${rfRunId}/ap-layouts`)
+      .then((r) => itemsFromResponse(r.data)),
 
   // §14.4 GET /ap-layouts/{layout_id}
   getLayout: (layoutId: UUID) =>

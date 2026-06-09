@@ -333,15 +333,20 @@ export default function MeasurementPage() {
   };
 
   const lastAutoCalibrationKey = useRef<string | null>(null);
+  // 자동 보정 실패 시 동일 session/run 컨텍스트에서 재시도를 막기 위한 플래그.
+  // activeSession/sceneVersion/rfRun이 바뀌면 아래 effect에서 리셋된다.
+  const autoCalibrationFailed = useRef(false);
   useEffect(() => {
     startTransition(() => setCalibrationEvaluation(null));
     lastAutoCalibrationKey.current = null;
+    autoCalibrationFailed.current = false;
   }, [activeSession?.id, activeSceneVersionId, latestRfRunId]);
 
   useEffect(() => {
     if (mode !== 'both') return;
     if (!canCalibrate || !activeSession || !latestRfRunId || !activeSceneVersionId) return;
-    const sessionIds = evaluationSessionIds.length > 0 ? evaluationSessionIds : [activeSession.id];
+    if (autoCalibrationFailed.current) return;
+    const sessionIds = activeSession.id ? [activeSession.id] : [];
     const key = [
       activeSession.floor_id,
       activeSceneVersionId,
@@ -357,7 +362,7 @@ export default function MeasurementPage() {
         floor_id: activeSession.floor_id,
         rf_run_id: latestRfRunId,
         scene_version_id: activeSceneVersionId,
-        measurement_session_ids: sessionIds,
+        measurement_session_ids: sessionIds.length > 0 ? sessionIds : [activeSession.id],
         ap_bssid: selectedApBssid,
         method: 'affine_rssi_transfer',
         split: { strategy: 'purpose_or_random', holdout_ratio: 0.3, seed: 42 },
@@ -372,19 +377,15 @@ export default function MeasurementPage() {
         onSuccess: (result) => {
           setCalibrationEvaluation(result);
         },
+        onError: () => {
+          autoCalibrationFailed.current = true;
+        },
       },
     );
-  }, [
-    mode,
-    canCalibrate,
-    activeSession,
-    latestRfRunId,
-    activeSceneVersionId,
-    evaluationSessionIds,
-    points.length,
-    selectedApBssid,
-    evaluateCalibration,
-  ]);
+  // evaluateCalibration은 useMutation이 매 render마다 새 객체를 반환하므로 deps에서 제외.
+  // evaluationSessionIds는 매 render마다 새 배열이지만 위에서 activeSession.id로 직접 파생.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, canCalibrate, activeSession, latestRfRunId, activeSceneVersionId, points.length, selectedApBssid]);
 
   const calibratedMainHeatmap = useMemo(() => {
     const map = calibrationEvaluation?.maps.calibrated;

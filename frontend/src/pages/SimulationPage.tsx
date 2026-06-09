@@ -44,11 +44,12 @@ import { toast } from '@/stores/toast-store';
 import type { SceneVersion } from '@/types/scene';
 import type { ApCandidate, ApLayout } from '@/types/ap-layout';
 import type { RadioInterface, RfBackend, WifiBand } from '@/types/rf';
-import { DEFAULT_RADIO_5G } from '@/lib/wifi-channel';
+import { DEFAULT_RADIO_24G, DEFAULT_RADIO_5G } from '@/lib/wifi-channel';
 import { cn } from '@/lib/utils';
 import { nextApSequentialName } from '@/lib/ap-layout-naming';
 
 type SimulationState = 'idle' | 'running' | 'complete';
+type ApRadioMode = '5g-only' | '2.4g-only' | 'dual';
 
 /** simBands[0] 를 simulation.frequency_hz 로 변환 (legacy compat). */
 function primaryFreqHz(bands: WifiBand[]): number {
@@ -63,7 +64,6 @@ function toPhysicalApPayload(ap: PlacedAp, band?: WifiBand) {
       : [{ id: `${ap.id}-5g`, ...DEFAULT_RADIO_5G }];
   const radios = band ? allEnabled.filter((r) => r.band === band) : allEnabled;
   // band 필터 후 없으면 전체 enabled fallback (AP가 해당 band 라디오 미보유 시)
-  const finalRadios = radios.length > 0 ? radios : allEnabled;
   return {
     id: ap.id,
     name: ap.id.toUpperCase(),
@@ -71,8 +71,46 @@ function toPhysicalApPayload(ap: PlacedAp, band?: WifiBand) {
     y: ap.y_m,
     z: ap.z_m,
     movable: true,
-    radios: finalRadios,
+    radios,
   };
+}
+
+function enabledRadiosForBand(ap: PlacedAp, band: WifiBand): RadioInterface[] {
+  const allEnabled: RadioInterface[] =
+    ap.radios && ap.radios.length > 0
+      ? ap.radios.filter((r) => r.enabled)
+      : [{ id: `${ap.id}-5g`, ...DEFAULT_RADIO_5G }];
+  return allEnabled.filter((r) => r.band === band);
+}
+
+function hasEnabledBand(aps: PlacedAp[], band: WifiBand): boolean {
+  return aps.some((ap) => enabledRadiosForBand(ap, band).length > 0);
+}
+
+function apRadioMode(ap: PlacedAp): ApRadioMode {
+  const radios = ap.radios && ap.radios.length > 0
+    ? ap.radios
+    : [{ id: `${ap.id}-5g`, ...DEFAULT_RADIO_5G }];
+  const has5G = radios.some((r) => r.band === '5G' && r.enabled);
+  const has24G = radios.some((r) => r.band === '2.4G' && r.enabled);
+  if (has5G && has24G) return 'dual';
+  if (has24G) return '2.4g-only';
+  return '5g-only';
+}
+
+function radiosForApMode(ap: PlacedAp, mode: ApRadioMode): RadioInterface[] {
+  const existing = ap.radios ?? [];
+  const radio5G: RadioInterface = existing.find((r) => r.band === '5G') ?? {
+    id: `${ap.id}-5g`,
+    ...DEFAULT_RADIO_5G,
+  };
+  const radio24G: RadioInterface = existing.find((r) => r.band === '2.4G') ?? {
+    id: `${ap.id}-2.4g`,
+    ...DEFAULT_RADIO_24G,
+  };
+  if (mode === '5g-only') return [{ ...radio5G, enabled: true }, { ...radio24G, enabled: false }];
+  if (mode === '2.4g-only') return [{ ...radio5G, enabled: false }, { ...radio24G, enabled: true }];
+  return [{ ...radio5G, enabled: true }, { ...radio24G, enabled: true }];
 }
 
 export default function SimulationPage() {
@@ -96,8 +134,6 @@ export default function SimulationPage() {
 
   // 시뮬 실행 백엔드 토글 — local(기본, 로컬 ai_api) | sagemaker(클라우드).
   const [backend, setBackend] = useState<RfBackend>('local');
-  // 시뮬 대상 band. 단일 5G | 단일 2.4G | dual.
-  const [simBands, setSimBands] = useState<WifiBand[]>(['5G']);
   const [txPowerDbm, setTxPowerDbm] = useState(20);
 
   // 층의 과거 RF Run 목록 (이력 카드 + 자동 복원용).
@@ -131,7 +167,7 @@ export default function SimulationPage() {
   // Dual 완료 후 어느 band 탭을 보여줄지.
   const [bandTab, setBandTab] = useState<WifiBand>('5G');
 
-  const isDual = simBands.length > 1;
+  const isDual = !!secondaryRunId;
 
   const createRfRun = useCreateRfRun(floorId, { page_size: 20 });
   const deleteRfRun = useDeleteRfRun(floorId);
@@ -246,7 +282,6 @@ export default function SimulationPage() {
       setActiveRunId(companion.id);
       setSecondaryRunId(rfRunPoll.rfRun.id);
     }
-    setSimBands(['5G', '2.4G']);
     /* eslint-enable react-hooks/set-state-in-effect */
   // rfRunPoll.rfRun?.id + pastRuns 변경 시만 실행.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -294,6 +329,15 @@ export default function SimulationPage() {
       return;
     }
 
+    const executableBands = (['5G', '2.4G'] as WifiBand[]).filter((band) => hasEnabledBand(aps, band));
+    if (executableBands.length === 0) {
+      toast.info(
+        '실행 가능한 radio가 없습니다',
+        '공유기에 5GHz 또는 2.4GHz radio를 활성화하고 다시 시도해주세요.',
+      );
+      return;
+    }
+
     const legacyAps = aps.map((ap) => ({ id: ap.id, x_m: ap.x_m, y_m: ap.y_m, z_m: ap.z_m }));
 
     const makePayload = (bands: WifiBand[]) => {
@@ -313,14 +357,14 @@ export default function SimulationPage() {
       };
     };
 
-    if (isDual) {
+    if (executableBands.length > 1) {
       // Dual: 5GHz(primary) + 2.4GHz(secondary) 각각 별도 run.
       setBandTab('5G');
       setSecondaryRunId(null);
       createRfRun.mutate(makePayload(['5G']), { onSuccess: (data) => setActiveRunId(data.id) });
       createRfRun.mutate(makePayload(['2.4G']), { onSuccess: (data) => setSecondaryRunId(data.id) });
     } else {
-      createRfRun.mutate(makePayload(simBands), { onSuccess: (data) => setActiveRunId(data.id) });
+      createRfRun.mutate(makePayload([executableBands[0]]), { onSuccess: (data) => setActiveRunId(data.id) });
     }
   };
 
@@ -353,6 +397,10 @@ export default function SimulationPage() {
   };
   const handleUpdateApRadios = (id: string, radios: RadioInterface[]) =>
     setAps((prev) => prev.map((a) => (a.id === id ? { ...a, radios } : a)));
+  const handleSetApRadioMode = (id: string, mode: ApRadioMode) =>
+    setAps((prev) =>
+      prev.map((ap) => (ap.id === id ? { ...ap, radios: radiosForApMode(ap, mode) } : ap)),
+    );
   const handleApClick = (id: string) =>
     setSelectedApId((prev) => (prev === id ? null : id));
 
@@ -408,8 +456,6 @@ export default function SimulationPage() {
         apsCount={aps.length}
         backend={backend}
         onBackendChange={setBackend}
-        simBands={simBands}
-        onSimBandsChange={setSimBands}
         txPowerDbm={txPowerDbm}
         onTxPowerDbmChange={setTxPowerDbm}
         floorId={floorId ?? null}
@@ -516,6 +562,13 @@ export default function SimulationPage() {
           </div>
 
           <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto">
+            <ApRadioSummaryPanel
+              aps={aps}
+              selectedApId={selectedApId}
+              onSelectAp={setSelectedApId}
+              onModeChange={handleSetApRadioMode}
+              readOnly={state !== 'idle'}
+            />
             {state === 'complete' && (
               <SimulationResultCard
                 avgRssiDbm={metrics.avgRssiDbm}
@@ -558,6 +611,88 @@ export default function SimulationPage() {
 }
 
 /** 설정 바 segmented control 공통 스타일. */
+function ApRadioSummaryPanel({
+  aps,
+  selectedApId,
+  onSelectAp,
+  onModeChange,
+  readOnly,
+}: {
+  aps: PlacedAp[];
+  selectedApId: string | null;
+  onSelectAp: (id: string | null) => void;
+  onModeChange: (id: string, mode: ApRadioMode) => void;
+  readOnly: boolean;
+}) {
+  const modes: Array<{ key: ApRadioMode; label: string }> = [
+    { key: '5g-only', label: '5GHz' },
+    { key: '2.4g-only', label: '2.4GHz' },
+    { key: 'dual', label: 'Dual' },
+  ];
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-slate-800">공유기별 radio</h2>
+        <span className="text-[11px] text-slate-400">{aps.length}/8</span>
+      </div>
+      {aps.length === 0 ? (
+        <p className="text-xs leading-relaxed text-slate-500">
+          캔버스에서 공유기를 추가하면 각 공유기별 5GHz, 2.4GHz, Dual 모드를 선택할 수 있습니다.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {aps.map((ap) => {
+            const mode = apRadioMode(ap);
+            const enabledBands = (ap.radios ?? [{ id: `${ap.id}-5g`, ...DEFAULT_RADIO_5G }])
+              .filter((r) => r.enabled)
+              .map((r) => r.band);
+            return (
+              <div
+                key={ap.id}
+                className={cn(
+                  'rounded-md border p-2',
+                  selectedApId === ap.id ? 'border-blue-200 bg-blue-50/40' : 'border-slate-100 bg-slate-50/60',
+                )}
+              >
+                <button
+                  type="button"
+                  onClick={() => onSelectAp(selectedApId === ap.id ? null : ap.id)}
+                  className="mb-1.5 flex w-full items-center justify-between text-left"
+                >
+                  <span className="text-xs font-semibold text-slate-800">{ap.id.toUpperCase()}</span>
+                  <span className="text-[10px] text-slate-500">
+                    {enabledBands.length > 0 ? [...new Set(enabledBands)].join(' + ') : 'disabled'}
+                  </span>
+                </button>
+                <div className="inline-flex h-7 w-full items-center rounded-md bg-white p-0.5">
+                  {modes.map((m) => (
+                    <button
+                      key={m.key}
+                      type="button"
+                      disabled={readOnly}
+                      onClick={() => onModeChange(ap.id, m.key)}
+                      className={cn(
+                        'h-6 flex-1 rounded px-1.5 text-[11px] transition-colors',
+                        mode === m.key
+                          ? 'bg-blue-50 font-semibold text-blue-700'
+                          : 'text-slate-600 hover:bg-slate-50',
+                        readOnly && 'cursor-not-allowed opacity-60',
+                      )}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function simSegmentBtn(active: boolean, disabled?: boolean) {
   return cn(
     'inline-flex h-7 items-center rounded-md px-2.5 text-xs transition-colors',
@@ -696,8 +831,6 @@ function PageHeader({
   apsCount,
   backend,
   onBackendChange,
-  simBands,
-  onSimBandsChange,
   txPowerDbm,
   onTxPowerDbmChange,
   floorId,
@@ -711,8 +844,6 @@ function PageHeader({
   apsCount: number;
   backend: RfBackend;
   onBackendChange: (b: RfBackend) => void;
-  simBands: WifiBand[];
-  onSimBandsChange: (bands: WifiBand[]) => void;
   txPowerDbm: number;
   onTxPowerDbmChange: (value: number) => void;
   floorId: string | null;
@@ -745,8 +876,6 @@ function PageHeader({
             </div>
             <div className="flex flex-wrap items-center gap-1 border-b border-slate-100 px-1.5 py-0.5 sm:border-b-0 sm:border-r">
               <RfPhysicalControls
-                simBands={simBands}
-                onSimBandsChange={onSimBandsChange}
                 txPowerDbm={txPowerDbm}
                 onTxPowerDbmChange={onTxPowerDbmChange}
                 disabled={isStarting}
@@ -789,61 +918,22 @@ function PageHeader({
 
 /** Wi-Fi 시뮬 대역 선택 + AP 출력 — idle 시 설정 바에 노출. */
 function RfPhysicalControls({
-  simBands,
-  onSimBandsChange,
   txPowerDbm,
   onTxPowerDbmChange,
   disabled,
 }: {
-  simBands: WifiBand[];
-  onSimBandsChange: (bands: WifiBand[]) => void;
   txPowerDbm: number;
   onTxPowerDbmChange: (value: number) => void;
   disabled?: boolean;
 }) {
-  type BandMode = '5g' | '2.4g' | 'dual';
-  const currentMode: BandMode =
-    simBands.length > 1 ? 'dual' : simBands[0] === '2.4G' ? '2.4g' : '5g';
-
-  const handleModeChange = (mode: BandMode) => {
-    if (mode === 'dual') onSimBandsChange(['5G', '2.4G']);
-    else if (mode === '2.4g') onSimBandsChange(['2.4G']);
-    else onSimBandsChange(['5G']);
-  };
-
   const handleTxPowerChange = (value: string) => {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return;
     onTxPowerDbmChange(Math.min(30, Math.max(0, parsed)));
   };
 
-  const modes: Array<{ key: BandMode; label: string; hint: string }> = [
-    { key: '5g', label: '5GHz', hint: '5GHz 시뮬' },
-    { key: '2.4g', label: '2.4GHz', hint: '2.4GHz 시뮬' },
-    { key: 'dual', label: 'Dual', hint: '5GHz + 2.4GHz 각각 시뮬 후 탭으로 비교' },
-  ];
-
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <div
-        role="group"
-        aria-label="시뮬 대역"
-        className="inline-flex h-8 items-center rounded-md bg-slate-50 p-0.5"
-        title="2.4GHz와 5GHz는 전파 특성이 다르므로 band별로 따로 시뮬레이션됩니다."
-      >
-        {modes.map((m) => (
-          <button
-            key={m.key}
-            type="button"
-            onClick={() => handleModeChange(m.key)}
-            disabled={disabled}
-            title={m.hint}
-            className={simSegmentBtn(currentMode === m.key, disabled)}
-          >
-            {m.label}
-          </button>
-        ))}
-      </div>
       <label className="inline-flex h-8 items-center gap-1.5 px-1 text-xs">
         <span className="text-slate-500">출력</span>
         <input

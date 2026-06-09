@@ -422,13 +422,9 @@ export function ApRecommendationCanvas({
           ))}
 
           {[...recommendations]
-            .sort((a, b) => {
-              // 선택된 순위를 맨 위에 (마지막 렌더 = SVG 최상단)
-              if (a.rank === selectedRecommendationRank) return 1;
-              if (b.rank === selectedRecommendationRank) return -1;
-              // 나머지는 역순 (낮은 순위일수록 위에 — 1순위가 가장 마지막)
-              return b.rank - a.rank;
-            })
+            .filter((rec) =>
+              selectedRecommendationRank == null || rec.rank === selectedRecommendationRank,
+            )
             .map((rec) => (
               <RecommendationMarker
                 key={rec.rank}

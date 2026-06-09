@@ -1077,30 +1077,10 @@ export default function MobileAppPage() {
           <div className="border-b border-[#E5EAF2] px-5 py-4">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-base font-bold text-foreground">추천 위치</h2>
-              {recommendations.length > 0 && (
-                <button
-                  type="button"
-                  onClick={handleToggleComparison}
-                  disabled={!comparisonHeatmap}
-                  className={cn(
-                    'rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors',
-                    showComparisonHeatmap
-                      ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
-                      : 'border-[#E5EAF2] bg-white text-foreground hover:bg-muted/60',
-                    !comparisonHeatmap && 'cursor-not-allowed opacity-50',
-                  )}
-                >
-                  통합 분석 보기
-                </button>
-              )}
             </div>
             {recommendations.length > 0 && (
               <p className="mt-1 text-[11px] text-muted-foreground">
-                {showComparisonHeatmap
-                  ? verificationCalibratedHeatmap
-                    ? '선택 후보의 정밀 검증 결과에 예측·실측 보정을 적용한 통합맵을 보고 있습니다.'
-                    : '측정 페이지의 예측·실측 통합 분석맵을 보고 있습니다.'
-                  : '추천 후보를 클릭하면 해당 위치의 예측 신호 지도가 표시됩니다.'}
+                추천 후보를 클릭하면 해당 위치만 지도에 표시됩니다.
               </p>
             )}
             {recommendationUpdatedAt && recommendations.length > 0 && (

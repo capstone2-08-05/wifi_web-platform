@@ -111,11 +111,10 @@ def get_asset_download_url(
 def stream_asset_raw(
     asset_id: UUID = Path(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
 ):
     from fastapi.responses import FileResponse
-    path, mime = asset_service.open_asset_local_file(
-        db=db, asset_id=asset_id, user=current_user
+    path, mime = asset_service.open_asset_local_file_public(
+        db=db, asset_id=asset_id
     )
     return FileResponse(str(path), media_type=mime, filename=path.name)
 
