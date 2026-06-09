@@ -169,11 +169,13 @@ export default function SimulationPage() {
     activeRunSceneVersionId !== currentVersion.id;
 
   // 활성 run(과거/자동복원 포함)의 AP 를 캔버스에 복원.
-  // physical_aps 우선, 없으면 access_points fallback.
+  // physical_aps_snapshot > physical_aps > access_points 우선순위.
+  // access_points[].id는 백엔드가 "{ap_id}-{radio_id}" 형식으로 오염시키므로 사용 금지.
   useEffect(() => {
     if (!activeRunId || !rfRunPoll.rfRun) return;
-    const physRaw = (rfRunPoll.rfRun.request_json?.['physical_aps'] ?? []) as Array<Record<string, unknown>>;
-    const apsRaw = (rfRunPoll.rfRun.request_json?.['access_points'] ?? []) as Array<Record<string, unknown>>;
+    const rj = rfRunPoll.rfRun.request_json;
+    const physRaw = (rj?.['physical_aps_snapshot'] ?? rj?.['physical_aps'] ?? []) as Array<Record<string, unknown>>;
+    const apsRaw = (rj?.['access_points'] ?? []) as Array<Record<string, unknown>>;
     // setAps in effect: 서버 데이터 수신 후 동기화 — external state 반응이므로 의도된 패턴.
     /* eslint-disable react-hooks/set-state-in-effect */
     const safeApId = (raw: unknown, i: number) => {
@@ -189,8 +191,9 @@ export default function SimulationPage() {
         radios: Array.isArray(a['radios']) ? (a['radios'] as RadioInterface[]) : undefined,
       })));
     } else if (Array.isArray(apsRaw) && apsRaw.length > 0) {
+      // physical_ap_id 우선: access_points[].id는 "{ap_id}-{radio_id}" 복합 키일 수 있음.
       setAps(apsRaw.map((a, i) => ({
-        id: safeApId(a['id'], i),
+        id: safeApId(a['physical_ap_id'] ?? a['id'], i),
         x_m: Number(a['x_m'] ?? a['x'] ?? 0),
         y_m: Number(a['y_m'] ?? a['y'] ?? 0),
         z_m: Number(a['z_m'] ?? a['z'] ?? 2.5),
@@ -274,8 +277,8 @@ export default function SimulationPage() {
   );
   // DEBUG: 히트맵 정렬 진단용 — 확인 후 삭제
   if (heatmapMap) {
-    console.log('[HEATMAP DEBUG] bounds_json:', heatmapMap.bounds_json);
-    console.log('[HEATMAP DEBUG] parsed bounds:', heatmapBounds);
+    console.log('[HEATMAP DBG] bounds_json raw:', JSON.stringify(heatmapMap.bounds_json));
+    console.log('[HEATMAP DBG] parsed bounds:', heatmapBounds);
   }
 
   const handleStart = () => {

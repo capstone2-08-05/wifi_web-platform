@@ -348,6 +348,36 @@ async def _run_local_in_background(
             )
             return
 
+        # 0) AI 분석 전에 이미지 크기를 미리 백필
+        # → 인퍼런스가 진행되는 동안에도 프론트가 해상도를 인지해 S3 배경을 즉시 렌더링 가능
+        source_asset_id_early = (job.input_json or {}).get("source_asset_id")
+        if source_asset_id_early:
+            try:
+                import io as _io
+                from PIL import Image as _PILImage
+                with _PILImage.open(_io.BytesIO(image_bytes)) as _img:
+                    _w, _h = _img.size
+                _asset_early = db.get(Asset, source_asset_id_early)
+                if _asset_early is not None:
+                    _md: dict[str, Any] = dict(_asset_early.metadata_json or {})
+                    _md["width_px"] = _w
+                    _md["height_px"] = _h
+                    if _md.get("scale_m_per_px") is None:
+                        _md["scale_m_per_px"] = 0.05
+                    _asset_early.metadata_json = _md
+                    flag_modified(_asset_early, "metadata_json")
+                    db.commit()
+                    logger.info(
+                        "local bg task: pre-backfill done asset=%s w=%s h=%s",
+                        source_asset_id_early, _w, _h,
+                    )
+            except Exception:
+                logger.warning(
+                    "local bg task: pre-backfill failed asset=%s, continuing",
+                    source_asset_id_early,
+                    exc_info=True,
+                )
+
         # 1) 로컬 AI 호출 (blocking HTTP) — threadpool 로 이벤트 루프 보호
         try:
             inference = await run_in_threadpool(
