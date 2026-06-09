@@ -121,7 +121,7 @@ function HistoryCard({
       disabled={!onSelect || isRunning}
       className={cn(
         'relative w-full rounded-md border p-2.5 text-left transition-colors disabled:cursor-default',
-        isBest && !item.active && 'border-blue-400 bg-gradient-to-br from-blue-50/80 to-white shadow-sm shadow-blue-100',
+        isBest && !item.active && 'border-amber-300 bg-linear-to-br from-amber-50/70 to-white shadow-sm shadow-amber-100',
         !isBest && 'border-slate-200 bg-white',
         item.active && 'border-blue-400 bg-blue-50/60',
         !item.active && !isRunning && 'hover:border-slate-300',
@@ -140,7 +140,10 @@ function HistoryCard({
             {runStatus.label}
           </span>
         ) : isBest ? (
-          <span className="shrink-0 rounded bg-blue-600 px-2 py-0.5 text-xs font-semibold text-white shadow-sm shadow-blue-300">
+          <span
+            className="shrink-0 rounded border px-2 py-0.5 text-xs font-semibold"
+            style={{ background: '#FFF3C4', color: '#9A6700', borderColor: '#F2C94C' }}
+          >
             최고
           </span>
         ) : (
@@ -235,7 +238,7 @@ function getCoverageStatus(coverage: number | null): CoverageStatus | null {
   if (coverage >= 40) {
     return {
       label: '일부 개선 필요',
-      badgeClass: 'border-amber-100/80 bg-amber-50 text-amber-600',
+      badgeClass: 'border-indigo-200 bg-indigo-50 text-indigo-700',
     };
   }
   return {
