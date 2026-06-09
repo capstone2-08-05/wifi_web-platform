@@ -232,18 +232,18 @@ function getCoverageStatus(coverage: number | null): CoverageStatus | null {
   if (coverage >= 70) {
     return {
       label: '양호',
-      badgeClass: 'border-slate-100 bg-slate-50 text-slate-600',
+      badgeClass: 'border-indigo-200 bg-indigo-50 text-indigo-700',
     };
   }
   if (coverage >= 40) {
     return {
       label: '일부 개선 필요',
-      badgeClass: 'border-indigo-200 bg-indigo-50 text-indigo-700',
+      badgeClass: 'border-slate-200 bg-slate-50 text-slate-500',
     };
   }
   return {
     label: '개선 필요',
-    badgeClass: 'border-slate-100 bg-slate-50 text-slate-500',
+    badgeClass: 'border-slate-200 bg-slate-50 text-slate-500',
   };
 }
 
