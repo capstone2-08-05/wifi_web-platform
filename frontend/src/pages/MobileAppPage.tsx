@@ -1998,17 +1998,10 @@ function SionnaVerificationCard({
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2">
-<<<<<<< HEAD
         <MetricTile label="빠른 예측 신호 범위" value={formatCoveragePercent(predictionCoverage)} />
         <MetricTile label="정밀 예측 신호 범위" value={formatCoveragePercent(sionnaRatio)} />
         <MetricTile label="보정 후 정밀 신호 범위" value={formatCoveragePercent(calibratedSionnaRatio)} />
         <MetricTile label="현재 통합맵 신호 범위" value={formatCoveragePercent(integratedRatio)} />
-=======
-        <MetricTile label="빠른 예측 커버리지" value={formatCoveragePercent(predictionCoverage)} />
-        <MetricTile label="정밀 예측 커버리지" value={formatCoveragePercent(sionnaRatio)} />
-        <MetricTile label="보정 후 정밀 커버리지" value={formatCoveragePercent(calibratedSionnaRatio)} />
-        <MetricTile label="현재 통합맵 커버리지" value={formatCoveragePercent(integratedRatio)} />
->>>>>>> 3aed7c7376fd3a52e404e54a8fdebf0bcbba0197
         <MetricTile label="정밀-통합 차이" value={formatCoverageDelta(sionnaVsIntegrated)} />
         <MetricTile label="정밀 평균 신호" value={formatDbm(sionnaCoverage?.average_rssi_dbm)} />
         <MetricTile label="보정 후 평균 신호" value={formatDbm(calibratedSionnaCoverage?.average_rssi_dbm)} />
