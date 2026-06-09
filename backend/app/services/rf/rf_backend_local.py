@@ -59,6 +59,13 @@ JOB_STATUS_FAILED = "failed"
 
 RF_BACKEND_LOCAL = "local"
 
+RF_REQUEST_METADATA_KEYS = (
+    "physical_aps_snapshot",
+    "band_metadata",
+    "coverage_semantics",
+    "normalization_warnings",
+)
+
 
 # ============================================================
 # Submit
@@ -111,6 +118,7 @@ async def submit_via_local_ai_api(
             "metadata": metadata or {},
             "calibration": calibration_meta,
             "backend": RF_BACKEND_LOCAL,
+            **_request_metadata_fields(metadata),
         },
         metrics_json={},
     )
@@ -120,6 +128,7 @@ async def submit_via_local_ai_api(
         "scene_version_id": str(sv.id),
         "access_points": access_points,
         "simulation": simulation,
+        "metadata": metadata or {},
         "requested_by": current_user.email,
         "backend": RF_BACKEND_LOCAL,
         "local": {
@@ -563,3 +572,9 @@ def _build_sionna_request_payload(
 # ============================================================
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _request_metadata_fields(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    if not metadata:
+        return {}
+    return {key: metadata[key] for key in RF_REQUEST_METADATA_KEYS if key in metadata}

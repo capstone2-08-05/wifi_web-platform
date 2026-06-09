@@ -59,6 +59,11 @@ class ApRecommendationRequest(BaseModel):
     # prefer_5g_then_2g: 5G 가용 시 5G, 아니면 2.4G
     # weighted: 가중 평균 (후속 작업)
     combine_policy: Literal["max", "prefer_5g_then_2g", "weighted"] = "prefer_5g_then_2g"
+    residual_mode: Literal["none", "weak", "full"] = "weak"
+    weak_residual_weight: float = Field(default=0.3, ge=0.0, le=1.0)
+    verify_with_sionna: bool = True
+    verification_top_k: int = Field(default=5, ge=1, le=5)
+    verification_backend: Literal["sagemaker", "local"] = "sagemaker"
 
     calibration_run_id: UUID | None = None
     calibration_policy: Literal["transfer_only", "best_params_only", "combined"] = (
@@ -71,6 +76,7 @@ class ApRecommendationRequest(BaseModel):
     # relocate_selected: IDs that stay fixed (never moved).
     fixed_ap_ids: list[str] = Field(default_factory=list)
     # relocate_selected: IDs to relocate.
+    movable_ap_ids: list[str] = Field(default_factory=list)
     relocate_target_ap_ids: list[str] = Field(default_factory=list)
     # add mode: explicit count of new APs to add (overrides n_aps when > 0).
     additional_ap_count: int = Field(default=0, ge=0, le=5)
@@ -117,6 +123,10 @@ class ApRecommendationItem(BaseModel):
     baseline_improvement_score: float | None = None
     baseline_improvement_db: float | None = None
     prediction_points: list["ApRecommendationPredictionPoint"] = Field(default_factory=list)
+    score_breakdown: dict[str, Any] = Field(default_factory=dict)
+    verified_score: float | None = None
+    verification_status: str | None = None
+    verification_job_id: UUID | None = None
 
 
 class ApRecommendationPredictionPoint(BaseModel):
@@ -169,6 +179,7 @@ class ApRecommendationResponse(BaseModel):
     final_aps: list[dict[str, Any]] = Field(default_factory=list)
     # Per-AP move records: {ap_id, from_x, from_y, to_x, to_y}.
     relocation_moves: list[dict[str, Any]] = Field(default_factory=list)
+    score_breakdown: dict[str, Any] = Field(default_factory=dict)
 
     # ── Physical AP / band 메타데이터 ────────────────────────
     # 추천에 사용된 physical AP 목록 스냅샷
@@ -177,6 +188,11 @@ class ApRecommendationResponse(BaseModel):
     band_metadata: dict[str, Any] = Field(default_factory=dict)
     # 추천이 어떤 band 기준으로 수행됐는지
     recommendation_band: str | None = None
+    band_aware_status: str = "leading_band_only"
+    residual_metadata: dict[str, Any] = Field(default_factory=dict)
+    verify_with_sionna: bool = False
+    verification_status: str | None = None
+    verification_jobs: list[dict[str, Any]] = Field(default_factory=list)
     # coverage semantics 설명
     coverage_semantics: dict[str, Any] = Field(
         default_factory=lambda: {

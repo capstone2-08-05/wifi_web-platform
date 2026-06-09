@@ -23,6 +23,39 @@ export interface FloorPosition {
   z: number;
 }
 
+export interface WifiScanResult {
+  bssid: string | null;
+  ssid: string | null;
+  rssi_dbm: number | null;
+  channel: number | null;
+  frequency_mhz: number | null;
+  band: string | null;
+  channel_width_mhz: number | null;
+  center_frequency_mhz: number | null;
+  security: string | null;
+  capabilities: string | null;
+}
+
+export interface ChannelObservation {
+  connected_ap?: {
+    bssid?: string | null;
+    ssid?: string | null;
+    channel?: number | null;
+    frequency_mhz?: number | null;
+    channel_width_mhz?: number | null;
+    center_frequency_mhz?: number | null;
+    link_speed_mbps?: number | null;
+    tx_link_speed_mbps?: number | null;
+    rx_link_speed_mbps?: number | null;
+    noise_dbm?: number | null;
+    wifi_standard?: string | null;
+  };
+  scan_results?: WifiScanResult[];
+  scan_result_count?: number;
+  same_channel_count?: number;
+  adjacent_channel_count?: number;
+}
+
 export interface MeasurementPoint {
   id: UUID;
   session_id: UUID;
@@ -30,6 +63,9 @@ export interface MeasurementPoint {
   batch_id: string | null;
   floor_position: FloorPosition;
   rssi_dbm: number | null;
+  sinr_db: number | null;
+  latency_ms: number | null;
+  throughput_mbps: number | null;
   measurement_purpose: MeasurementPurpose | null;
   ap_bssid: string | null;
   ap_ssid: string | null;
@@ -39,7 +75,7 @@ export interface MeasurementPoint {
   ar_tracking_state: string | null;
   ar_confidence: number | null;
   step_index: number | null;
-  metadata_json: Record<string, unknown>;
+  metadata_json: Record<string, unknown> & { channel_observation?: ChannelObservation };
   created_at: ISODateString;
 }
 

@@ -964,7 +964,7 @@ function EmptyState({
  * 백엔드 ap-candidates 미구현으로 시연 동안 사용처에서만 주석 처리됨 (정의 유지).
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function ApPlacementPanel({ rfRunId }: { rfRunId: string }) {
+export function ApPlacementPanel({ rfRunId }: { rfRunId: string }) {
   const generate = useGenerateApCandidates();
   const candidatesQuery = useApCandidates(rfRunId);
   const layoutsQuery = useApLayouts(rfRunId);

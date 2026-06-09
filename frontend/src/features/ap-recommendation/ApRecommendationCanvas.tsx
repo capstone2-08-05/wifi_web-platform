@@ -5,6 +5,7 @@ import {
   useImageNaturalDimensions,
 } from '@/features/editor/floorplan-image-extent';
 import type { ApRecommendationResult } from '@/types/ap-recommendation';
+import type { PhysicalAp, RadioInterface } from '@/types/rf';
 import type { DraftObject, DraftOpening, DraftWall, SceneVersion } from '@/types/scene';
 import { cn } from '@/lib/utils';
 import { dbmToHeatmapColor } from '@/lib/rssi-colormap';
@@ -26,7 +27,10 @@ export interface CanvasExistingAp {
   id: string;
   x_m: number;
   y_m: number;
+  z_m?: number;
   label?: string;
+  radios?: RadioInterface[];
+  movable?: boolean;
 }
 
 const RECOMMEND_RADIUS_M = 0.28;
@@ -70,6 +74,9 @@ interface Props {
   activeAreaType: ApRecommendationAreaType;
   onAreasChange: (areas: ApRecommendationArea[]) => void;
   recommendations: ApRecommendationResult[];
+  recommendationMode?: 'add' | 'replace' | 'relocate_all' | 'relocate_selected';
+  selectedReplacementIds?: string[];
+  movableApIds?: string[];
   selectedRecommendationRank: number | null;
   heatmapMode?: 'prediction' | 'measurement';
   measurementHeatmap?: {
@@ -127,10 +134,14 @@ function computeViewBox(
 export function ApRecommendationCanvas({
   sceneVersion,
   backgroundImageUrl,
+  existingAps,
   selectedAreas,
   activeAreaType,
   onAreasChange,
   recommendations,
+  recommendationMode = 'add',
+  selectedReplacementIds = [],
+  movableApIds = [],
   selectedRecommendationRank,
   heatmapMode = 'prediction',
   measurementHeatmap,
@@ -402,6 +413,15 @@ export function ApRecommendationCanvas({
             <ObjectShape key={o.id} object={o} />
           ))}
 
+          {existingAps.map((ap) => (
+            <ExistingApMarker
+              key={ap.id}
+              ap={ap}
+              state={getExistingApState(ap.id, recommendationMode, selectedReplacementIds, movableApIds)}
+              labelFontM={labelFontM}
+            />
+          ))}
+
           {[...recommendations]
             .sort((a, b) => {
               // 선택된 순위를 맨 위에 (마지막 렌더 = SVG 최상단)
@@ -416,6 +436,7 @@ export function ApRecommendationCanvas({
                 rec={rec}
                 selected={selectedRecommendationRank === rec.rank}
                 labelFontM={labelFontM}
+                mode={recommendationMode}
               />
             ))}
         </g>
@@ -512,7 +533,7 @@ export function ApRecommendationCanvas({
           <DbmColorBar
             vmin={heatmapRssiRange.min}
             vmax={heatmapRssiRange.max}
-            label={heatmapMode === 'measurement' ? '실측/보정 RSSI' : '예측 RSSI'}
+            label={heatmapMode === 'measurement' ? '실측/보정 신호' : '예측 신호'}
             className="pointer-events-auto"
           />
         </div>
@@ -623,6 +644,94 @@ function ExistingApMarker({ ap }: { ap: CanvasExistingAp }) {
 }
 */
 
+type ExistingApMarkerState = 'current' | 'fixed' | 'movable' | 'replace-target';
+
+function getExistingApState(
+  apId: string,
+  mode: 'add' | 'replace' | 'relocate_all' | 'relocate_selected',
+  replacementIds: string[],
+  movableIds: string[],
+): ExistingApMarkerState {
+  if (mode === 'replace' && replacementIds.includes(apId)) return 'replace-target';
+  if (mode === 'relocate_all') return 'movable';
+  if (mode === 'relocate_selected') return movableIds.includes(apId) ? 'movable' : 'fixed';
+  return 'current';
+}
+
+function ExistingApMarker({
+  ap,
+  state,
+  labelFontM,
+}: {
+  ap: CanvasExistingAp;
+  state: ExistingApMarkerState;
+  labelFontM: number;
+}) {
+  const r = 0.22;
+  const label = ap.label ?? ap.id.toUpperCase();
+  const styles: Record<ExistingApMarkerState, { fill: string; stroke: string; badge: string }> = {
+    current: { fill: 'oklch(0.48 0.12 250)', stroke: 'white', badge: '' },
+    fixed: { fill: 'oklch(0.42 0.02 250)', stroke: 'oklch(0.85 0.02 250)', badge: 'L' },
+    movable: { fill: 'oklch(0.62 0.16 45)', stroke: 'white', badge: 'M' },
+    'replace-target': { fill: 'oklch(0.58 0.2 25)', stroke: 'white', badge: 'R' },
+  };
+  const style = styles[state];
+  return (
+    <g pointerEvents="none">
+      <circle
+        cx={ap.x_m}
+        cy={ap.y_m}
+        r={r}
+        fill={style.fill}
+        stroke={style.stroke}
+        strokeWidth="2"
+        vectorEffect="non-scaling-stroke"
+        opacity={state === 'current' ? 0.85 : 0.95}
+      />
+      {style.badge && (
+        <g>
+          <circle
+            cx={ap.x_m + r * 0.72}
+            cy={ap.y_m - r * 0.72}
+            r={r * 0.48}
+            fill="white"
+            stroke={style.fill}
+            strokeWidth="1.5"
+            vectorEffect="non-scaling-stroke"
+          />
+          <text
+            x={ap.x_m + r * 0.72}
+            y={ap.y_m - r * 0.72}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            fontSize={Math.max(labelFontM * 0.72, r * 0.54)}
+            fontWeight="800"
+            fill={style.fill}
+            style={{ userSelect: 'none' }}
+          >
+            {style.badge}
+          </text>
+        </g>
+      )}
+      <text
+        x={ap.x_m}
+        y={ap.y_m + r + labelFontM * 0.8}
+        textAnchor="middle"
+        dominantBaseline="middle"
+        fontSize={labelFontM * 0.92}
+        fontWeight="600"
+        fill="oklch(0.25 0.04 240)"
+        stroke="white"
+        strokeWidth={labelFontM * 0.12}
+        paintOrder="stroke fill"
+        style={{ userSelect: 'none' }}
+      >
+        {label}
+      </text>
+    </g>
+  );
+}
+
 function ObjectShape({ object }: { object: DraftObject }) {
   const g = parseGeometry(object.point_geom);
   if (g?.type !== 'Point') return null;
@@ -663,10 +772,12 @@ function RecommendationMarker({
   rec,
   selected,
   labelFontM,
+  mode,
 }: {
   rec: ApRecommendationResult;
   selected: boolean;
   labelFontM: number;
+  mode: 'add' | 'replace' | 'relocate_all' | 'relocate_selected';
 }) {
   const r = RECOMMEND_RADIUS_M;
 
@@ -681,15 +792,37 @@ function RecommendationMarker({
   const labelColor = color.label;
 
   // 멀티 AP일 때 ap_positions 전체 표시, 단일 AP면 recommended_x/y 사용
-  const positions =
-    rec.ap_positions && rec.ap_positions.length > 0
-      ? rec.ap_positions.map((p) => ({ x: p.x, y: p.y, index: p.ap_index }))
-      : [{ x: rec.recommended_x, y: rec.recommended_y, index: 1 }];
+  const positions = getRecommendationPositions(rec);
+  const showMoves = mode === 'replace' || mode === 'relocate_all' || mode === 'relocate_selected';
 
   return (
     <g pointerEvents="none">
+      {showMoves &&
+        (rec.relocation_moves ?? []).map((move) => (
+          <g key={`${move.ap_id}-${move.to_x}-${move.to_y}`}>
+            <line
+              x1={move.from_x}
+              y1={move.from_y}
+              x2={move.to_x}
+              y2={move.to_y}
+              stroke={selected ? 'oklch(0.55 0.2 145)' : 'oklch(0.62 0.16 45)'}
+              strokeWidth="2"
+              strokeDasharray="5 4"
+              vectorEffect="non-scaling-stroke"
+            />
+            <circle
+              cx={move.from_x}
+              cy={move.from_y}
+              r={r * 0.5}
+              fill="white"
+              stroke="oklch(0.62 0.16 45)"
+              strokeWidth="1.5"
+              vectorEffect="non-scaling-stroke"
+            />
+          </g>
+        ))}
       {positions.map((pos) => (
-        <g key={pos.index}>
+        <g key={`${pos.id ?? pos.index}-${pos.x}-${pos.y}`}>
           <circle
             cx={pos.x}
             cy={pos.y}
@@ -724,12 +857,36 @@ function RecommendationMarker({
             paintOrder="stroke fill"
             style={{ userSelect: 'none' }}
           >
-            {positions.length > 1 ? `추천${rec.rank} AP${pos.index}` : `추천 ${rec.rank}`}
+            {positions.length > 1 ? `추천${rec.rank} 공유기${pos.index}` : `추천 ${rec.rank}`}
           </text>
         </g>
       ))}
     </g>
   );
+}
+
+function getRecommendationPositions(rec: ApRecommendationResult): Array<{
+  x: number;
+  y: number;
+  index: number;
+  id?: string;
+}> {
+  type RecommendationPosition = { x: number; y: number; index: number; id?: string };
+  const finalAps = (rec.final_aps ?? rec.recommended_aps ?? []) as Array<
+    Partial<PhysicalAp> & { x?: number; y?: number; x_m?: number; y_m?: number }
+  >;
+  const fromFinal: RecommendationPosition[] = [];
+  finalAps.forEach((ap, idx) => {
+    const x = Number(ap.x ?? ap.x_m);
+    const y = Number(ap.y ?? ap.y_m);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    fromFinal.push({ x, y, index: idx + 1, id: ap.id });
+  });
+  if (fromFinal.length > 0) return fromFinal;
+  if (rec.ap_positions && rec.ap_positions.length > 0) {
+    return rec.ap_positions.map((p) => ({ x: p.x, y: p.y, index: p.ap_index }));
+  }
+  return [{ x: rec.recommended_x, y: rec.recommended_y, index: 1 }];
 }
 
 function buildPredictionCells(points: ApRecommendationResult['prediction_points']) {

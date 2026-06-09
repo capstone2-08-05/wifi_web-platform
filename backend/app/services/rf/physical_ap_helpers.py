@@ -261,6 +261,7 @@ def build_band_metadata(
         out[band] = {
             "frequency_ghz": BAND_DEFAULT_FREQ_GHZ[band],
             "radio_ids": [tx.radio_id for tx in txs],
+            "physical_ap_ids": sorted({tx.physical_ap_id for tx in txs}),
             "transmitter_count": len(txs),
             "calibration_applied": False,  # TODO: band별 calibration 분리 후 갱신
         }
@@ -289,6 +290,9 @@ def physical_aps_to_access_point_list(
                 "z_m": tx.z,
                 "frequency_ghz": tx.frequency_ghz,
                 "tx_power_dbm": tx.tx_power_dbm,
+                "channel": tx.channel,
+                "ssid": tx.ssid,
+                "bssid": tx.bssid,
                 "band": tx.band,
                 "physical_ap_id": tx.physical_ap_id,
                 "radio_id": tx.radio_id,
@@ -308,6 +312,9 @@ def physical_aps_to_access_point_list(
                 "z_m": ap.z,
                 "frequency_ghz": radio.effective_frequency_ghz(),
                 "tx_power_dbm": radio.effective_tx_power_dbm(fallback_tx_power_dbm),
+                "channel": radio.channel,
+                "ssid": radio.ssid,
+                "bssid": radio.bssid,
                 "band": radio.band or "5G",
                 "physical_ap_id": ap_id,
                 "radio_id": radio.id,

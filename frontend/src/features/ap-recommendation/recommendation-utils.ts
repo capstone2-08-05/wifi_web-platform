@@ -4,8 +4,10 @@ import type {
   ApRecommendationResponse,
   ApRecommendationResult,
   ApRecommendationRun,
+  CombinePolicy,
+  RecommendationMode,
 } from '@/types/ap-recommendation';
-import type { PhysicalAp, WifiBand } from '@/types/rf';
+import type { PhysicalAp, RfBackend, WifiBand } from '@/types/rf';
 import type { UUID } from '@/types/common';
 import { parseGeometry } from '@/features/editor/geometry-utils';
 import { CANVAS_BLUE } from '@/lib/canvas-scene-colors';
@@ -88,7 +90,7 @@ export function unionMeterBBoxes(bboxes: MeterBBox[]): MeterBBox | null {
   };
 }
 
-export type RecommendationMode = 'add' | 'replace' | 'relocate_all' | 'relocate_selected';
+export type { CombinePolicy, RecommendationMode };
 
 /** POST /ap-recommendation 요청 본문 조립 (백엔드 default 필드는 생략). */
 export function buildApRecommendationPayload(params: {
@@ -101,13 +103,17 @@ export function buildApRecommendationPayload(params: {
   /** Physical AP 구조. 있으면 existing_aps 보다 우선 처리. */
   physicalAps?: PhysicalAp[];
   targetBands?: WifiBand[];
-  combinePolicy?: 'max' | 'prefer_5g_then_2g' | 'weighted';
+  combinePolicy?: CombinePolicy;
+  verifyWithSionna?: boolean;
+  verificationTopK?: number;
+  verificationBackend?: RfBackend;
   /** 추천 모드. 기본값: 'add'. */
   recommendationMode?: RecommendationMode;
   /** replace 모드: 교체할 AP ID 목록. */
   replaceTargetApIds?: string[];
   /** relocate_selected 모드: 고정 AP ID 목록. */
   fixedApIds?: string[];
+  movableApIds?: string[];
   /** relocate_selected 모드: 재배치할 AP ID 목록. */
   relocateTargetApIds?: string[];
   /** relocate_all 모드: 새 레이아웃에서 AP 총 개수. */
@@ -151,7 +157,16 @@ export function buildApRecommendationPayload(params: {
     calibration_policy: 'transfer_only',
     candidate_tx_power_dbm: params.txPowerDbm,
     existing_aps: mapToExistingAps(params.existingAps, params.txPowerDbm),
-    ...(params.nAps && params.nAps > 1 ? { n_aps: params.nAps } : {}),
+    recommendation_mode: mode,
+    recommendation_unit: 'physical_ap',
+    target_bands: params.targetBands ?? ['5G'],
+    combine_policy: params.combinePolicy ?? 'prefer_5g_then_2g',
+    residual_mode: 'weak',
+    weak_residual_weight: 0.3,
+    verify_with_sionna: params.verifyWithSionna ?? true,
+    verification_top_k: params.verificationTopK ?? 5,
+    verification_backend: params.verificationBackend ?? 'sagemaker',
+    n_recommendations: Math.max(params.verificationTopK ?? 5, 5),
     // Physical AP 구조 — 있으면 포함.
     ...(params.physicalAps && params.physicalAps.length > 0
       ? {
@@ -162,9 +177,20 @@ export function buildApRecommendationPayload(params: {
         }
       : {}),
     // 추천 모드.
-    ...(mode !== 'add' ? { recommendation_mode: mode } : {}),
+    ...(mode === 'add'
+      ? {
+          additional_ap_count: Math.max(1, params.nAps ?? 1),
+          n_aps: Math.max(1, params.nAps ?? 1),
+        }
+      : {}),
     ...(mode === 'replace' && params.replaceTargetApIds?.length
-      ? { replace_target_ap_ids: params.replaceTargetApIds }
+      ? {
+          replace_target_ap_id: params.replaceTargetApIds[0],
+          replace_target_ap_ids: params.replaceTargetApIds,
+        }
+      : {}),
+    ...(mode === 'relocate_selected' && params.movableApIds?.length
+      ? { movable_ap_ids: params.movableApIds }
       : {}),
     ...(mode === 'relocate_selected' && params.relocateTargetApIds?.length
       ? { relocate_target_ap_ids: params.relocateTargetApIds }
@@ -209,6 +235,13 @@ export function normalizeRecommendations(
     baseline_improvement_db: item.baseline_improvement_db,
     prediction_points: item.prediction_points ?? [],
     ap_positions: item.ap_positions,
+    recommended_aps: item.recommended_aps,
+    final_aps: item.final_aps,
+    relocation_moves: item.relocation_moves,
+    score_breakdown: item.score_breakdown,
+    verified_score: item.verified_score,
+    verification_status: item.verification_status,
+    verification_job_id: item.verification_job_id,
   }));
 }
 

@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.rf_defaults import DEFAULT_FREQUENCY_HZ, DEFAULT_TX_POWER_DBM
 from app.core.errors import AppError, ErrorCode
 from app.core.geom import wkb_to_geojson
 from app.models.ap_recommendation_run import (
@@ -48,6 +49,11 @@ from app.services.rf.ap_recommendation_modes import (
     compute_final_aps,
     compute_relocation_moves,
 )
+from app.services.rf.band_quality import (
+    CombinePolicy,
+    combine_band_values,
+    compute_band_quality_summary,
+)
 from app.services.rf.physical_ap_helpers import (
     build_band_metadata,
     normalize_physical_aps_from_request,
@@ -64,6 +70,7 @@ _MIN_CANDIDATES = 4
 _DEFAULT_COVERAGE_THRESHOLD_DBM = -67.0
 _DEFAULT_WEAK_ZONE_THRESHOLD_DBM = -67.0
 _DEFAULT_UNZONED_WEIGHT = 0.2
+_MIN_RECOMMENDATION_SPACING_M = 2.0
 
 CalibrationPolicy = Literal["transfer_only", "best_params_only", "combined"]
 
@@ -123,9 +130,10 @@ class CandidateMetrics:
     baseline_improvement_score: float | None
     baseline_improvement_db: float | None
     final_score: float
+    score_breakdown: dict[str, Any] = field(default_factory=dict)
 
 
-def recommend_ap_location(
+async def recommend_ap_location(
     db: Session,
     request: ApRecommendationRequest,
     current_user: User,
@@ -156,13 +164,34 @@ def recommend_ap_location(
     rssi_transfer = _transfer_from_run(selected_calibration_run, request.calibration_policy)
 
     # 실측 데이터가 있으면 spatial residual 보정 추가
-    rssi_transfer = _compute_residual_transfer(
-        db,
-        floor_id=str(sv.floor_id),
-        scene_version_id=str(sv.id),
-        transfer=rssi_transfer,
-        residual_weight=0.5,
-    )
+    residual_metadata = {
+        "residual_mode": request.residual_mode,
+        "residual_used": False,
+        "residual_weight": 0.0,
+    }
+    if request.residual_mode != "none":
+        residual_weight = (
+            request.weak_residual_weight
+            if request.residual_mode == "weak"
+            else 1.0
+        )
+        rssi_transfer = _compute_residual_transfer(
+            db,
+            floor_id=str(sv.floor_id),
+            scene_version_id=str(sv.id),
+            transfer=rssi_transfer,
+            residual_weight=residual_weight,
+        )
+        residual_metadata = {
+            "residual_mode": request.residual_mode,
+            "residual_used": rssi_transfer.residual_enabled,
+            "residual_weight": rssi_transfer.residual_weight,
+            "residual_note": (
+                "Residual was applied weakly because residuals are measured from the previous AP layout."
+                if request.residual_mode == "weak" and rssi_transfer.residual_enabled
+                else ""
+            ),
+        }
 
     # Physical AP 정규화 — physical_aps 우선, 없으면 legacy existing_aps 변환
     _physical_aps = normalize_physical_aps_from_request(
@@ -244,6 +273,8 @@ def recommend_ap_location(
             candidate_tx_power_dbm=request.candidate_tx_power_dbm,
             coverage_threshold_dbm=coverage_threshold,
             weak_zone_threshold_dbm=weak_zone_threshold,
+            target_bands=request.target_bands,
+            combine_policy=request.combine_policy,
             n=request.n_recommendations,
         )
         recommendations = [
@@ -266,6 +297,8 @@ def recommend_ap_location(
             candidate_tx_power_dbm=request.candidate_tx_power_dbm,
             coverage_threshold_dbm=coverage_threshold,
             weak_zone_threshold_dbm=weak_zone_threshold,
+            target_bands=request.target_bands,
+            combine_policy=request.combine_policy,
         )
         recommendations = [
             _to_response_item(
@@ -317,10 +350,34 @@ def recommend_ap_location(
         ],
         final_aps=final_aps_list,
         relocation_moves=relocation_moves,
+        score_breakdown=(
+            recommendations[0].score_breakdown if recommendations else {}
+        ),
         physical_aps_snapshot=[ap.model_dump(mode="json") for ap in _physical_aps],
         band_metadata=build_band_metadata(_physical_aps, request.target_bands),
         recommendation_band=leading_band,
+        band_aware_status=("full" if len(request.target_bands) > 1 else "leading_band_only"),
+        residual_metadata=residual_metadata,
+        verify_with_sionna=request.verify_with_sionna,
+        verification_status=("pending" if request.verify_with_sionna else None),
+        verification_jobs=[],
     )
+    response.verification_jobs = await _submit_verification_jobs(
+        db=db,
+        scene_version=sv,
+        request=request,
+        recommendations=recommendations,
+        plan=plan,
+        current_user=current_user,
+        enabled=request.verify_with_sionna,
+        top_k=request.verification_top_k,
+    )
+    if request.verify_with_sionna:
+        response.verification_status = (
+            "running"
+            if any(job.get("status") == "running" for job in response.verification_jobs)
+            else "failed"
+        )
     run = _persist_recommendation_run(
         db=db,
         scene_version=sv,
@@ -513,6 +570,18 @@ def _item_row_to_schema(row: ApRecommendationItemRow) -> ApRecommendationItem:
             metrics.get("baseline_improvement_score")
         ),
         baseline_improvement_db=_float_or_none(metrics.get("baseline_improvement_db")),
+        score_breakdown=metrics.get("score_breakdown") or {},
+        verified_score=_float_or_none(metrics.get("verified_score")),
+        verification_status=(
+            str(metrics.get("verification_status"))
+            if metrics.get("verification_status") is not None
+            else None
+        ),
+        verification_job_id=(
+            UUID(str(metrics.get("verification_job_id")))
+            if metrics.get("verification_job_id")
+            else None
+        ),
         prediction_points=[
             ApRecommendationPredictionPoint(**p)
             for p in (row.prediction_points_json or [])
@@ -534,6 +603,162 @@ def _float_or_none(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return parsed if math.isfinite(parsed) else None
+
+
+def _build_verification_job_placeholders(
+    recommendations: list[ApRecommendationItem],
+    *,
+    enabled: bool,
+    top_k: int,
+) -> list[dict[str, Any]]:
+    if not enabled:
+        return []
+    return [
+        {
+            "candidate_rank": item.rank,
+            "candidate_id": f"cand-{item.rank}",
+            "rf_job_id": None,
+            "fast_score": item.score,
+            "verified_score": None,
+            "status": "deferred",
+            "candidate_aps": [pos.model_dump(mode="json") for pos in item.ap_positions],
+        }
+        for item in recommendations[: max(1, top_k)]
+    ]
+
+
+async def _submit_verification_jobs(
+    *,
+    db: Session,
+    scene_version: SceneVersion,
+    request: ApRecommendationRequest,
+    recommendations: list[ApRecommendationItem],
+    plan: RecommendationPlan,
+    current_user: User,
+    enabled: bool,
+    top_k: int,
+) -> list[dict[str, Any]]:
+    if not enabled:
+        return []
+
+    from app.services.rf.rf_job_service import submit_rf_simulation
+
+    jobs: list[dict[str, Any]] = []
+    leading_band = request.target_bands[0] if request.target_bands else "5G"
+    simulation = _verification_simulation_payload(
+        leading_band=leading_band,
+        tx_power_dbm=request.candidate_tx_power_dbm,
+    )
+
+    for item in recommendations[: max(1, top_k)]:
+        top_positions = [(pos.x, pos.y) for pos in item.ap_positions]
+        final_aps = compute_final_aps(plan, top_positions)
+        access_points = _final_aps_to_verification_access_points(final_aps)
+        job_payload: dict[str, Any] = {
+            "candidate_rank": item.rank,
+            "candidate_id": f"cand-{item.rank}",
+            "rf_job_id": None,
+            "rf_run_id": None,
+            "fast_score": item.score,
+            "verified_score": None,
+            "status": "pending",
+            "candidate_aps": final_aps,
+        }
+
+        try:
+            rf_run, job = await submit_rf_simulation(
+                db,
+                scene_version_id=UUID(str(scene_version.id)),
+                access_points=access_points,
+                simulation=dict(simulation),
+                current_user=current_user,
+                run_type="ap_recommendation_verify",
+                metadata={
+                    "source": "ap_recommendation_auto_verification",
+                    "recommendation_rank": item.rank,
+                    "recommendation_score": item.score,
+                    "recommendation_mode": plan.mode,
+                    "verification_top_k": top_k,
+                    "verification_backend": request.verification_backend,
+                    "target_bands": list(request.target_bands),
+                    "combine_policy": request.combine_policy,
+                    "candidate_aps": final_aps,
+                },
+                apply_calibration=True,
+                backend=request.verification_backend,
+            )
+            job_payload.update(
+                {
+                    "rf_job_id": job.id,
+                    "rf_run_id": rf_run.id,
+                    "status": rf_run.status or "running",
+                }
+            )
+            item.verification_job_id = UUID(str(job.id))
+            item.verification_status = rf_run.status or "running"
+            item.score_breakdown = {
+                **(item.score_breakdown or {}),
+                "verification_rf_run_id": rf_run.id,
+                "verification_job_id": job.id,
+                "verification_status": item.verification_status,
+            }
+        except Exception as exc:  # optional verification must not discard fast recommendations
+            logger.warning(
+                "Failed to start AP recommendation verification job rank=%s scene=%s: %s",
+                item.rank,
+                scene_version.id,
+                exc,
+            )
+            job_payload.update(
+                {
+                    "status": "failed_to_start",
+                    "error": str(exc),
+                }
+            )
+            item.verification_status = "failed_to_start"
+            item.score_breakdown = {
+                **(item.score_breakdown or {}),
+                "verification_status": "failed_to_start",
+                "verification_error": str(exc),
+            }
+
+        jobs.append(job_payload)
+
+    return jobs
+
+
+def _verification_simulation_payload(
+    *,
+    leading_band: str,
+    tx_power_dbm: float,
+) -> dict[str, Any]:
+    frequency_hz = 2.437e9 if leading_band == "2.4G" else 5.18e9
+    return {
+        "frequency_hz": frequency_hz or DEFAULT_FREQUENCY_HZ,
+        "tx_power_dbm": tx_power_dbm or DEFAULT_TX_POWER_DBM,
+    }
+
+
+def _final_aps_to_verification_access_points(
+    final_aps: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    access_points: list[dict[str, Any]] = []
+    for index, ap in enumerate(final_aps):
+        x = _float_or_none(ap.get("x"))
+        y = _float_or_none(ap.get("y"))
+        if x is None or y is None:
+            continue
+        ap_id = str(ap.get("id") or f"ap_{index + 1}")
+        access_points.append(
+            {
+                "id": ap_id,
+                "label": ap_id,
+                "x_m": x,
+                "y_m": y,
+                "z_m": 2.5,
+            }
+        )
+    return access_points
 
 
 def _to_response_item(
@@ -564,6 +789,7 @@ def _to_response_item(
         average_rssi_dbm=round(metrics.average_rssi_dbm, 2),
         baseline_improvement_score=_round_optional(metrics.baseline_improvement_score),
         baseline_improvement_db=_round_optional(metrics.baseline_improvement_db),
+        score_breakdown=metrics.score_breakdown,
         prediction_points=[
             ApRecommendationPredictionPoint(
                 x=round(p.x, 3),
@@ -590,6 +816,8 @@ def _greedy_multi_ap(
     candidate_tx_power_dbm: float,
     coverage_threshold_dbm: float,
     weak_zone_threshold_dbm: float,
+    target_bands: list[str],
+    combine_policy: str,
 ) -> list[tuple[list[tuple[float, float]], CandidateMetrics, list[PredictedEvalPoint]]]:
     """Greedy 방식으로 n_aps개 AP 세트를 n_sets개 생성.
 
@@ -610,6 +838,8 @@ def _greedy_multi_ap(
         candidate_tx_power_dbm=candidate_tx_power_dbm,
         coverage_threshold_dbm=coverage_threshold_dbm,
         weak_zone_threshold_dbm=weak_zone_threshold_dbm,
+        target_bands=target_bands,
+        combine_policy=combine_policy,
         n=n_sets,
     )
 
@@ -624,8 +854,14 @@ def _greedy_multi_ap(
 
         # 2번째 AP부터 greedy 추가
         for _ in range(n_aps - 1):
+            available_candidates = [
+                c
+                for c in candidates
+                if c not in ap_set
+                and all(_distance_m(c, chosen) >= _MIN_RECOMMENDATION_SPACING_M for chosen in ap_set)
+            ]
             next_results = _grid_search_topn(
-                candidates=[c for c in candidates if c not in ap_set],
+                candidates=available_candidates,
                 eval_points=eval_points,
                 existing_aps=current_aps,
                 walls=walls,
@@ -636,6 +872,8 @@ def _greedy_multi_ap(
                 candidate_tx_power_dbm=candidate_tx_power_dbm,
                 coverage_threshold_dbm=coverage_threshold_dbm,
                 weak_zone_threshold_dbm=weak_zone_threshold_dbm,
+                target_bands=target_bands,
+                combine_policy=combine_policy,
                 n=1,
             )
             if not next_results:
@@ -662,6 +900,8 @@ def _greedy_multi_ap(
             candidate_tx_power_dbm=candidate_tx_power_dbm,
             coverage_threshold_dbm=coverage_threshold_dbm,
             weak_zone_threshold_dbm=weak_zone_threshold_dbm,
+            target_bands=target_bands,
+            combine_policy=combine_policy,
             n=1,
         )
         if final_results:
@@ -724,6 +964,8 @@ def _generate_candidates_for_request(
         ):
             key = (round(point[0], 6), round(point[1], 6))
             if key in seen:
+                continue
+            if any(_point_in_bbox(point[0], point[1], zone) for zone in request.excluded_zones):
                 continue
             seen.add(key)
             candidates.append(point)
@@ -1337,21 +1579,50 @@ def _validate_mode_targets(
     existing_aps: list[AccessPoint],
 ) -> None:
     """Validate that AP IDs referenced in mode-specific fields exist in existing_aps."""
-    if request.recommendation_mode != "replace":
-        return
-    targets = list(request.replace_target_ap_ids or [])
-    if request.replace_target_ap_id and request.replace_target_ap_id not in targets:
-        targets.append(request.replace_target_ap_id)
-    if not targets:
-        return
     existing_names = {ap.name for ap in existing_aps}
+    if request.recommendation_mode == "replace":
+        targets = list(request.replace_target_ap_ids or [])
+        if request.replace_target_ap_id and request.replace_target_ap_id not in targets:
+            targets.append(request.replace_target_ap_id)
+        if not targets:
+            return
+        label = "replace target AP"
+    elif request.recommendation_mode == "relocate_selected":
+        targets = list(request.relocate_target_ap_ids or [])
+        for movable_id in request.movable_ap_ids:
+            if movable_id not in targets:
+                targets.append(movable_id)
+        if not targets:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST_BODY,
+                "relocate_selected requires at least one movable AP id.",
+                400,
+            )
+        overlap = set(targets) & set(request.fixed_ap_ids or [])
+        if overlap:
+            raise AppError(
+                ErrorCode.INVALID_REQUEST_BODY,
+                f"AP ids cannot be both fixed and movable: {sorted(overlap)}.",
+                400,
+            )
+        label = "relocate target AP"
+    else:
+        return
     for target in targets:
         if target not in existing_names:
             raise AppError(
                 ErrorCode.INVALID_REQUEST_BODY,
-                f"replace target AP '{target}' was not found in existing_aps.",
+                f"{label} '{target}' was not found in existing_aps.",
                 400,
             )
+
+
+def _validate_replace_target(
+    request: ApRecommendationRequest,
+    existing_aps: list[AccessPoint],
+) -> None:
+    """Backward-compatible wrapper for older tests and callers."""
+    _validate_mode_targets(request, existing_aps)
 
 
 def _attach_baseline_rssi(
@@ -1392,6 +1663,101 @@ def apply_rssi_transfer(
         )
         corrected += residual * transfer.residual_weight
     return corrected
+
+
+def _apply_band_aware_scoring(
+    points: list[PredictedEvalPoint],
+    *,
+    target_bands: list[str],
+    combine_policy: str,
+    coverage_threshold_dbm: float,
+    weak_zone_threshold_dbm: float,
+) -> list[PredictedEvalPoint]:
+    active_bands = target_bands or ["5G"]
+    if len(active_bands) == 1:
+        band = active_bands[0]
+        return [
+            PredictedEvalPoint(
+                x=p.x,
+                y=p.y,
+                weight=p.weight,
+                zone_label=p.zone_label,
+                baseline_rssi_dbm=p.baseline_rssi_dbm,
+                candidate_rssi_dbm=_project_rssi_to_band(p.candidate_rssi_dbm, band),
+            )
+            for p in points
+        ]
+
+    return [
+        PredictedEvalPoint(
+            x=p.x,
+            y=p.y,
+            weight=p.weight,
+            zone_label=p.zone_label,
+            baseline_rssi_dbm=p.baseline_rssi_dbm,
+            candidate_rssi_dbm=combine_band_values(
+                _project_rssi_to_band(p.candidate_rssi_dbm, "5G"),
+                _project_rssi_to_band(p.candidate_rssi_dbm, "2.4G"),
+                combine_policy if combine_policy in ("max", "prefer_5g_then_2g", "weighted") else "prefer_5g_then_2g",
+                threshold_5g_dbm=max(-75.0, coverage_threshold_dbm - 3.0),
+            ),
+        )
+        for p in points
+    ]
+
+
+def _band_scores_for_points(
+    band_source_points: list[PredictedEvalPoint],
+    overall_points: list[PredictedEvalPoint],
+    *,
+    target_bands: list[str],
+    combine_policy: str,
+    coverage_threshold_dbm: float,
+    weak_zone_threshold_dbm: float,
+) -> dict[str, Any]:
+    map_5g = [[_project_rssi_to_band(p.candidate_rssi_dbm, "5G") for p in band_source_points]]
+    map_2g = [[_project_rssi_to_band(p.candidate_rssi_dbm, "2.4G") for p in band_source_points]]
+    overall_map = [[p.candidate_rssi_dbm for p in overall_points]]
+    summary = compute_band_quality_summary(
+        map_5g if "5G" in target_bands else None,
+        map_2g if "2.4G" in target_bands else None,
+        overall_map,
+        coverage_threshold_dbm=coverage_threshold_dbm,
+        weak_zone_threshold_dbm=weak_zone_threshold_dbm,
+        combine_policy=combine_policy if combine_policy in ("max", "prefer_5g_then_2g", "weighted") else "prefer_5g_then_2g",
+    )
+    return summary
+
+
+def _project_rssi_to_band(rssi_dbm: float, band: str) -> float:
+    """Approximate fast path-loss RSSI for a target band.
+
+    The current fast scorer is not a full frequency-aware ray tracer. This keeps
+    the path fast while making combine_policy affect score selection. Sionna
+    verification remains the high-fidelity path for final candidates.
+    """
+    if band == "2.4G":
+        return min(-30.0, rssi_dbm + 4.0)
+    return rssi_dbm
+
+
+def _build_score_breakdown(metrics: CandidateMetrics) -> dict[str, Any]:
+    return {
+        "coverage_score": metrics.coverage_score,
+        "coverage_ratio": metrics.coverage_ratio,
+        "weak_zone_improvement": metrics.weak_zone_improvement_db,
+        "weak_zone_improvement_score": metrics.weak_zone_improvement_score,
+        "weak_zone_improvement_db": metrics.weak_zone_improvement_db,
+        "bottom_10_percent": metrics.bottom_10_percent_rssi_dbm,
+        "bottom_10_percent_score": metrics.bottom_10_percent_score,
+        "bottom_10_percent_rssi_dbm": metrics.bottom_10_percent_rssi_dbm,
+        "average_rssi": metrics.average_rssi_dbm,
+        "average_rssi_score": metrics.average_rssi_score,
+        "average_rssi_dbm": metrics.average_rssi_dbm,
+        "baseline_improvement": metrics.baseline_improvement_db,
+        "baseline_improvement_score": metrics.baseline_improvement_score,
+        "baseline_improvement_db": metrics.baseline_improvement_db,
+    }
 
 
 def _interpolate_residual(
@@ -1436,6 +1802,8 @@ def _grid_search_topn(
     candidate_tx_power_dbm: float,
     coverage_threshold_dbm: float,
     weak_zone_threshold_dbm: float,
+    target_bands: list[str],
+    combine_policy: str,
     n: int,
 ) -> list[tuple[float, float, CandidateMetrics, list[PredictedEvalPoint]]]:
     scored: list[tuple[float, float, CandidateMetrics, list[PredictedEvalPoint]]] = []
@@ -1467,12 +1835,28 @@ def _grid_search_topn(
                     candidate_rssi_dbm=calibrated,
                 )
             )
-        metrics = compute_ap_recommendation_metrics(
+        scored_predicted = _apply_band_aware_scoring(
             predicted,
+            target_bands=target_bands,
+            combine_policy=combine_policy,
             coverage_threshold_dbm=coverage_threshold_dbm,
             weak_zone_threshold_dbm=weak_zone_threshold_dbm,
         )
-        scored.append((cx, cy, metrics, predicted))
+        metrics = compute_ap_recommendation_metrics(
+            scored_predicted,
+            coverage_threshold_dbm=coverage_threshold_dbm,
+            weak_zone_threshold_dbm=weak_zone_threshold_dbm,
+        )
+        metrics.score_breakdown = _build_score_breakdown(metrics)
+        metrics.score_breakdown["band_scores"] = _band_scores_for_points(
+            predicted,
+            scored_predicted,
+            target_bands=target_bands,
+            combine_policy=combine_policy,
+            coverage_threshold_dbm=coverage_threshold_dbm,
+            weak_zone_threshold_dbm=weak_zone_threshold_dbm,
+        )
+        scored.append((cx, cy, metrics, scored_predicted))
 
     scored.sort(
         key=lambda t: (
@@ -1483,7 +1867,35 @@ def _grid_search_topn(
         ),
         reverse=True,
     )
-    return scored[:n]
+    return _select_diverse_topn(scored, n=n, min_distance_m=_MIN_RECOMMENDATION_SPACING_M)
+
+
+def _select_diverse_topn(
+    scored: list[tuple[float, float, CandidateMetrics, list[PredictedEvalPoint]]],
+    *,
+    n: int,
+    min_distance_m: float,
+) -> list[tuple[float, float, CandidateMetrics, list[PredictedEvalPoint]]]:
+    if n <= 0:
+        return []
+    selected: list[tuple[float, float, CandidateMetrics, list[PredictedEvalPoint]]] = []
+    for item in scored:
+        point = (item[0], item[1])
+        if all(_distance_m(point, (picked[0], picked[1])) >= min_distance_m for picked in selected):
+            selected.append(item)
+            if len(selected) >= n:
+                return selected
+    for item in scored:
+        if item in selected:
+            continue
+        selected.append(item)
+        if len(selected) >= n:
+            break
+    return selected
+
+
+def _distance_m(a: tuple[float, float], b: tuple[float, float]) -> float:
+    return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
 def _aps_for_candidate(
