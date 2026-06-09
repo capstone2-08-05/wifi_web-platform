@@ -421,23 +421,6 @@ export function ApRecommendationCanvas({
             />
           ))}
 
-          {[...recommendations]
-            .sort((a, b) => {
-              // 선택된 순위를 맨 위에 (마지막 렌더 = SVG 최상단)
-              if (a.rank === selectedRecommendationRank) return 1;
-              if (b.rank === selectedRecommendationRank) return -1;
-              // 나머지는 역순 (낮은 순위일수록 위에 — 1순위가 가장 마지막)
-              return b.rank - a.rank;
-            })
-            .map((rec) => (
-              <RecommendationMarker
-                key={rec.rank}
-                rec={rec}
-                selected={selectedRecommendationRank === rec.rank}
-                labelFontM={labelFontM}
-                mode={recommendationMode}
-              />
-            ))}
         </g>
 
         {/* 선택 영역 — clamp된 좌표, clipPath 밖(배지가 상단에서 잘리지 않도록) */}
@@ -523,6 +506,25 @@ export function ApRecommendationCanvas({
               pointerEvents="none"
             />
           )}
+        </g>
+
+        {/* 추천 마커 — 선택 영역 위에 렌더 */}
+        <g>
+          {[...recommendations]
+            .sort((a, b) => {
+              if (a.rank === selectedRecommendationRank) return 1;
+              if (b.rank === selectedRecommendationRank) return -1;
+              return b.rank - a.rank;
+            })
+            .map((rec) => (
+              <RecommendationMarker
+                key={rec.rank}
+                rec={rec}
+                selected={selectedRecommendationRank === rec.rank}
+                labelFontM={labelFontM}
+                mode={recommendationMode}
+              />
+            ))}
         </g>
       </svg>
 
@@ -782,9 +784,11 @@ function RecommendationMarker({
 
   // 순위별 색상 — 선택 시 진하게, 비선택 시 연하게
   const RANK_COLORS: Record<number, { base: string; dim: string; label: string }> = {
-    1: { base: 'oklch(0.55 0.20 145)', dim: 'oklch(0.72 0.18 145)', label: 'oklch(0.28 0.10 145)' },  // 초록
-    2: { base: 'oklch(0.55 0.20 260)', dim: 'oklch(0.72 0.18 260)', label: 'oklch(0.28 0.10 260)' },  // 파랑
-    3: { base: 'oklch(0.55 0.20 50)',  dim: 'oklch(0.72 0.18 50)',  label: 'oklch(0.28 0.10 50)'  },  // 주황
+    1: { base: '#8BDFDD', dim: '#B8EEEC', label: '#1a6b69' },
+    2: { base: '#C47BE4', dim: '#DFB0F1', label: '#5a1a7a' },
+    3: { base: '#FF8FB7', dim: '#FFBDD4', label: '#7a1a4a' },
+    4: { base: '#67C090', dim: '#9ED8B6', label: '#1e6040' },
+    5: { base: '#D8D365', dim: '#EBEA9B', label: '#5a5710' },
   };
   const color = RANK_COLORS[rec.rank] ?? RANK_COLORS[1];
   const fill = selected ? color.base : color.dim;
