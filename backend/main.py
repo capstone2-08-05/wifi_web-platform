@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 import logging
 
 # 앱 로거 활성화 — `logger = logging.getLogger(__name__)` 로 만든 logger.info() 가

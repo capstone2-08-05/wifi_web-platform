@@ -86,7 +86,7 @@ const AREA_TYPE_OPTIONS: Array<{
   {
     type: 'priority',
     label: '우선 평가 영역',
-    hint: '좌석·작업 공간처럼 Wi-Fi 품질을 중요하게 볼 영역입니다.',
+    hint: 'Wi-Fi 품질을 중요하게 볼 영역입니다.',
     className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
     icon: Target,
   },
@@ -386,7 +386,8 @@ export default function MobileAppPage() {
         const bScore = b.verified_score ?? b.score;
         if (bScore !== aScore) return bScore - aScore;
         return b.score - a.score;
-      });
+      })
+      .map((rec, idx) => ({ ...rec, rank: idx + 1 }));
   }, [recommendations, verificationScoresByRank]);
   const selectedRecommendation = useMemo(
     () => rankedRecommendations.find((rec) => rec.rank === selectedRank) ?? rankedRecommendations[0] ?? null,
@@ -744,202 +745,14 @@ export default function MobileAppPage() {
 
   return (
     <div className="flex h-full flex-col overflow-auto bg-[#F8FAFC]">
-      {/* 본문 헤더 — Figma: 제목 + 설명 + 우측 CTA */}
-      <header className="shrink-0 px-6 pb-4 pt-6 lg:px-8">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0">
-            <h1 className="text-2xl font-bold tracking-tight text-foreground">
-              공유기 위치 추천
-            </h1>
-            <p className="mt-1.5 text-sm text-muted-foreground">
-              설치 가능 영역과 우선 평가 영역을 표시하면 신호가 잘 닿는 공유기 위치를 추천합니다.
-            </p>
-          </div>
-          <div className="flex shrink-0 flex-col items-stretch gap-1.5 sm:items-end">
-            {/* 추천 모드 */}
-            <div className="flex items-center gap-2 sm:justify-end">
-              <span className="text-[12px] text-slate-500">추천 방식</span>
-              <div className="inline-flex items-center rounded-lg bg-slate-100 p-0.5">
-                {(
-                  [
-                    { value: 'add', label: '공유기 추가' },
-                    { value: 'replace', label: '공유기 교체' },
-                    { value: 'relocate_all', label: '전체 재배치' },
-                    { value: 'relocate_selected', label: '선택 재배치' },
-                  ] as const
-                ).map(({ value, label }) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setRecommendationMode(value)}
-                    className={cn(
-                      'inline-flex h-6 items-center rounded-md px-2 text-[11px] transition-colors',
-                      recommendationMode === value
-                        ? 'bg-white font-semibold text-blue-700 shadow-sm'
-                        : 'text-slate-500 hover:text-slate-800',
-                    )}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* 모드별 부가 입력 */}
-            <TargetBandControls
-              targetBands={targetBands}
-              combinePolicy={combinePolicy}
-              onTargetBandsChange={setTargetBands}
-              onCombinePolicyChange={setCombinePolicy}
-              disabled={recommendMutation.isPending}
-            />
-            <RecommendationAdvancedControls />
-
-            {recommendationMode === 'replace' && (
-              <div className="flex items-center gap-2 sm:justify-end">
-                <span className="text-[12px] text-slate-500">교체할 공유기</span>
-                <select
-                  multiple
-                  value={replaceTargetApIds}
-                  onChange={(e) =>
-                    setReplaceTargetApIds(
-                      Array.from(e.target.selectedOptions, (o) => o.value),
-                    )
-                  }
-                  className="h-20 min-w-[120px] rounded border border-slate-200 bg-white px-1.5 py-1 text-[11px] text-slate-800 focus:border-blue-300 focus:outline-none"
-                >
-                  {existingAps.map((ap) => (
-                    <option key={ap.id} value={ap.id}>
-                      {ap.id}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            {recommendationMode === 'relocate_selected' && (
-              <div className="flex items-center gap-2 sm:justify-end">
-                <span className="text-[12px] text-slate-500">재배치할 공유기</span>
-                <select
-                  multiple
-                  value={relocateTargetApIds}
-                  onChange={(e) =>
-                    setRelocateTargetApIds(
-                      Array.from(e.target.selectedOptions, (o) => o.value),
-                    )
-                  }
-                  className="h-20 min-w-[120px] rounded border border-slate-200 bg-white px-1.5 py-1 text-[11px] text-slate-800 focus:border-blue-300 focus:outline-none"
-                >
-                  {existingAps.map((ap) => (
-                    <option key={ap.id} value={ap.id}>
-                      {ap.id}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            {recommendationMode === 'relocate_all' && (
-              <div className="flex items-center gap-2 sm:justify-end">
-                <span className="text-[12px] text-slate-500">최종 공유기 수</span>
-                <div className="flex gap-1">
-                  {[1, 2, 3, 4, 5].map((n) => (
-                    <button
-                      key={n}
-                      type="button"
-                      onClick={() => setTargetTotalAps(n)}
-                      className={cn(
-                        'h-7 w-7 rounded-md text-[12px] font-semibold transition-colors',
-                        (targetTotalAps ?? existingAps.length) === n
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200',
-                      )}
-                    >
-                      {n}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* add / replace 모드에서는 설치 개수 선택 유지 */}
-            {(recommendationMode === 'add' || recommendationMode === 'replace') && (
-            <div className="flex items-center gap-2 sm:justify-end">
-              <span className="text-[12px] text-slate-500">설치할 공유기 수</span>
-              <div className="flex gap-1">
-                {[1, 2, 3, 4, 5].map((n) => (
-                  <button
-                    key={n}
-                    type="button"
-                    onClick={() => setNAps(n)}
-                    className={cn(
-                      'h-7 w-7 rounded-md text-[12px] font-semibold transition-colors',
-                      nAps === n
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200',
-                    )}
-                  >
-                    {n}
-                  </button>
-                ))}
-              </div>
-            </div>
-            )}
-            <label className="flex cursor-pointer select-none items-center gap-2 text-[12px] text-slate-500 sm:justify-end">
-              <input
-                type="checkbox"
-                checked={verifyWithSionna}
-                onChange={(e) => setVerifyWithSionna(e.target.checked)}
-                className="h-3.5 w-3.5"
-              />
-              Sionna 검증 (상위 {verificationTopK}개)
-            </label>
-            <button
-              type="button"
-              onClick={handleRecommend}
-              disabled={!canRecommend}
-              className={cn(
-                'inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold shadow-sm transition-colors',
-                canRecommend
-                  ? 'bg-blue-600 text-white hover:bg-blue-700'
-                  : 'cursor-not-allowed bg-muted text-muted-foreground',
-              )}
-            >
-              {recommendMutation.isPending ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  좋은 위치 계산 중…
-                </>
-              ) : (
-                <>
-                  <Sparkles className="h-4 w-4" />
-                  공유기 위치 찾기
-                </>
-              )}
-            </button>
-            {!latestRfRunId && sceneVersionId && (
-              <p className="text-[11px] text-amber-600 sm:text-right">
-                공유기 위치 저장은 시뮬레이션 실행 후 가능합니다.
-              </p>
-            )}
-            {modeValidationError && !recommendMutation.isPending && (
-              <p className="text-[11px] text-amber-600 sm:text-right">
-                {modeValidationError}
-              </p>
-            )}
-            {sceneVersionId && !canRecommend && !recommendMutation.isPending && (
-              <p className="text-[11px] text-muted-foreground sm:text-right">
-                공유기를 둘 수 있는 영역을 먼저 지정하면 추천을 실행할 수 있습니다.
-              </p>
-            )}
-          </div>
-        </div>
-      </header>
-
       {/* 본문 — lg: 캔버스(좌) + 추천 패널(우), md↓ 단일 컬럼 */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 px-6 pb-8 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-6 lg:px-8">
-        {/* 좌측: 캔버스 + 진행 단계 */}
+      <div className="grid min-h-full grid-cols-1 gap-4 px-6 pb-8 pt-4 lg:grid-cols-[minmax(0,1fr)_400px] lg:gap-5 lg:px-8 lg:pt-6">
+        {/* 좌측: 제목 + 안내 + 캔버스 + 진행 단계 */}
         <div className="flex min-h-0 flex-col gap-4">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-foreground">공유기 위치 추천</h1>
+            <p className="mt-1 text-sm text-muted-foreground">설치 가능 영역과 우선 평가 영역을 표시하면 신호가 잘 닿는 공유기 위치를 추천합니다.</p>
+          </div>
           {sceneVersionId && statusHint && pageStatus !== 'loading' && (
             <div
               key={pageStatus}
@@ -1030,7 +843,7 @@ export default function MobileAppPage() {
                   selectedAreas={selectedAreas}
                   activeAreaType={activeAreaType}
                   onAreasChange={handleAreasChange}
-                  recommendations={recommendations}
+                  recommendations={savedRank != null ? recommendations.filter((r) => r.rank === savedRank) : recommendations}
                   recommendationMode={recommendationMode}
                   selectedReplacementIds={replaceTargetApIds}
                   movableApIds={relocateTargetApIds}
@@ -1066,11 +879,176 @@ export default function MobileAppPage() {
           <div className="h-1.5 shrink-0" />
         </div>
 
-        {/* 우측: 추천 결과 패널 (모바일에서는 하단 카드) */}
-        <aside
-          className={cn(
-            'flex min-h-[280px] flex-col overflow-hidden rounded-2xl bg-white shadow-sm lg:min-h-0 lg:self-stretch',
-            CARD_BORDER,
+        {/* 우측: 컨트롤 + 추천 결과 패널 */}
+        <div className="flex flex-col gap-4">
+          <div className={cn('flex shrink-0 flex-col items-stretch gap-3 rounded-2xl border bg-white px-5 py-5 shadow-sm', CARD_BORDER)}>
+            <div className="flex items-center gap-2">
+              <span className="text-[12px] text-slate-500">추천 방식</span>
+              <div className="inline-flex items-center rounded-lg bg-slate-100 p-0.5">
+                {(
+                  [
+                    { value: 'add', label: '공유기 추가' },
+                    { value: 'replace', label: '공유기 교체' },
+                    { value: 'relocate_all', label: '전체 재배치' },
+                    { value: 'relocate_selected', label: '선택 재배치' },
+                  ] as const
+                ).map(({ value, label }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setRecommendationMode(value)}
+                    className={cn(
+                      'inline-flex h-6 items-center rounded-md px-2 text-[11px] transition-colors',
+                      recommendationMode === value
+                        ? 'bg-white font-semibold text-blue-700 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-800',
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <TargetBandControls
+              targetBands={targetBands}
+              combinePolicy={combinePolicy}
+              onTargetBandsChange={setTargetBands}
+              onCombinePolicyChange={setCombinePolicy}
+              disabled={recommendMutation.isPending}
+            />
+            <RecommendationAdvancedControls />
+            {recommendationMode === 'replace' && (
+              <div className="flex items-center gap-2">
+                <span className="text-[12px] text-slate-500">교체할 공유기</span>
+                <select
+                  multiple
+                  value={replaceTargetApIds}
+                  onChange={(e) =>
+                    setReplaceTargetApIds(
+                      Array.from(e.target.selectedOptions, (o) => o.value),
+                    )
+                  }
+                  className="h-20 min-w-[120px] rounded border border-slate-200 bg-white px-1.5 py-1 text-[11px] text-slate-800 focus:border-blue-300 focus:outline-none"
+                >
+                  {existingAps.map((ap) => (
+                    <option key={ap.id} value={ap.id}>{ap.id}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {recommendationMode === 'relocate_selected' && (
+              <div className="flex items-center gap-2">
+                <span className="text-[12px] text-slate-500">재배치할 공유기</span>
+                <select
+                  multiple
+                  value={relocateTargetApIds}
+                  onChange={(e) =>
+                    setRelocateTargetApIds(
+                      Array.from(e.target.selectedOptions, (o) => o.value),
+                    )
+                  }
+                  className="h-20 min-w-[120px] rounded border border-slate-200 bg-white px-1.5 py-1 text-[11px] text-slate-800 focus:border-blue-300 focus:outline-none"
+                >
+                  {existingAps.map((ap) => (
+                    <option key={ap.id} value={ap.id}>{ap.id}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {recommendationMode === 'relocate_all' && (
+              <div className="flex items-center gap-2">
+                <span className="text-[12px] text-slate-500">최종 공유기 수</span>
+                <div className="flex gap-1">
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setTargetTotalAps(n)}
+                      className={cn(
+                        'h-7 w-7 rounded-md text-[12px] font-semibold transition-colors',
+                        (targetTotalAps ?? existingAps.length) === n
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200',
+                      )}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {(recommendationMode === 'add' || recommendationMode === 'replace') && (
+              <div className="flex items-center gap-2">
+                <span className="text-[12px] text-slate-500">설치할 공유기 수</span>
+                <div className="flex gap-1">
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setNAps(n)}
+                      className={cn(
+                        'h-7 w-7 rounded-md text-[12px] font-semibold transition-colors',
+                        nAps === n
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200',
+                      )}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <label className="flex cursor-pointer select-none items-center gap-2 text-[12px] text-slate-500">
+              <input
+                type="checkbox"
+                checked={verifyWithSionna}
+                onChange={(e) => setVerifyWithSionna(e.target.checked)}
+                className="h-3.5 w-3.5"
+              />
+              Sionna 검증 (상위 {verificationTopK}개)
+            </label>
+            <button
+              type="button"
+              onClick={handleRecommend}
+              disabled={!canRecommend}
+              className={cn(
+                'inline-flex w-full items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold shadow-sm transition-colors',
+                canRecommend
+                  ? 'bg-blue-600 text-white hover:bg-blue-700'
+                  : 'cursor-not-allowed bg-muted text-muted-foreground',
+              )}
+            >
+              {recommendMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  좋은 위치 계산 중…
+                </>
+              ) : (
+                <>
+                  <Sparkles className="h-4 w-4" />
+                  공유기 위치 찾기
+                </>
+              )}
+            </button>
+            {!latestRfRunId && sceneVersionId && (
+              <p className="text-[11px] text-amber-600">
+                공유기 위치 저장은 시뮬레이션 실행 후 가능합니다.
+              </p>
+            )}
+            {modeValidationError && !recommendMutation.isPending && (
+              <p className="text-[11px] text-amber-600">{modeValidationError}</p>
+            )}
+            {sceneVersionId && !canRecommend && !recommendMutation.isPending && (
+              <p className="text-[11px] text-muted-foreground">
+                공유기를 둘 수 있는 영역을 먼저 지정하면 추천을 실행할 수 있습니다.
+              </p>
+            )}
+          </div>
+          <aside
+            className={cn(
+              'flex h-[880px] flex-col overflow-hidden rounded-2xl bg-white shadow-sm',
+              CARD_BORDER,
             'border',
           )}
         >
@@ -1202,6 +1180,7 @@ export default function MobileAppPage() {
             )}
           </div>
         </aside>
+        </div>
       </div>
     </div>
   );
@@ -1428,7 +1407,7 @@ function TargetBandControls({
   ];
 
   return (
-    <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+    <div className="flex flex-wrap items-center gap-2">
       <span className="text-[12px] text-slate-500">주파수</span>
       <div
         className="inline-flex items-center rounded-lg bg-slate-100 p-0.5"
@@ -1470,7 +1449,7 @@ function TargetBandControls({
 
 function RecommendationAdvancedControls() {
   return (
-    <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+    <div className="flex flex-wrap items-center gap-2">
       <span
         className="inline-flex h-7 items-center rounded-md border border-slate-200 bg-white px-2 text-[11px] font-medium text-slate-700"
         title="실측 데이터가 있으면 시스템이 위치별 오차를 약하게 자동 보정합니다."
@@ -2219,9 +2198,11 @@ function RecommendationCard({
   onSelect: () => void;
 }) {
   const RANK_STYLES = [
-    { border: 'border-emerald-300', badge: 'bg-emerald-500', selectedBorder: 'border-emerald-400 ring-1 ring-emerald-300' },
-    { border: 'border-blue-300',    badge: 'bg-blue-500',    selectedBorder: 'border-blue-400 ring-1 ring-blue-300' },
-    { border: 'border-orange-300',  badge: 'bg-orange-500',  selectedBorder: 'border-orange-400 ring-1 ring-orange-300' },
+    { border: 'border-[#8BDFDD]', badge: 'bg-[#8BDFDD]',  selectedBorder: 'border-[#8BDFDD] ring-1 ring-[#8BDFDD]/60', savedButton: 'border-[#8BDFDD] bg-[#8BDFDD] text-white' },
+    { border: 'border-[#C47BE4]', badge: 'bg-[#C47BE4]',  selectedBorder: 'border-[#C47BE4] ring-1 ring-[#9B8EC7]/60', savedButton: 'border-[#C47BE4] bg-[#C47BE4] text-white' },
+    { border: 'border-[#FF8FB7]', badge: 'bg-[#FF8FB7]',  selectedBorder: 'border-[#FF8FB7] ring-1 ring-[#F075AE]/60', savedButton: 'border-[#FF8FB7] bg-[#FF8FB7] text-white' },
+    { border: 'border-[#67C090]', badge: 'bg-[#67C090]',  selectedBorder: 'border-[#67C090] ring-1 ring-[#67C090]/60', savedButton: 'border-[#67C090] bg-[#67C090] text-white' },
+    { border: 'border-[#D8D365]', badge: 'bg-[#D8D365]',  selectedBorder: 'border-[#D8D365] ring-1 ring-[#D8D365]/60', savedButton: 'border-[#D8D365] bg-[#D8D365] text-white' },
   ];
   const style = RANK_STYLES[(rec.rank - 1) % RANK_STYLES.length];
 
@@ -2285,7 +2266,7 @@ function RecommendationCard({
         className={cn(
           'mt-4 w-full rounded-lg border py-2.5 text-sm font-medium transition-colors',
           saved
-            ? 'border-emerald-500 bg-emerald-500 text-white'
+            ? style.savedButton
             : 'border-[#E5EAF2] bg-[#F8FAFC] text-foreground hover:bg-muted/60 disabled:cursor-not-allowed disabled:opacity-50',
         )}
       >
