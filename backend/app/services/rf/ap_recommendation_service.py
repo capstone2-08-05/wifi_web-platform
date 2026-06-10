@@ -641,7 +641,6 @@ async def _submit_verification_jobs(
     if not enabled:
         return []
 
-    import asyncio
     from app.services.rf.rf_job_service import submit_rf_simulation
     from app.services.scene.scene_version_export import export_scene_version_to_scene_json
     from app.services.rf.calibration_worker.apply import (
@@ -671,45 +670,10 @@ async def _submit_verification_jobs(
 
     candidates = recommendations[: max(1, top_k)]
 
-    # S3 + SageMaker invoke 는 asyncio.gather 로 병렬 제출
-    # (DB 조회/쓰기는 각 submit_rf_simulation 내부에서 순차 처리됨)
-    async def _submit_one(item: ApRecommendationItem) -> tuple[ApRecommendationItem, list, Any, Any]:
-        top_positions = [(pos.x, pos.y) for pos in item.ap_positions]
-        final_aps = compute_final_aps(plan, top_positions)
-        access_points = _final_aps_to_verification_access_points(final_aps)
-        rf_run, job = await submit_rf_simulation(
-            db,
-            scene_version_id=UUID(str(scene_version.id)),
-            access_points=access_points,
-            simulation=dict(simulation_template),
-            current_user=current_user,
-            run_type="ap_recommendation_verify",
-            metadata={
-                "source": "ap_recommendation_auto_verification",
-                "recommendation_rank": item.rank,
-                "recommendation_score": item.score,
-                "recommendation_mode": plan.mode,
-                "verification_top_k": top_k,
-                "verification_backend": request.verification_backend,
-                "target_bands": list(request.target_bands),
-                "combine_policy": request.combine_policy,
-                "candidate_aps": final_aps,
-            },
-            apply_calibration=False,
-            backend=request.verification_backend,
-            _prebuilt_scene_json=scene_json,
-            _prebuilt_calibration_meta=calibration_meta,
-        )
-        return item, final_aps, rf_run, job
-
-    results = await asyncio.gather(
-        *[_submit_one(item) for item in candidates],
-        return_exceptions=True,
-    )
-
+    # 같은 db Session을 여러 코루틴이 동시에 사용하는 것은 안전하지 않으므로
+    # (SQLAlchemy Session은 동시성 안전하지 않음), 검증 job은 순차적으로 제출한다.
     jobs: list[dict[str, Any]] = []
-    for i, result in enumerate(results):
-        item = candidates[i]
+    for item in candidates:
         top_positions = [(pos.x, pos.y) for pos in item.ap_positions]
         final_aps = compute_final_aps(plan, top_positions)
         job_payload: dict[str, Any] = {
@@ -723,22 +687,46 @@ async def _submit_verification_jobs(
             "candidate_aps": final_aps,
         }
 
-        if isinstance(result, Exception):
+        try:
+            access_points = _final_aps_to_verification_access_points(final_aps)
+            rf_run, job = await submit_rf_simulation(
+                db,
+                scene_version_id=UUID(str(scene_version.id)),
+                access_points=access_points,
+                simulation=dict(simulation_template),
+                current_user=current_user,
+                run_type="ap_recommendation_verify",
+                metadata={
+                    "source": "ap_recommendation_auto_verification",
+                    "recommendation_rank": item.rank,
+                    "recommendation_score": item.score,
+                    "recommendation_mode": plan.mode,
+                    "verification_top_k": top_k,
+                    "verification_backend": request.verification_backend,
+                    "target_bands": list(request.target_bands),
+                    "combine_policy": request.combine_policy,
+                    "candidate_aps": final_aps,
+                },
+                apply_calibration=False,
+                backend=request.verification_backend,
+                _prebuilt_scene_json=scene_json,
+                _prebuilt_calibration_meta=calibration_meta,
+            )
+        except Exception as exc:
             logger.warning(
                 "Failed to start AP recommendation verification job rank=%s scene=%s: %s",
                 item.rank,
                 scene_version.id,
-                result,
+                exc,
             )
-            job_payload.update({"status": "failed_to_start", "error": str(result)})
+            job_payload.update({"status": "failed_to_start", "error": str(exc)})
             item.verification_status = "failed_to_start"
             item.score_breakdown = {
                 **(item.score_breakdown or {}),
                 "verification_status": "failed_to_start",
-                "verification_error": str(result),
+                "verification_error": str(exc),
             }
         else:
-            _, _, rf_run, job = result
             job_payload.update(
                 {
                     "rf_job_id": job.id,
@@ -769,12 +757,13 @@ def _verification_simulation_payload(
     return {
         "frequency_hz": frequency_hz or DEFAULT_FREQUENCY_HZ,
         "tx_power_dbm": tx_power_dbm or DEFAULT_TX_POWER_DBM,
-        # 검증용: 커버리지 분포 확인이 목적 → 정밀도보다 속도 우선.
-        # diffraction/diffuse_reflection 끄면 10~50× 빨라짐.
-        "samples_per_tx": 100_000,
-        "max_depth": 5,
-        "diffraction": False,
-        "diffuse_reflection": False,
+        # 검증용: top_k 후보마다 반복 실행되므로 시뮬레이션 탭(rf_defaults.py) 풀 정확도보다는
+        # 절충값을 쓴다. diffraction/diffuse_reflection 은 시뮬레이션 탭과 동일하게 켜서
+        # '경향'은 맞추되, samples_per_tx/max_depth 는 낮춰 후보 수만큼 곱연산되는 비용을 절충.
+        "samples_per_tx": 200_000,
+        "max_depth": 6,
+        "diffraction": True,
+        "diffuse_reflection": True,
     }
 
 
@@ -1579,21 +1568,22 @@ def _physical_aps_to_access_points(
     """PhysicalApInput list → 경로 손실 모델용 AccessPoint list.
 
     현재는 AP별 leading radio(첫 번째 활성 radio)를 single-band 기준으로 변환한다.
+    radio가 없는(전부 disabled 또는 빈 리스트) AP는 송신원이 없으므로 제외한다 —
+    band별 Sionna payload(group_radios_by_band 등)와 동일한 기준.
     TODO: band별 scoring 완성 후 band-aware AccessPoint로 확장.
     """
     result: list[AccessPoint] = []
     for ap in physical_aps:
         radios = ap.effective_radios()
-        leading = radios[0] if radios else None
+        if not radios:
+            continue
+        leading = radios[0]
         result.append(
             AccessPoint(
                 name=str(ap.id or ap.name or f"ap_{id(ap)}"),
                 x=ap.x,
                 y=ap.y,
-                tx_power_dbm=(
-                    leading.effective_tx_power_dbm(candidate_tx_power_dbm)
-                    if leading else candidate_tx_power_dbm
-                ),
+                tx_power_dbm=leading.effective_tx_power_dbm(candidate_tx_power_dbm),
             )
         )
     return result
