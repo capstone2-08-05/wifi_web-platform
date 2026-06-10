@@ -86,6 +86,8 @@ AWS_MAX_RETRY_ATTEMPTS = int(os.getenv("AWS_MAX_RETRY_ATTEMPTS", "2"))
 # ============================================
 CORS_ALLOW_ORIGINS = [
     origin.strip()
-    for origin in os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:3000").split(",")
+    for origin in os.getenv(
+        "CORS_ALLOW_ORIGINS", "http://localhost:3000,http://localhost:5173"
+    ).split(",")
     if origin.strip()
 ]
