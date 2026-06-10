@@ -40,6 +40,7 @@ ALLOWED_CALIBRATION_STATUS = {"queued", "running", "completed", "failed"}
 # map computation and response metadata cannot drift.
 RESIDUAL_IDW_RADIUS_M = 6.0
 RESIDUAL_IDW_WEIGHT = 0.6
+RADIO_MAP_EDGE_SNAP_TOLERANCE_M = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -322,8 +323,12 @@ def _load_radio_map(rf_run: RfRun) -> _RadioMap:
 
 
 def _sample_radio_map(radio_map: _RadioMap, x_m: float, y_m: float) -> tuple[float | None, str | None]:
-    if x_m < radio_map.min_x or x_m > radio_map.max_x or y_m < radio_map.min_y or y_m > radio_map.max_y:
+    near_x = radio_map.min_x - RADIO_MAP_EDGE_SNAP_TOLERANCE_M <= x_m <= radio_map.max_x + RADIO_MAP_EDGE_SNAP_TOLERANCE_M
+    near_y = radio_map.min_y - RADIO_MAP_EDGE_SNAP_TOLERANCE_M <= y_m <= radio_map.max_y + RADIO_MAP_EDGE_SNAP_TOLERANCE_M
+    if not near_x or not near_y:
         return None, "outside_bounds"
+    x_m = min(max(x_m, radio_map.min_x), radio_map.max_x)
+    y_m = min(max(y_m, radio_map.min_y), radio_map.max_y)
     col = int(math.floor((x_m - radio_map.min_x) / (radio_map.max_x - radio_map.min_x) * radio_map.width))
     row = int(math.floor((y_m - radio_map.min_y) / (radio_map.max_y - radio_map.min_y) * radio_map.height))
     col = min(max(col, 0), radio_map.width - 1)
@@ -365,8 +370,11 @@ def _split_points(
             status_code=400,
         )
 
+    # Reference-only sessions are common when users record measured ground truth
+    # for comparison. They still need some points to fit the calibration curve,
+    # so only honor explicit purposes when at least one calibration point exists.
     has_explicit_split = strategy == "purpose_or_random" and any(
-        purpose in {"calibration", "validation", "reference"} for _, purpose in rows
+        purpose == "calibration" for _, purpose in rows
     )
     split_by_id: dict[str, str] = {}
     if has_explicit_split:
@@ -703,13 +711,25 @@ def evaluate_calibration_run(
 
     radio_map = _load_radio_map(rr)
     session_ids = [str(s.id) for s in sessions]
-    filters = [
+    base_filters = [
         MeasurementPoint.session_id.in_(session_ids),
         MeasurementPoint.rssi_dbm.isnot(None),
     ]
+    filters = [*base_filters]
     if payload.ap_bssid:
         filters.append(func.lower(MeasurementPoint.ap_bssid) == payload.ap_bssid.lower())
     rows = db.execute(select(MeasurementPoint).where(*filters)).scalars().all()
+    request_warnings: list[str] = []
+    effective_ap_bssid = payload.ap_bssid
+    if payload.ap_bssid and len(rows) < 5:
+        fallback_rows = db.execute(select(MeasurementPoint).where(*base_filters)).scalars().all()
+        if len(fallback_rows) >= 5:
+            request_warnings.append(
+                f"Requested AP BSSID {payload.ap_bssid} had only {len(rows)} RSSI points, "
+                "so calibration used all measured AP RSSI points for this session set."
+            )
+            rows = fallback_rows
+            effective_ap_bssid = None
     split_points, split_meta = _split_points(
         rows,
         {str(s.id): s for s in sessions},
@@ -721,6 +741,22 @@ def evaluate_calibration_run(
     valid_calibration = [
         p for p in sampled if p.split == "calibration" and p.baseline_pred_dbm is not None
     ]
+    if not valid_calibration:
+        valid_sampled = [p for p in sampled if p.baseline_pred_dbm is not None]
+        if valid_sampled:
+            request_warnings.append(
+                "Calibration split contained no points inside the RF map, "
+                "so valid in-bounds measurement points were reused for calibration."
+            )
+            sampled = [
+                _EvalPoint(**{**p.__dict__, "split": "calibration"})
+                if p.baseline_pred_dbm is not None
+                else p
+                for p in sampled
+            ]
+            valid_calibration = [
+                p for p in sampled if p.split == "calibration" and p.baseline_pred_dbm is not None
+            ]
     valid_validation = [
         p for p in sampled if p.split == "validation" and p.baseline_pred_dbm is not None
     ]
@@ -786,7 +822,7 @@ def evaluate_calibration_run(
         ]
     reference_points = [p for p in reference_points if p.invalid_reason is None]
     measured_reference: dict[str, Any] | None = None
-    warnings: list[str] = [*metric_warnings]
+    warnings: list[str] = [*request_warnings, *metric_warnings]
     if payload.visualization.include_reference_map:
         if len(reference_points) < 3:
             warnings.append("Measured reference map skipped because fewer than 3 valid reference points are available.")
@@ -842,6 +878,8 @@ def evaluate_calibration_run(
 
     split_meta = {
         **split_meta,
+        "requested_ap_bssid": payload.ap_bssid,
+        "effective_ap_bssid": effective_ap_bssid,
         "n_reference_points": len(reference_points),
         "n_metric_points": len(metric_points),
         "metric_point_source": metric_point_source,

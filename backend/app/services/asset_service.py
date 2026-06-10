@@ -346,6 +346,39 @@ def open_asset_local_file(
     return path, asset.mime_type or "application/octet-stream"
 
 
+def open_asset_local_file_public(
+    db: Session, asset_id: UUID
+) -> tuple[Path, str]:
+    """`file://` 자산 스트리밍 — 인증 없이 UUID로만 조회. /raw 엔드포인트 전용."""
+    from urllib.parse import urlparse, unquote
+    asset = db.get(Asset, asset_id)
+    if not asset:
+        raise AppError(
+            ErrorCode.UPLOADED_FILE_NOT_FOUND,
+            "Asset not found.",
+            status_code=404,
+        )
+    url_value = asset.storage_url or ""
+    if not url_value.startswith("file://"):
+        raise AppError(
+            ErrorCode.UPLOADED_FILE_NOT_FOUND,
+            "Asset is not a local file.",
+            status_code=404,
+        )
+    parsed = urlparse(url_value)
+    raw_path = unquote(parsed.path)
+    if len(raw_path) >= 3 and raw_path[0] == "/" and raw_path[2] == ":":
+        raw_path = raw_path[1:]
+    path = Path(raw_path)
+    if not path.exists() or not path.is_file():
+        raise AppError(
+            ErrorCode.UPLOADED_FILE_NOT_FOUND,
+            f"Local asset file missing on disk: {path}",
+            status_code=404,
+        )
+    return path, asset.mime_type or "application/octet-stream"
+
+
 def delete_asset(db: Session, asset_id: UUID, user: User) -> None:
     asset, _floor, _project = _get_owned_asset_or_404(db, asset_id, user)
     s3_uri = asset.storage_url if asset.storage_url else None

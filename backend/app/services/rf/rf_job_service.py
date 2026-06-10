@@ -63,11 +63,19 @@ async def submit_rf_simulation(
     metadata: dict[str, Any] | None = None,
     apply_calibration: bool = True,
     backend: str = RF_BACKEND_SAGEMAKER,
+    _prebuilt_scene_json: dict[str, Any] | None = None,
+    _prebuilt_calibration_meta: dict[str, Any] | None = None,
 ) -> tuple[RfRun, Job]:
     """SceneVersion 확인 + scene.json export + 백엔드로 submit + Job/RfRun row 생성.
 
     apply_calibration=True 면 해당 scene_version 의 최신 completed CalibrationRun
     보정값을 scene_json/simulation 에 미리 반영한다 (#88).
+
+    _prebuilt_scene_json: 미리 빌드된 (보정값 적용 완료) scene.json.
+      같은 scene_version으로 여러 번 제출할 때 중복 DB 조회/빌드를 피한다.
+      이 값을 전달할 때는 apply_calibration=False 도 함께 전달해야 한다
+      (보정은 사전 계산 시 이미 적용됐으므로 중복 방지).
+    _prebuilt_calibration_meta: 사전 계산된 보정 메타. request_json 기록용.
 
     backend:
       - "sagemaker" (기본): S3 + invoke_endpoint_async, /rf-jobs/{id} 폴링으로 완료 확인
@@ -86,36 +94,42 @@ async def submit_rf_simulation(
 
     sv = _get_owned_scene_version(db, scene_version_id, current_user)
 
-    # 1) scene.json 빌드 (DB → dict)
-    try:
-        scene_json = export_scene_version_to_scene_json(db, sv.id)
-    except AppError:
-        raise
-    except Exception as exc:
-        raise AppError(
-            ErrorCode.SCENE_VERSION_EXPORT_FAILED,
-            f"Failed to build scene.json from SceneVersion {sv.id}: {exc}",
-            500,
-        ) from exc
+    # 1) scene.json 빌드 (사전 계산값 있으면 재사용)
+    if _prebuilt_scene_json is not None:
+        scene_json = _prebuilt_scene_json
+    else:
+        try:
+            scene_json = export_scene_version_to_scene_json(db, sv.id)
+        except AppError:
+            raise
+        except Exception as exc:
+            raise AppError(
+                ErrorCode.SCENE_VERSION_EXPORT_FAILED,
+                f"Failed to build scene.json from SceneVersion {sv.id}: {exc}",
+                500,
+            ) from exc
 
-    # 1.5) calibration 보정값 반영 (#88) — scene_json/simulation in-place mutation
-    calibration_meta: dict[str, Any] = {"applied": False}
-    if apply_calibration:
-        from app.services.rf.calibration_worker.apply import (
-            apply_to_scene_and_sim,
-            get_latest_calibration,
-        )
+    # 1.5) calibration 보정값 반영 (사전 계산값 있으면 메타만 재사용)
+    if _prebuilt_calibration_meta is not None:
+        calibration_meta = _prebuilt_calibration_meta
+    else:
+        calibration_meta = {"applied": False}
+        if apply_calibration:
+            from app.services.rf.calibration_worker.apply import (
+                apply_to_scene_and_sim,
+                get_latest_calibration,
+            )
 
-        cr = get_latest_calibration(db, str(sv.id))
-        if cr is not None:
-            best_params = (cr.metrics_json or {}).get("best_params") or {}
-            if best_params:
-                summary = apply_to_scene_and_sim(scene_json, simulation, best_params)
-                calibration_meta = {
-                    "applied": True,
-                    "calibration_run_id": cr.id,
-                    "summary": summary,
-                }
+            cr = get_latest_calibration(db, str(sv.id))
+            if cr is not None:
+                best_params = (cr.metrics_json or {}).get("best_params") or {}
+                if best_params:
+                    summary = apply_to_scene_and_sim(scene_json, simulation, best_params)
+                    calibration_meta = {
+                        "applied": True,
+                        "calibration_run_id": cr.id,
+                        "summary": summary,
+                    }
 
     if backend == RF_BACKEND_LOCAL:
         from app.services.rf.rf_backend_local import submit_via_local_ai_api
@@ -319,6 +333,32 @@ async def poll_rf_job(
         # 백그라운드 thread 가 완료시 DB 직접 업데이트 — 폴링은 단순 read.
         # 세션 캐시 회피 위해 refresh.
         db.refresh(job)
+        # 좀비 감지: daemon=True 스레드는 서버 재시작 시 사망 → job 이 영원히 running.
+        # ai_api 타임아웃 600s + overhead = 정상 완료 최대 ~15분.
+        # 20분 이상 running 이면 스레드가 죽은 것으로 간주하고 failed 처리.
+        if job.status == JOB_STATUS_RUNNING and job.started_at:
+            elapsed = (datetime.now(timezone.utc) - job.started_at).total_seconds()
+            if elapsed > 1200:
+                job.status = JOB_STATUS_FAILED
+                job.error_message = (
+                    "[local_ai_api] zombie: background thread likely died on server restart"
+                )
+                job.finished_at = _now_utc()
+                rf_run_id = (job.input_json or {}).get("rf_run_id")
+                if rf_run_id:
+                    rf_run_row = db.execute(
+                        select(RfRun).where(RfRun.id == rf_run_id)
+                    ).scalar_one_or_none()
+                    if rf_run_row is not None:
+                        rf_run_row.status = JOB_STATUS_FAILED
+                try:
+                    db.commit()
+                    logger.warning(
+                        "RF job %s marked failed (zombie detection): ran >20min without completion",
+                        job.id,
+                    )
+                except SQLAlchemyError:
+                    db.rollback()
         return job
 
     sagemaker_meta = (job.input_json or {}).get("sagemaker") or {}
@@ -387,11 +427,29 @@ async def _complete_rf_job(db: Session, job: Job, output_prefix: str) -> Job:
     rf_run = _find_associated_rf_run(db, locked)
     if rf_run is not None:
         rf_run.status = JOB_STATUS_DONE
+        radio_map = inference.result_payload.get("radio_map") or {}
+        # 검증 run 이면 저장된 affine 보정값 적용해 calibrated_values_dbm 추가
+        affine_meta: dict[str, Any] = {}
+        raw_values = radio_map.get("values_dbm")
+        if raw_values and rf_run.run_type == "ap_recommendation_verify":
+            from app.services.rf.calibration_worker.apply import (
+                get_latest_affine_calibration,
+                apply_affine_to_values,
+            )
+            affine = get_latest_affine_calibration(db, str(rf_run.floor_id))
+            if affine:
+                radio_map["calibrated_values_dbm"] = apply_affine_to_values(
+                    raw_values, affine["slope"], affine["intercept_db"]
+                )
+                affine_meta = {"applied": True, **affine}
+            else:
+                affine_meta = {"applied": False}
         rf_run.metrics_json = {
-            "radio_map": inference.result_payload.get("radio_map") or {},
+            "radio_map": radio_map,
             "runtime": inference.result_payload.get("runtime") or {},
             "stages": inference.result_payload.get("stages") or {},
             "outputs": inference.result_payload.get("outputs") or {},
+            "affine_calibration": affine_meta,
         }
         _create_rf_map_rows(db, rf_run, inference)
 

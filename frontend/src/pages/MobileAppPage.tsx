@@ -142,8 +142,17 @@ export default function MobileAppPage() {
 
   const existingAps = useMemo(() => {
     const layouts = apLayoutsQuery.data ?? [];
-    if (layouts.length > 0) return apLayoutsToCanvas(layouts);
-    return apsFromRfRunRequest(latestRfRun?.request_json as Record<string, unknown> | undefined);
+    const fromRfRun = apsFromRfRunRequest(latestRfRun?.request_json as Record<string, unknown> | undefined);
+    if (layouts.length > 0) {
+      const fromLayouts = apLayoutsToCanvas(layouts);
+      // RF run 스냅샷에서 AP UUID로 radio 정보를 보강 (layouts에는 radios 없음)
+      const rfRunById = new Map(fromRfRun.map((ap) => [ap.id, ap]));
+      return fromLayouts.map((ap) => {
+        const rfAp = rfRunById.get(ap.id);
+        return rfAp?.radios ? { ...ap, radios: rfAp.radios } : ap;
+      });
+    }
+    return fromRfRun;
   }, [apLayoutsQuery.data, latestRfRun?.request_json]);
 
   const patchRecommendationScene = useApRecommendationStore((s) => s.patchScene);
@@ -158,10 +167,10 @@ export default function MobileAppPage() {
   const [replaceTargetApIds, setReplaceTargetApIds] = useState<string[]>([]);
   const [relocateTargetApIds, setRelocateTargetApIds] = useState<string[]>([]);
   const [targetTotalAps, setTargetTotalAps] = useState<number | null>(null);
-  const [targetBands, setTargetBands] = useState<WifiBand[]>(['5G']);
-  const [combinePolicy, setCombinePolicy] = useState<CombinePolicy>('prefer_5g_then_2g');
-  const [verifyWithSionna, setVerifyWithSionna] = useState(false);
-  const verificationTopK = 3;
+  const targetBands: WifiBand[] = ['5G'];
+  const combinePolicy: CombinePolicy = 'prefer_5g_then_2g';
+  const verifyWithSionna = true;
+  const verificationTopK = 5;
   const physicalAps = useMemo(
     () => existingAps.map((ap) => canvasApToPhysicalAp(ap, targetBands)),
     [existingAps, targetBands],
@@ -371,13 +380,26 @@ export default function MobileAppPage() {
     });
     return scores;
   }, [autoVerificationRunQueries, autoVerificationRuns]);
+  // 백엔드에서 Sionna 완료 시 affine 보정 적용 후 calibrated_values_dbm 저장 → 별도 API 불필요
+  const calibratedScoresByRank = useMemo(() => {
+    const map = new Map<number, { coverage: GridCoverageMetrics | null; heatmap: RecommendationHeatmap | null }>();
+    autoVerificationRuns.forEach((job, index) => {
+      const run = autoVerificationRunQueries[index]?.data;
+      const heatmap = extractRadioMapHeatmap(run?.metrics_json, { calibrated: true });
+      const coverage = computeGridCoverageMetricsFromValues(heatmap?.valuesDbm);
+      map.set(job.rank, { coverage, heatmap });
+    });
+    return map;
+  }, [autoVerificationRunQueries, autoVerificationRuns]);
   const rankedRecommendations = useMemo(() => {
     return recommendations
       .map((rec) => {
         const verification = verificationScoresByRank.get(rec.rank);
+        const calibrated = calibratedScoresByRank.get(rec.rank);
+        const calibratedScore = computeVerificationScore(calibrated?.coverage ?? null);
         return {
           ...rec,
-          verified_score: verification?.score ?? rec.verified_score ?? null,
+          verified_score: calibratedScore ?? verification?.score ?? rec.verified_score ?? null,
           verification_status: verification?.status ?? rec.verification_status ?? null,
         };
       })
@@ -386,9 +408,8 @@ export default function MobileAppPage() {
         const bScore = b.verified_score ?? b.score;
         if (bScore !== aScore) return bScore - aScore;
         return b.score - a.score;
-      })
-      .map((rec, idx) => ({ ...rec, rank: idx + 1 }));
-  }, [recommendations, verificationScoresByRank]);
+      });
+  }, [recommendations, verificationScoresByRank, calibratedScoresByRank]);
   const selectedRecommendation = useMemo(
     () => rankedRecommendations.find((rec) => rec.rank === selectedRank) ?? rankedRecommendations[0] ?? null,
     [rankedRecommendations, selectedRank],
@@ -408,13 +429,16 @@ export default function MobileAppPage() {
     () => computeGridCoverageMetrics(verificationCalibrationQuery.data),
     [verificationCalibrationQuery.data],
   );
-  const comparisonHeatmap = verificationCalibratedHeatmap ?? verificationHeatmap ?? integratedHeatmap;
+  const selectedRankCalibratedHeatmap = selectedRank != null
+    ? (calibratedScoresByRank.get(selectedRank)?.heatmap ?? null)
+    : null;
+  const comparisonHeatmap = selectedRankCalibratedHeatmap ?? verificationCalibratedHeatmap ?? verificationHeatmap ?? integratedHeatmap;
   const showComparisonHeatmap = compareWithMeasurement && !!comparisonHeatmap;
   const verificationMatchesSelection =
     selectedRecommendation != null && verificationRank === selectedRecommendation.rank;
 
   const canvasHeatmap = showSimComparison && verificationMatchesSelection
-    ? (simComparisonTab === 'baseline' ? baselineHeatmap : (verificationCalibratedHeatmap ?? verificationHeatmap))
+    ? (simComparisonTab === 'baseline' ? baselineHeatmap : (selectedRankCalibratedHeatmap ?? verificationCalibratedHeatmap ?? verificationHeatmap))
     : showComparisonHeatmap ? comparisonHeatmap : null;
   const useComparisonMode = (showSimComparison && verificationMatchesSelection) || showComparisonHeatmap;
 
@@ -711,12 +735,6 @@ export default function MobileAppPage() {
     });
   };
 
-  const handleToggleComparison = () => {
-    const next = !compareWithMeasurement;
-    setCompareWithMeasurement(next);
-    persistRecommendationSession({ compareWithMeasurement: next });
-  };
-
   const modeValidationError = getRecommendationModeError({
     mode: recommendationMode,
     existingApIds: existingAps.map((ap) => ap.id),
@@ -909,14 +927,7 @@ export default function MobileAppPage() {
                 ))}
               </div>
             </div>
-            <TargetBandControls
-              targetBands={targetBands}
-              combinePolicy={combinePolicy}
-              onTargetBandsChange={setTargetBands}
-              onCombinePolicyChange={setCombinePolicy}
-              disabled={recommendMutation.isPending}
-            />
-            <RecommendationAdvancedControls />
+            <RecommendationAdvancedControls topK={verificationTopK} />
             {recommendationMode === 'replace' && (
               <div className="flex items-center gap-2">
                 <span className="text-[12px] text-slate-500">교체할 공유기</span>
@@ -999,15 +1010,6 @@ export default function MobileAppPage() {
                 </div>
               </div>
             )}
-            <label className="flex cursor-pointer select-none items-center gap-2 text-[12px] text-slate-500">
-              <input
-                type="checkbox"
-                checked={verifyWithSionna}
-                onChange={(e) => setVerifyWithSionna(e.target.checked)}
-                className="h-3.5 w-3.5"
-              />
-              Sionna 검증 (상위 {verificationTopK}개)
-            </label>
             <button
               type="button"
               onClick={handleRecommend}
@@ -1055,30 +1057,10 @@ export default function MobileAppPage() {
           <div className="border-b border-[#E5EAF2] px-5 py-4">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-base font-bold text-foreground">추천 위치</h2>
-              {recommendations.length > 0 && (
-                <button
-                  type="button"
-                  onClick={handleToggleComparison}
-                  disabled={!comparisonHeatmap}
-                  className={cn(
-                    'rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors',
-                    showComparisonHeatmap
-                      ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
-                      : 'border-[#E5EAF2] bg-white text-foreground hover:bg-muted/60',
-                    !comparisonHeatmap && 'cursor-not-allowed opacity-50',
-                  )}
-                >
-                  통합 분석 보기
-                </button>
-              )}
             </div>
             {recommendations.length > 0 && (
               <p className="mt-1 text-[11px] text-muted-foreground">
-                {showComparisonHeatmap
-                  ? verificationCalibratedHeatmap
-                    ? '선택 후보의 정밀 검증 결과에 예측·실측 보정을 적용한 통합맵을 보고 있습니다.'
-                    : '측정 페이지의 예측·실측 통합 분석맵을 보고 있습니다.'
-                  : '추천 후보를 클릭하면 해당 위치의 예측 신호 지도가 표시됩니다.'}
+                추천 후보를 클릭하면 해당 위치만 지도에 표시됩니다.
               </p>
             )}
             {recommendationUpdatedAt && recommendations.length > 0 && (
@@ -1164,18 +1146,31 @@ export default function MobileAppPage() {
                     onTabChange={setSimComparisonTab}
                   />
                 )}
-                {rankedRecommendations.map((rec) => (
-                  <RecommendationCard
-                    key={rec.rank}
-                    rec={rec}
-                    selected={selectedRank === rec.rank}
-                    saved={savedRank === rec.rank}
-                    saving={createLayout.isPending && selectedRank === rec.rank}
-                    saveDisabled={!latestRfRunId || createLayout.isPending}
-                    onPreview={() => handlePreviewRecommendation(rec)}
-                    onSelect={() => handleSelectRecommendation(rec)}
-                  />
-                ))}
+                {rankedRecommendations.map((rec) => {
+                  const calData = calibratedScoresByRank.get(rec.rank);
+                  // 보정 heatmap은 Sionna rf_run 완료 시 백엔드에서 자동 저장 - 별도 쿼리 없음
+                  const isCalibrating = autoVerificationRuns.some((job) => {
+                    if (job.rank !== rec.rank) return false;
+                    const idx = autoVerificationRuns.indexOf(job);
+                    const run = autoVerificationRunQueries[idx]?.data;
+                    return !['done', 'completed', 'succeeded'].includes(String(run?.status ?? '').toLowerCase());
+                  });
+                  return (
+                    <RecommendationCard
+                      key={rec.rank}
+                      rec={rec}
+                      selected={selectedRank === rec.rank}
+                      saved={savedRank === rec.rank}
+                      saving={createLayout.isPending && selectedRank === rec.rank}
+                      saveDisabled={!latestRfRunId || createLayout.isPending}
+                      currentCoverage={integratedCoverageMetrics}
+                      calibratedCoverage={calData?.coverage ?? null}
+                      calibrating={isCalibrating}
+                      onPreview={() => handlePreviewRecommendation(rec)}
+                      onSelect={() => handleSelectRecommendation(rec)}
+                    />
+                  );
+                })}
               </div>
             )}
           </div>
@@ -1306,10 +1301,11 @@ function AreaControls({
 
 function canvasApToPhysicalAp(ap: CanvasExistingAp, targetBands: WifiBand[]): PhysicalAp {
   const enabledRadios = (ap.radios ?? []).filter((radio) => radio.enabled !== false);
-  const matchingRadios = enabledRadios.filter((radio) => targetBands.includes(radio.band));
+  // 기존 AP에 radio 정보가 있으면 그대로 사용 (band 필터 없음)
+  // radio 정보가 없을 때만 targetBands로 합성
   const radios =
-    matchingRadios.length > 0
-      ? matchingRadios
+    enabledRadios.length > 0
+      ? enabledRadios
       : targetBands.map((band) => ({
           id: `${ap.id}-${band === '5G' ? '5g' : '2g'}`,
           band,
@@ -1380,74 +1376,7 @@ function getVerificationRunIdForRank(
   return typeof job?.rf_run_id === 'string' ? job.rf_run_id : null;
 }
 
-function TargetBandControls({
-  targetBands,
-  combinePolicy,
-  onTargetBandsChange,
-  onCombinePolicyChange,
-  disabled,
-}: {
-  targetBands: WifiBand[];
-  combinePolicy: CombinePolicy;
-  onTargetBandsChange: (bands: WifiBand[]) => void;
-  onCombinePolicyChange: (policy: CombinePolicy) => void;
-  disabled?: boolean;
-}) {
-  const bandModes: Array<{ key: string; label: string; bands: WifiBand[] }> = [
-    { key: '5g', label: '5GHz', bands: ['5G'] },
-    { key: '2g', label: '2.4GHz', bands: ['2.4G'] },
-    { key: 'dual', label: '5GHz + 2.4GHz', bands: ['5G', '2.4G'] },
-  ];
-  const currentKey =
-    targetBands.length > 1 ? 'dual' : targetBands[0] === '2.4G' ? '2g' : '5g';
-  const policies: Array<{ value: CombinePolicy; label: string }> = [
-    { value: 'prefer_5g_then_2g', label: '5GHz 우선' },
-    { value: 'max', label: '더 강한 신호' },
-    { value: 'weighted', label: '가중 평균' },
-  ];
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <span className="text-[12px] text-slate-500">주파수</span>
-      <div
-        className="inline-flex items-center rounded-lg bg-slate-100 p-0.5"
-        title="2.4GHz와 5GHz는 전파 특성이 달라 추천 평가에 주파수 정보를 함께 전달합니다."
-      >
-        {bandModes.map((mode) => (
-          <button
-            key={mode.key}
-            type="button"
-            disabled={disabled}
-            onClick={() => onTargetBandsChange(mode.bands)}
-            className={cn(
-              'inline-flex h-6 items-center rounded-md px-2 text-[11px] transition-colors',
-              currentKey === mode.key
-                ? 'bg-white font-semibold text-blue-700 shadow-sm'
-                : 'text-slate-500 hover:text-slate-800',
-            )}
-          >
-            {mode.label}
-          </button>
-        ))}
-      </div>
-      <select
-        value={combinePolicy}
-        disabled={disabled}
-        onChange={(event) => onCombinePolicyChange(event.target.value as CombinePolicy)}
-        className="h-7 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-medium text-slate-700 focus:border-blue-300 focus:outline-none disabled:opacity-50"
-        aria-label="주파수 통합 방식"
-      >
-        {policies.map((policy) => (
-          <option key={policy.value} value={policy.value}>
-            {policy.label}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-function RecommendationAdvancedControls() {
+function RecommendationAdvancedControls({ topK }: { topK: number }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
       <span
@@ -1458,9 +1387,9 @@ function RecommendationAdvancedControls() {
       </span>
       <span
         className="inline-flex h-7 items-center rounded-md border border-emerald-200 bg-emerald-50 px-2 text-[11px] font-semibold text-emerald-700"
-        title="추천을 실행하면 상위 5개 후보를 자동으로 정밀 검증하고 결과를 저장합니다."
+        title={`추천을 실행하면 상위 ${topK}개 후보를 SionnaRT로 자동 정밀 검증하고 보정 후 재정렬합니다.`}
       >
-        상위 5개 자동 비교
+        상위 {topK}개 자동 비교
       </span>
     </div>
   );
@@ -1597,11 +1526,14 @@ interface RecommendationHeatmap {
 
 function extractRadioMapHeatmap(
   metricsJson: Record<string, unknown> | null | undefined,
+  { calibrated = false }: { calibrated?: boolean } = {},
 ): RecommendationHeatmap | null {
   const radioMap = metricsJson?.['radio_map'];
   if (!radioMap || typeof radioMap !== 'object') return null;
   const map = radioMap as Record<string, unknown>;
-  const values = coerceNumberGrid(map['values_dbm']);
+  // calibrated=true 면 backend 가 저장한 affine 보정 grid 우선 사용
+  const valuesKey = calibrated ? 'calibrated_values_dbm' : 'values_dbm';
+  const values = coerceNumberGrid(map[valuesKey]) ?? (calibrated ? coerceNumberGrid(map['values_dbm']) : null);
   const bounds = coerceBounds(map['bounds_m']);
   if (!values || !bounds) return null;
   return {
@@ -2186,6 +2118,9 @@ function RecommendationCard({
   saved,
   saving,
   saveDisabled,
+  currentCoverage,
+  calibratedCoverage,
+  calibrating,
   onPreview,
   onSelect,
 }: {
@@ -2194,6 +2129,9 @@ function RecommendationCard({
   saved: boolean;
   saving: boolean;
   saveDisabled: boolean;
+  currentCoverage: GridCoverageMetrics | null;
+  calibratedCoverage: GridCoverageMetrics | null;
+  calibrating: boolean;
   onPreview: () => void;
   onSelect: () => void;
 }) {
@@ -2205,6 +2143,13 @@ function RecommendationCard({
     { border: 'border-[#D8D365]', badge: 'bg-[#D8D365]',  selectedBorder: 'border-[#D8D365] ring-1 ring-[#D8D365]/60', savedButton: 'border-[#D8D365] bg-[#D8D365] text-white' },
   ];
   const style = RANK_STYLES[(rec.rank - 1) % RANK_STYLES.length];
+
+  const curCov = currentCoverage?.coverage_ratio ?? currentCoverage?.coverage_score ?? null;
+  const calCov = calibratedCoverage?.coverage_ratio ?? calibratedCoverage?.coverage_score ?? null;
+  const covDelta = curCov != null && calCov != null ? calCov - curCov : null;
+  const curRssi = currentCoverage?.average_rssi_dbm ?? null;
+  const calRssi = calibratedCoverage?.average_rssi_dbm ?? null;
+  const rssiDelta = curRssi != null && calRssi != null ? calRssi - curRssi : null;
 
   return (
     <article
@@ -2241,11 +2186,42 @@ function RecommendationCard({
             <span className="font-semibold text-foreground">{rec.score.toFixed(3)}</span>
             {rec.verified_score != null && (
               <>
-                {' '}· 정밀 평가{' '}
+                {' '}· 보정 점수{' '}
                 <span className="font-semibold text-emerald-700">{rec.verified_score.toFixed(3)}</span>
               </>
             )}
           </p>
+          {(calibrating || calCov != null) && (
+            <div className="mt-2 rounded-lg border border-[#E5EAF2] bg-[#F8FAFC] px-2.5 py-2">
+              {calibrating && calCov == null ? (
+                <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  보정 계산 중…
+                </span>
+              ) : (
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                  <span className="text-[10px] text-muted-foreground">보정 후 커버리지</span>
+                  <span className="text-[10px] font-semibold text-foreground text-right">
+                    {formatCoveragePercent(calCov)}
+                    {covDelta != null && (
+                      <span className={cn('ml-1', covDelta > 0 ? 'text-emerald-600' : covDelta < 0 ? 'text-red-500' : 'text-muted-foreground')}>
+                        ({covDelta > 0 ? '+' : ''}{(covDelta * 100).toFixed(1)}%)
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground">보정 후 평균 신호</span>
+                  <span className="text-[10px] font-semibold text-foreground text-right">
+                    {formatDbm(calRssi)}
+                    {rssiDelta != null && (
+                      <span className={cn('ml-1', rssiDelta > 0 ? 'text-emerald-600' : rssiDelta < 0 ? 'text-red-500' : 'text-muted-foreground')}>
+                        ({rssiDelta > 0 ? '+' : ''}{rssiDelta.toFixed(1)})
+                      </span>
+                    )}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
           {rec.verification_status && (
             <p className="mt-0.5 text-[11px] text-muted-foreground">
               자동 검증 {formatVerificationStatus(rec.verification_status)}

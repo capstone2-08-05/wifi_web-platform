@@ -420,7 +420,6 @@ export function ApRecommendationCanvas({
               labelFontM={labelFontM}
             />
           ))}
-
         </g>
 
         {/* 선택 영역 — clamp된 좌표, clipPath 밖(배지가 상단에서 잘리지 않도록) */}
@@ -511,11 +510,9 @@ export function ApRecommendationCanvas({
         {/* 추천 마커 — 선택 영역 위에 렌더 */}
         <g>
           {[...recommendations]
-            .sort((a, b) => {
-              if (a.rank === selectedRecommendationRank) return 1;
-              if (b.rank === selectedRecommendationRank) return -1;
-              return b.rank - a.rank;
-            })
+            .filter((rec) =>
+              selectedRecommendationRank == null || rec.rank === selectedRecommendationRank,
+            )
             .map((rec) => (
               <RecommendationMarker
                 key={rec.rank}

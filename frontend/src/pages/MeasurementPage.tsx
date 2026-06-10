@@ -78,7 +78,8 @@ export default function MeasurementPage() {
   const versionsQuery = useFloorVersions(floorId);
   const versions = versionsQuery.data ?? [];
   const currentVersion = versions.find((v) => v.is_current) ?? versions[0] ?? null;
-  const sessionsQuery = useFloorMeasurementSessions(floorId);
+  // 10초 polling — 모바일 "정답(참조) 데이터 추가 측정" 으로 새로 생성되는 reference 세션을 감지.
+  const sessionsQuery = useFloorMeasurementSessions(floorId, { refetchInterval: 10_000 });
   const sessions = sessionsQuery.data?.items ?? EMPTY_MEASUREMENT_SESSIONS;
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectedSceneVersionId, setSelectedSceneVersionId] = useState<string | null>(null);
@@ -281,6 +282,23 @@ export default function MeasurementPage() {
   const hasVersion = versions.length > 0;
   const hasMeasurement = points.length > 0;
 
+  // "정답(참조) 데이터 추가 측정" 은 모바일에서 별도의 새 세션(measurement_purpose='reference')으로
+  // 생성되어 activeSession 과 분리됨 — 같은 floor/scene 의 가장 최근 reference 세션을 찾아
+  // 보정 평가에 함께 포함시킨다.
+  const referenceSession = useMemo(() => {
+    const candidates = sessions
+      .filter(
+        (s) =>
+          s.measurement_purpose === 'reference' &&
+          s.scene_version_id === activeSceneVersionId &&
+          s.id !== activeSession?.id,
+      )
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+    return candidates[0] ?? null;
+  }, [sessions, activeSceneVersionId, activeSession?.id]);
+  const referencePointsQuery = useMeasurementPoints(referenceSession?.id ?? null, 500);
+  const referencePointsCount = referencePointsQuery.data?.items?.length ?? 0;
+
   // §11 캘리브레이션 — 현재 측정 세션 + 최근 RF Run + 현재 버전을 입력으로 사용.
   // 측정 페이지에 둠: 진단 카드에서 차이를 발견한 직후 보정 가능.
   const evaluateCalibration = useEvaluateCalibrationRun();
@@ -297,7 +315,12 @@ export default function MeasurementPage() {
     !!latestRfRunId &&
     !!activeSceneVersionId &&
     hasEnoughMeasurements;
-  const evaluationSessionIds = activeSession?.id ? [activeSession.id] : [];
+  const evaluationSessionIds = useMemo(() => {
+    const ids: string[] = [];
+    if (activeSession?.id) ids.push(activeSession.id);
+    if (referenceSession?.id && !ids.includes(referenceSession.id)) ids.push(referenceSession.id);
+    return ids;
+  }, [activeSession?.id, referenceSession?.id]);
   const calibrationDisabledReason = !hasMeasurement
     ? '먼저 측정을 진행해주세요.'
     : !hasEnoughMeasurements
@@ -333,14 +356,19 @@ export default function MeasurementPage() {
   };
 
   const lastAutoCalibrationKey = useRef<string | null>(null);
+  // 자동 보정 실패 시 동일 session/run 컨텍스트에서 재시도를 막기 위한 플래그.
+  // activeSession/sceneVersion/rfRun이 바뀌면 아래 effect에서 리셋된다.
+  const autoCalibrationFailed = useRef(false);
   useEffect(() => {
     startTransition(() => setCalibrationEvaluation(null));
     lastAutoCalibrationKey.current = null;
+    autoCalibrationFailed.current = false;
   }, [activeSession?.id, activeSceneVersionId, latestRfRunId]);
 
   useEffect(() => {
     if (mode !== 'both') return;
     if (!canCalibrate || !activeSession || !latestRfRunId || !activeSceneVersionId) return;
+    if (autoCalibrationFailed.current) return;
     const sessionIds = evaluationSessionIds.length > 0 ? evaluationSessionIds : [activeSession.id];
     const key = [
       activeSession.floor_id,
@@ -348,6 +376,7 @@ export default function MeasurementPage() {
       latestRfRunId,
       sessionIds.join(','),
       points.length,
+      referencePointsCount,
       selectedApBssid ?? 'all',
     ].join('|');
     if (lastAutoCalibrationKey.current === key) return;
@@ -357,7 +386,7 @@ export default function MeasurementPage() {
         floor_id: activeSession.floor_id,
         rf_run_id: latestRfRunId,
         scene_version_id: activeSceneVersionId,
-        measurement_session_ids: sessionIds,
+        measurement_session_ids: sessionIds.length > 0 ? sessionIds : [activeSession.id],
         ap_bssid: selectedApBssid,
         method: 'affine_rssi_transfer',
         split: { strategy: 'purpose_or_random', holdout_ratio: 0.3, seed: 42 },
@@ -372,18 +401,23 @@ export default function MeasurementPage() {
         onSuccess: (result) => {
           setCalibrationEvaluation(result);
         },
+        onError: () => {
+          autoCalibrationFailed.current = true;
+        },
       },
     );
+  // evaluateCalibration은 useMutation이 매 render마다 새 객체를 반환하므로 deps에서 제외.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     mode,
     canCalibrate,
     activeSession,
     latestRfRunId,
     activeSceneVersionId,
-    evaluationSessionIds,
     points.length,
+    referencePointsCount,
+    evaluationSessionIds,
     selectedApBssid,
-    evaluateCalibration,
   ]);
 
   const calibratedMainHeatmap = useMemo(() => {
@@ -549,6 +583,7 @@ export default function MeasurementPage() {
               parameterUpdates={[]}
               evaluation={calibrationEvaluation}
               backgroundImageUrl={backgroundImageUrl}
+              measuredIntegratedCoverage={coverageResidualQuery.data ?? null}
             />
             <CalibrationHistoryCard
               runs={calibrationRunsQuery.data?.items ?? []}
