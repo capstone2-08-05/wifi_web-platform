@@ -1003,6 +1003,10 @@ def estimate_session_coverage(
         filters.append(func.lower(MeasurementPoint.ap_bssid) == ap_bssid.lower())
     rows = db.execute(select(MeasurementPoint).where(*filters)).scalars().all()
 
+    # reference 측정은 정답용 hold-out 데이터이므로 통합맵/히트맵 추정에 절대 섞지 않는다.
+    session_purpose = session_row.measurement_purpose or "unknown"
+    rows = [r for r in rows if (r.measurement_purpose or session_purpose) != "reference"]
+
     points: list[tuple[float, float, float]] = []
     for r in rows:
         gj = wkb_to_geojson(r.point_geom)
