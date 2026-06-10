@@ -74,6 +74,10 @@ _PARAM_NAMES: list[str] = (
     ]
 )
 
+# 발표/평가 범위 제외용 스위치 — false 면 BO 파라미터 보정을 돌리지 않고
+# job/run 을 baseline(미보정) 상태로 바로 completed 처리. 코드/알고리즘은 그대로 유지.
+CALIBRATION_BO_ENABLED = os.getenv("CALIBRATION_BO_ENABLED", "true").lower() in {"1", "true", "yes"}
+
 # 기본 evaluation budget (env override 가능)
 _BO_N_INITIAL = int(os.getenv("CALIBRATION_BO_N_INITIAL", "12"))
 _BO_N_ITER = int(os.getenv("CALIBRATION_BO_N_ITER", "38"))
@@ -295,6 +299,10 @@ async def poll_calibration_job(
     ).scalar_one_or_none()
     if cr is None:
         _finalize_failure(db, None, job, "CalibrationRun not found")
+        return job
+
+    if not CALIBRATION_BO_ENABLED:
+        _finalize_disabled(db, cr, job)
         return job
 
     try:
@@ -619,6 +627,29 @@ def _write_parameter_updates(
         ))
     for r in rows:
         db.add(r)
+
+
+def _finalize_disabled(db: Session, cr: CalibrationRun, job: Job) -> None:
+    """CALIBRATION_BO_ENABLED=false 일 때의 종료 처리.
+
+    BO 를 돌리지 않고 baseline(미보정) params 로 completed 처리 — ParameterUpdate
+    row 도 쓰지 않으므로 실제 파라미터 변경은 발생하지 않음.
+    """
+    now = datetime.now(timezone.utc)
+    cr.metrics_json = {
+        "status": "skipped",
+        "reason": "calibration_disabled",
+        "best_params": _params_to_dict(CalibrationParams()),
+    }
+    cr.status = "completed"
+    cr.finished_at = now
+    job.status = "completed"
+    job.finished_at = now
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
 
 def _finalize_failure(
