@@ -370,21 +370,25 @@ def _split_points(
             status_code=400,
         )
 
-    # Reference-only sessions are common when users record measured ground truth
-    # for comparison. They still need some points to fit the calibration curve,
-    # so only honor explicit purposes when at least one calibration point exists.
-    has_explicit_split = strategy == "purpose_or_random" and any(
-        purpose == "calibration" for _, purpose in rows
-    )
+    # Reference-purpose points are a hold-out ground truth set: they must never
+    # enter the calibration fit or the random calibration/validation split,
+    # regardless of split strategy or whether any calibration-purpose point exists.
     split_by_id: dict[str, str] = {}
+    fit_rows: list[tuple[MeasurementPoint, str]] = []
+    for p, purpose in rows:
+        if purpose == "reference":
+            split_by_id[p.id] = "reference"
+        else:
+            fit_rows.append((p, purpose))
+
+    has_explicit_split = strategy == "purpose_or_random" and any(
+        purpose == "calibration" for _, purpose in fit_rows
+    )
     if has_explicit_split:
-        for p, purpose in rows:
-            if purpose in {"calibration", "validation", "reference"}:
-                split_by_id[p.id] = purpose
-            else:
-                split_by_id[p.id] = "calibration"
-    else:
-        sorted_rows = sorted(rows, key=lambda item: (str(item[0].session_id), str(item[0].id)))
+        for p, purpose in fit_rows:
+            split_by_id[p.id] = purpose if purpose in {"calibration", "validation"} else "calibration"
+    elif fit_rows:
+        sorted_rows = sorted(fit_rows, key=lambda item: (str(item[0].session_id), str(item[0].id)))
         rng = random.Random(seed)
         shuffled = sorted_rows[:]
         rng.shuffle(shuffled)
@@ -478,24 +482,19 @@ def _calc_metrics(points: list[_EvalPoint]) -> dict[str, float]:
 
 
 def _evaluation_points_for_metrics(points: list[_EvalPoint]) -> tuple[list[_EvalPoint], str, list[str]]:
-    """Pick comparison points without forcing a separate validation purpose.
+    """비교 지표(MAE/RMSE)는 reference-purpose 측정점으로만 계산한다.
 
-    Priority:
-    1. validation points, for backward compatibility with the old 3-way split.
-    2. reference points, the new presentation-oriented measured reference data.
-    3. calibration points, as a last-resort local demo fallback. This is not a
-       leak-free holdout metric, so a warning is returned with the response.
+    calibration 포인트는 이미 fit 에 사용되었으므로 metric 으로 재사용하면
+    data leakage 가 된다. reference 포인트가 없으면 빈 리스트를 반환하고,
+    호출부는 "정답용 참조 측정이 필요합니다" 상태로 응답한다.
     """
-    valid = [p for p in points if p.baseline_pred_dbm is not None]
-    validation = [p for p in valid if p.split == "validation"]
-    if validation:
-        return validation, "validation", []
-    reference = [p for p in valid if p.split == "reference"]
+    reference = [
+        p for p in points if p.split == "reference" and p.baseline_pred_dbm is not None
+    ]
     if reference:
         return reference, "reference", []
-    calibration = [p for p in valid if p.split == "calibration"]
-    return calibration, "calibration", [
-        "No reference/evaluation points were available, so metrics were computed on calibration points. Use separate reference measurements for presentation."
+    return [], "missing", [
+        "정답용 참조 측정이 필요합니다. 보정에 사용하지 않은 별도의 참조(reference) 측정 데이터를 추가해주세요."
     ]
 
 
@@ -812,18 +811,16 @@ def evaluate_calibration_run(
         p for p in calibrated_points if p.split == "validation" and p.baseline_pred_dbm is not None
     ]
     metric_points, metric_point_source, metric_warnings = _evaluation_points_for_metrics(calibrated_points)
-    metrics = _calc_metrics(metric_points)
-    rounded_metrics = {k: round(v, 4) for k, v in metrics.items()}
+    rounded_metrics = (
+        {k: round(v, 4) for k, v in _calc_metrics(metric_points).items()} if metric_points else {}
+    )
 
-    reference_points = [p for p in calibrated_points if p.split == "reference"]
-    if not reference_points:
-        reference_points = [
-            p for p in calibrated_points if p.split in {"calibration", "validation"}
-        ]
-    reference_points = [p for p in reference_points if p.invalid_reason is None]
+    reference_points = [
+        p for p in calibrated_points if p.split == "reference" and p.invalid_reason is None
+    ]
     measured_reference: dict[str, Any] | None = None
     warnings: list[str] = [*request_warnings, *metric_warnings]
-    if payload.visualization.include_reference_map:
+    if payload.visualization.include_reference_map and reference_points:
         if len(reference_points) < 3:
             warnings.append("Measured reference map skipped because fewer than 3 valid reference points are available.")
         else:

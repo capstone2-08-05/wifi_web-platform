@@ -509,10 +509,17 @@ function CalibrationEvaluationPanel({
     <section className="mt-3 space-y-3 rounded-lg border bg-muted/30 p-3">
       <div>
         <p className="text-[11px] font-semibold text-foreground">참조 비교 기준</p>
-        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-          지표는 {comparisonLabelKo} 포인트를 실측 비교 데이터로 사용합니다. 참조맵은 측정값을
-          보간한 결과이며, 절대적인 정답(ground truth)이 아닙니다.
-        </p>
+        {comparisonPoints.length > 0 ? (
+          <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+            지표는 {comparisonLabelKo} 포인트를 실측 비교 데이터로 사용합니다. 참조맵은 측정값을
+            보간한 결과이며, 절대적인 정답(ground truth)이 아닙니다.
+          </p>
+        ) : (
+          <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+            {REFERENCE_MAP_EMPTY_MESSAGE}. 보정에 사용하지 않은 별도의 참조(reference) 측정 데이터를
+            추가하면 비교 지표와 실측 참조맵이 표시됩니다.
+          </p>
+        )}
         {frequencyText && (
           <p className="mt-1 rounded-md border bg-background px-2 py-1 text-[10px] leading-relaxed text-muted-foreground">
             {frequencyText}
@@ -540,87 +547,103 @@ function CalibrationEvaluationPanel({
 
       <div className="overflow-x-auto">
         <div className="grid min-w-[620px] grid-cols-3 gap-2">
-          {displayMaps.map((dm, idx) =>
-            dm.kind === 'grid' ? (
-              <MiniRssiMap
-                key={dm.map.label}
-                map={dm.map}
-                colorScale={evaluation.color_scale}
-                calibrationPoints={evaluation.points.calibration}
-                validationPoints={comparisonPoints}
-                backgroundImageUrl={backgroundImageUrl}
-              />
-            ) : (
-              <MiniRssiMapImage
-                key={`img-${idx}`}
-                label={dm.label}
-                imageUrl={dm.imageUrl}
-                bounds={dm.bounds}
-                rssiRange={dm.rssiRange}
-                calibrationPoints={evaluation.points.calibration}
-                validationPoints={comparisonPoints}
-                backgroundImageUrl={backgroundImageUrl}
-              />
-            ),
-          )}
+          {displayMaps.map((dm, idx) => {
+            if (dm.kind === 'grid') {
+              return (
+                <MiniRssiMap
+                  key={dm.map.label}
+                  map={dm.map}
+                  colorScale={evaluation.color_scale}
+                  calibrationPoints={evaluation.points.calibration}
+                  validationPoints={comparisonPoints}
+                  backgroundImageUrl={backgroundImageUrl}
+                  description={dm.description}
+                />
+              );
+            }
+            if (dm.kind === 'image') {
+              return (
+                <MiniRssiMapImage
+                  key={`img-${idx}`}
+                  label={dm.label}
+                  imageUrl={dm.imageUrl}
+                  bounds={dm.bounds}
+                  rssiRange={dm.rssiRange}
+                  calibrationPoints={evaluation.points.calibration}
+                  validationPoints={comparisonPoints}
+                  backgroundImageUrl={backgroundImageUrl}
+                  description={dm.description}
+                />
+              );
+            }
+            return <MiniRssiMapEmpty key={`empty-${idx}`} label={dm.label} message={dm.message} />;
+          })}
         </div>
       </div>
 
-      <div className="rounded-md border bg-background p-2 text-[11px]">
-        <div className="grid grid-cols-4 gap-2 font-semibold text-muted-foreground">
-          <span>지표</span>
-          <span>보정 전</span>
-          <span>보정 후</span>
-          <span>개선</span>
+      {comparisonPoints.length === 0 ? (
+        <div className="rounded-md border border-dashed bg-background p-3 text-center text-[11px] text-muted-foreground">
+          {REFERENCE_MAP_EMPTY_MESSAGE}
         </div>
-        <MetricRow
-          label="MAE"
-          before={fmt(m.baseline_mae_db)}
-          after={fmt(m.calibrated_mae_db)}
-          improvement={`${fmt(m.mae_improvement_db)} dB`}
-        />
-        <MetricRow
-          label="RMSE"
-          before={fmt(m.baseline_rmse_db)}
-          after={fmt(m.calibrated_rmse_db)}
-          improvement={`${fmt(m.rmse_improvement_db)} dB`}
-        />
-        <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
-          MAE는 평균 오차입니다. RMSE는 큰 오차를 더 크게 반영해서, 특정 위치에서 예측이 많이 틀어졌는지 보기 좋습니다.
-        </p>
-      </div>
+      ) : (
+        <>
+          <div className="rounded-md border bg-background p-2 text-[11px]">
+            <div className="grid grid-cols-4 gap-2 font-semibold text-muted-foreground">
+              <span>지표</span>
+              <span>보정 전</span>
+              <span>보정 후</span>
+              <span>개선</span>
+            </div>
+            <MetricRow
+              label="MAE"
+              before={fmt(m.baseline_mae_db)}
+              after={fmt(m.calibrated_mae_db)}
+              improvement={`${fmt(m.mae_improvement_db)} dB`}
+            />
+            <MetricRow
+              label="RMSE"
+              before={fmt(m.baseline_rmse_db)}
+              after={fmt(m.calibrated_rmse_db)}
+              improvement={`${fmt(m.rmse_improvement_db)} dB`}
+            />
+            <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+              MAE는 평균 오차입니다. RMSE는 큰 오차를 더 크게 반영해서, 특정 위치에서 예측이 많이 틀어졌는지 보기 좋습니다.
+            </p>
+          </div>
 
-      <details className="rounded-md border bg-background text-[11px]">
-        <summary className="cursor-pointer px-3 py-2 font-medium">
-          참조 비교 오차 ({comparisonPoints.length}개)
-        </summary>
-        <div className="max-h-48 overflow-auto">
-          <table className="w-full min-w-[520px] text-left">
-            <thead className="sticky top-0 bg-background text-muted-foreground">
-              <tr>
-                <th className="px-2 py-1">포인트</th>
-                <th className="px-2 py-1">실측</th>
-                <th className="px-2 py-1">보정 전</th>
-                <th className="px-2 py-1">보정 후</th>
-                <th className="px-2 py-1">보정 전 오차</th>
-                <th className="px-2 py-1">보정 후 오차</th>
-              </tr>
-            </thead>
-            <tbody>
-              {comparisonPoints.map((p, idx) => (
-                <tr key={p.point_id} className="border-t">
-                  <td className="px-2 py-1">P{String(idx + 1).padStart(2, '0')}</td>
-                  <td className="px-2 py-1">{fmt(p.rssi_dbm)} dBm</td>
-                  <td className="px-2 py-1">{fmt(p.baseline_pred_dbm)} dBm</td>
-                  <td className="px-2 py-1">{fmt(p.calibrated_pred_dbm)} dBm</td>
-                  <td className="px-2 py-1">{fmt(p.baseline_error_db)} dB</td>
-                  <td className="px-2 py-1">{fmt(p.calibrated_error_db)} dB</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </details>
+          <details className="rounded-md border bg-background text-[11px]">
+            <summary className="cursor-pointer px-3 py-2 font-medium">
+              참조 비교 오차 ({comparisonPoints.length}개)
+            </summary>
+            <div className="max-h-48 overflow-auto">
+              <table className="w-full min-w-[520px] text-left">
+                <thead className="sticky top-0 bg-background text-muted-foreground">
+                  <tr>
+                    <th className="px-2 py-1">포인트</th>
+                    <th className="px-2 py-1">실측</th>
+                    <th className="px-2 py-1">보정 전</th>
+                    <th className="px-2 py-1">보정 후</th>
+                    <th className="px-2 py-1">보정 전 오차</th>
+                    <th className="px-2 py-1">보정 후 오차</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {comparisonPoints.map((p, idx) => (
+                    <tr key={p.point_id} className="border-t">
+                      <td className="px-2 py-1">P{String(idx + 1).padStart(2, '0')}</td>
+                      <td className="px-2 py-1">{fmt(p.rssi_dbm)} dBm</td>
+                      <td className="px-2 py-1">{fmt(p.baseline_pred_dbm)} dBm</td>
+                      <td className="px-2 py-1">{fmt(p.calibrated_pred_dbm)} dBm</td>
+                      <td className="px-2 py-1">{fmt(p.baseline_error_db)} dB</td>
+                      <td className="px-2 py-1">{fmt(p.calibrated_error_db)} dB</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        </>
+      )}
 
       <CalibrationEvaluationDetailModal
         open={detailOpen}
@@ -687,8 +710,9 @@ function CalibrationEvaluationDetailModal({
           <div>
             <h2 className="text-base font-semibold">3-way RSSI 맵 비교</h2>
             <p className="text-xs text-muted-foreground">
-              동일 도면·격자·범위·색상 스케일 기준. 지표는 {comparisonLabelKo} 포인트를 실측
-              비교 데이터로 사용합니다.
+              {comparisonPoints.length > 0
+                ? `동일 도면·격자·범위·색상 스케일 기준. 지표는 ${comparisonLabelKo} 포인트를 실측 비교 데이터로 사용합니다.`
+                : `동일 도면·격자·범위·색상 스케일 기준. ${REFERENCE_MAP_EMPTY_MESSAGE}.`}
             </p>
             {frequencyText && (
               <p className="mt-1 text-xs text-muted-foreground">{frequencyText}</p>
@@ -720,110 +744,126 @@ function CalibrationEvaluationDetailModal({
 
         <div className="min-h-0 flex-1 overflow-auto p-5">
           <div className="grid gap-4 xl:grid-cols-3">
-            {displayMaps.map((dm, idx) =>
-              dm.kind === 'grid' ? (
-                <MiniRssiMap
-                  key={dm.map.label}
-                  map={dm.map}
-                  colorScale={evaluation.color_scale}
-                  calibrationPoints={evaluation.points.calibration}
-                  validationPoints={comparisonPoints}
-                  backgroundImageUrl={backgroundImageUrl}
-                  size="large"
-                  errorMode={dm.map.label.toLowerCase().includes('baseline') ? 'baseline' : dm.map.label.toLowerCase().includes('calibrated') ? 'calibrated' : undefined}
-                />
-              ) : (
-                <MiniRssiMapImage
-                  key={`img-${idx}`}
-                  label={dm.label}
-                  imageUrl={dm.imageUrl}
-                  bounds={dm.bounds}
-                  rssiRange={dm.rssiRange}
-                  calibrationPoints={evaluation.points.calibration}
-                  validationPoints={comparisonPoints}
-                  backgroundImageUrl={backgroundImageUrl}
-                  size="large"
-                />
-              ),
-            )}
+            {displayMaps.map((dm, idx) => {
+              if (dm.kind === 'grid') {
+                return (
+                  <MiniRssiMap
+                    key={dm.map.label}
+                    map={dm.map}
+                    colorScale={evaluation.color_scale}
+                    calibrationPoints={evaluation.points.calibration}
+                    validationPoints={comparisonPoints}
+                    backgroundImageUrl={backgroundImageUrl}
+                    size="large"
+                    errorMode={dm.map.label.toLowerCase().includes('baseline') ? 'baseline' : dm.map.label.toLowerCase().includes('calibrated') ? 'calibrated' : undefined}
+                    description={dm.description}
+                  />
+                );
+              }
+              if (dm.kind === 'image') {
+                return (
+                  <MiniRssiMapImage
+                    key={`img-${idx}`}
+                    label={dm.label}
+                    imageUrl={dm.imageUrl}
+                    bounds={dm.bounds}
+                    rssiRange={dm.rssiRange}
+                    calibrationPoints={evaluation.points.calibration}
+                    validationPoints={comparisonPoints}
+                    backgroundImageUrl={backgroundImageUrl}
+                    size="large"
+                    description={dm.description}
+                  />
+                );
+              }
+              return <MiniRssiMapEmpty key={`empty-${idx}`} label={dm.label} message={dm.message} size="large" />;
+            })}
           </div>
 
-          <div className="mt-4 grid gap-4 lg:grid-cols-[24rem_1fr]">
-            <div className="rounded-lg border bg-muted/20 p-4 text-sm">
-              <p className="font-semibold">비교 지표</p>
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                MAE는 각 측정 지점의 평균 오차입니다. RMSE는 큰 오차를 더 크게 반영해서, 보정 후에도 크게 틀린 구간이 남아 있는지 보여줍니다.
-              </p>
-              <div className="mt-3 grid grid-cols-4 gap-2 text-xs font-semibold text-muted-foreground">
-                <span>지표</span>
-                <span>보정 전</span>
-                <span>보정 후</span>
-                <span>개선</span>
-              </div>
-              <MetricRow
-                label="MAE"
-                before={fmt(m.baseline_mae_db)}
-                after={fmt(m.calibrated_mae_db)}
-                improvement={`${fmt(m.mae_improvement_db)} dB`}
-              />
-              <MetricRow
-                label="RMSE"
-                before={fmt(m.baseline_rmse_db)}
-                after={fmt(m.calibrated_rmse_db)}
-                improvement={`${fmt(m.rmse_improvement_db)} dB`}
-              />
-              <div className="mt-4 flex flex-wrap gap-3 text-xs text-muted-foreground">
-                <span className="inline-flex items-center gap-1">
-                  <span className="h-2.5 w-2.5 rounded-full bg-[#0f766e]" />
-                  보정용
-                </span>
-                <span className="inline-flex items-center gap-1">
-                  <span className="h-0 w-0 border-x-[5px] border-b-[9px] border-x-transparent border-b-[#dc2626]" />
-                  비교용
-                </span>
-              </div>
+          {comparisonPoints.length === 0 ? (
+            <div className="mt-4 rounded-lg border border-dashed bg-muted/20 p-6 text-center text-sm text-muted-foreground">
+              {REFERENCE_MAP_EMPTY_MESSAGE}
             </div>
+          ) : (
+            <>
+              <div className="mt-4 grid gap-4 lg:grid-cols-[24rem_1fr]">
+                <div className="rounded-lg border bg-muted/20 p-4 text-sm">
+                  <p className="font-semibold">비교 지표</p>
+                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                    MAE는 각 측정 지점의 평균 오차입니다. RMSE는 큰 오차를 더 크게 반영해서, 보정 후에도 크게 틀린 구간이 남아 있는지 보여줍니다.
+                  </p>
+                  <div className="mt-3 grid grid-cols-4 gap-2 text-xs font-semibold text-muted-foreground">
+                    <span>지표</span>
+                    <span>보정 전</span>
+                    <span>보정 후</span>
+                    <span>개선</span>
+                  </div>
+                  <MetricRow
+                    label="MAE"
+                    before={fmt(m.baseline_mae_db)}
+                    after={fmt(m.calibrated_mae_db)}
+                    improvement={`${fmt(m.mae_improvement_db)} dB`}
+                  />
+                  <MetricRow
+                    label="RMSE"
+                    before={fmt(m.baseline_rmse_db)}
+                    after={fmt(m.calibrated_rmse_db)}
+                    improvement={`${fmt(m.rmse_improvement_db)} dB`}
+                  />
+                  <div className="mt-4 flex flex-wrap gap-3 text-xs text-muted-foreground">
+                    <span className="inline-flex items-center gap-1">
+                      <span className="h-2.5 w-2.5 rounded-full bg-[#0f766e]" />
+                      보정용
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <span className="h-0 w-0 border-x-[5px] border-b-[9px] border-x-transparent border-b-[#dc2626]" />
+                      비교용
+                    </span>
+                  </div>
+                </div>
 
-            <div className="rounded-lg border bg-background p-4 text-xs">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <p className="font-semibold">포인트별 오차</p>
-                <p className="text-muted-foreground">보정 전 vs 보정 후 (dB)</p>
+                <div className="rounded-lg border bg-background p-4 text-xs">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <p className="font-semibold">포인트별 오차</p>
+                    <p className="text-muted-foreground">보정 전 vs 보정 후 (dB)</p>
+                  </div>
+                  <ErrorBarChart points={comparisonPoints} />
+                </div>
               </div>
-              <ErrorBarChart points={comparisonPoints} />
-            </div>
-          </div>
 
-          <div className="mt-4 rounded-lg border bg-background text-xs">
-              <div className="border-b px-4 py-3 font-semibold">
-                참조 비교 오차 ({comparisonPoints.length}개)
+              <div className="mt-4 rounded-lg border bg-background text-xs">
+                  <div className="border-b px-4 py-3 font-semibold">
+                    참조 비교 오차 ({comparisonPoints.length}개)
+                  </div>
+                  <div className="max-h-72 overflow-auto">
+                    <table className="w-full min-w-[640px] text-left">
+                      <thead className="sticky top-0 bg-background text-muted-foreground">
+                        <tr>
+                          <th className="px-3 py-2">포인트</th>
+                          <th className="px-3 py-2">실측</th>
+                          <th className="px-3 py-2">보정 전 예측</th>
+                          <th className="px-3 py-2">보정 후 예측</th>
+                          <th className="px-3 py-2">보정 전 오차</th>
+                          <th className="px-3 py-2">보정 후 오차</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {comparisonPoints.map((p, idx) => (
+                          <tr key={p.point_id} className="border-t">
+                            <td className="px-3 py-2">P{String(idx + 1).padStart(2, '0')}</td>
+                            <td className="px-3 py-2">{fmt(p.rssi_dbm)} dBm</td>
+                            <td className="px-3 py-2">{fmt(p.baseline_pred_dbm)} dBm</td>
+                            <td className="px-3 py-2">{fmt(p.calibrated_pred_dbm)} dBm</td>
+                            <td className="px-3 py-2">{fmt(p.baseline_error_db)} dB</td>
+                            <td className="px-3 py-2">{fmt(p.calibrated_error_db)} dB</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
               </div>
-              <div className="max-h-72 overflow-auto">
-                <table className="w-full min-w-[640px] text-left">
-                  <thead className="sticky top-0 bg-background text-muted-foreground">
-                    <tr>
-                      <th className="px-3 py-2">포인트</th>
-                      <th className="px-3 py-2">실측</th>
-                      <th className="px-3 py-2">보정 전 예측</th>
-                      <th className="px-3 py-2">보정 후 예측</th>
-                      <th className="px-3 py-2">보정 전 오차</th>
-                      <th className="px-3 py-2">보정 후 오차</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {comparisonPoints.map((p, idx) => (
-                      <tr key={p.point_id} className="border-t">
-                        <td className="px-3 py-2">P{String(idx + 1).padStart(2, '0')}</td>
-                        <td className="px-3 py-2">{fmt(p.rssi_dbm)} dBm</td>
-                        <td className="px-3 py-2">{fmt(p.baseline_pred_dbm)} dBm</td>
-                        <td className="px-3 py-2">{fmt(p.calibrated_pred_dbm)} dBm</td>
-                        <td className="px-3 py-2">{fmt(p.baseline_error_db)} dB</td>
-                        <td className="px-3 py-2">{fmt(p.calibrated_error_db)} dB</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-          </div>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -832,15 +872,26 @@ function CalibrationEvaluationDetailModal({
 
 type EvaluationMap = NonNullable<CalibrationEvaluationResponse['maps']['baseline']>;
 
-/** 3-way 비교 모달에 그릴 맵 — grid(values_dbm 직접 렌더) 또는 image(추정 히트맵 PNG). */
+/** 3-way 비교 모달에 그릴 맵 — grid(values_dbm 직접 렌더), image(추정 히트맵 PNG), empty(데이터 없음 placeholder). */
 type DisplayMap =
-  | { kind: 'grid'; map: EvaluationMap }
-  | { kind: 'image'; label: string; imageUrl: string; bounds: FloorBounds; rssiRange?: EstimatedRssiRange };
+  | { kind: 'grid'; map: EvaluationMap; description?: string }
+  | { kind: 'image'; label: string; imageUrl: string; bounds: FloorBounds; rssiRange?: EstimatedRssiRange; description?: string }
+  | { kind: 'empty'; label: string; message: string };
+
+/** 가운데 "실측 통합맵" 카드 설명 — 보정용 실측만 사용했고 참조 데이터는 섞이지 않았음을 명시. */
+const MEASURED_INTEGRATED_MAP_DESCRIPTION =
+  '보정용 실측 데이터를 사용해 예측 맵을 보정한 결과입니다. 정답용 참조 데이터는 이 맵 생성에 사용하지 않습니다.';
+
+/** 오른쪽 "실측 참조맵" 카드 설명 — 보정에 사용되지 않은 hold-out 데이터 기반임을 명시. */
+const REFERENCE_MAP_DESCRIPTION = '보정에 사용하지 않은 정답용 실측 데이터 기반 참조맵입니다.';
+
+/** 정답(참조) 측정이 아직 없을 때 오른쪽 카드/지표 영역에 표시하는 안내 문구. */
+const REFERENCE_MAP_EMPTY_MESSAGE = '정답용 참조 측정이 필요합니다';
 
 /**
- * 3-way 비교 맵 구성: [보정 전 시뮬레이션, 실측 통합맵(있으면) 또는 보정 후 시뮬레이션, 실측 참조맵].
- * "실측 통합맵"은 메인 캔버스의 "예측·실측 통합 분석"과 동일한 residual-kriging 추정 결과로,
- * affine+IDW 기반 "보정 후 시뮬레이션"보다 실제 측정 분포를 더 현실적으로 반영한다.
+ * 3-way 비교 맵 구성: [보정 전 시뮬레이션, 실측 통합맵(예측+보정용 실측) 또는 보정 후 시뮬레이션, 실측 참조맵].
+ * "실측 통합맵"은 메인 캔버스의 "예측·실측 통합 분석"과 동일한 residual-kriging 추정 결과로 보정용
+ * 실측 데이터만 반영한다. 참조(reference) 측정이 없으면 오른쪽은 empty placeholder 로 대체된다.
  */
 function buildDisplayMaps(
   evaluation: CalibrationEvaluationResponse,
@@ -851,16 +902,19 @@ function buildDisplayMaps(
   if (measuredIntegratedCoverage) {
     result.push({
       kind: 'image',
-      label: '실측 통합맵 (예측+실측)',
+      label: '실측 통합맵 (예측+보정용 실측)',
       imageUrl: measuredIntegratedCoverage.heatmap_url,
       bounds: measuredIntegratedCoverage.bounds,
       rssiRange: measuredIntegratedCoverage.rssi_range,
+      description: MEASURED_INTEGRATED_MAP_DESCRIPTION,
     });
   } else if (evaluation.maps.calibrated) {
     result.push({ kind: 'grid', map: evaluation.maps.calibrated });
   }
   if (evaluation.maps.measured_reference) {
-    result.push({ kind: 'grid', map: evaluation.maps.measured_reference });
+    result.push({ kind: 'grid', map: evaluation.maps.measured_reference, description: REFERENCE_MAP_DESCRIPTION });
+  } else {
+    result.push({ kind: 'empty', label: '실측 참조맵', message: REFERENCE_MAP_EMPTY_MESSAGE });
   }
   return result;
 }
@@ -894,6 +948,7 @@ function MiniRssiMap({
   backgroundImageUrl,
   size = 'compact',
   errorMode,
+  description,
 }: {
   map: CalibrationEvaluationResponse['maps']['baseline'];
   colorScale: { min_dbm: number; max_dbm: number };
@@ -902,6 +957,7 @@ function MiniRssiMap({
   backgroundImageUrl?: string | null;
   size?: 'compact' | 'large';
   errorMode?: 'baseline' | 'calibrated';
+  description?: string;
 }) {
   const bounds = map.bounds_m;
   const w = Math.max(bounds.max_x - bounds.min_x, 1);
@@ -996,6 +1052,9 @@ function MiniRssiMap({
         ))}
       </svg>
       {size === 'large' && <RssiScaleBar min={colorScale.min_dbm} max={colorScale.max_dbm} />}
+      {description && (
+        <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">{description}</p>
+      )}
     </div>
   );
 }
@@ -1013,6 +1072,7 @@ function MiniRssiMapImage({
   validationPoints,
   backgroundImageUrl,
   size = 'compact',
+  description,
 }: {
   label: string;
   imageUrl: string;
@@ -1022,6 +1082,7 @@ function MiniRssiMapImage({
   validationPoints: CalibrationEvaluationResponse['points']['validation'];
   backgroundImageUrl?: string | null;
   size?: 'compact' | 'large';
+  description?: string;
 }) {
   const w = Math.max(bounds.max_x - bounds.min_x, 1);
   const h = Math.max(bounds.max_y - bounds.min_y, 1);
@@ -1063,11 +1124,39 @@ function MiniRssiMapImage({
         />
         <MapPointMarkers calibrationPoints={calibrationPoints} validationPoints={validationPoints} w={w} />
       </svg>
-      {size === 'large' && (
-        <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
-          예측 시뮬레이션 + 실측 보정(residual kriging) 통합 결과입니다. 색상 스케일이 다른 두 맵과 다를 수 있습니다.
-        </p>
+      {description && (
+        <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">{description}</p>
       )}
+    </div>
+  );
+}
+
+/** "실측 참조맵" / 통합맵을 아직 만들 수 없을 때(참조 측정 없음 등) 표시하는 placeholder 카드. */
+function MiniRssiMapEmpty({
+  label,
+  message,
+  size = 'compact',
+}: {
+  label: string;
+  message: string;
+  size?: 'compact' | 'large';
+}) {
+  return (
+    <div className={size === 'large' ? 'rounded-lg border border-dashed bg-muted/20 p-3' : 'rounded-md border border-dashed bg-muted/20 p-2'}>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className={size === 'large' ? 'truncate text-sm font-semibold' : 'truncate text-[11px] font-semibold'}>
+          {label}
+        </p>
+      </div>
+      <div
+        className={
+          size === 'large'
+            ? 'flex aspect-[4/3] w-full items-center justify-center rounded-md border border-dashed bg-background'
+            : 'flex aspect-[4/3] w-full items-center justify-center rounded border border-dashed bg-background'
+        }
+      >
+        <p className="px-3 text-center text-[11px] leading-relaxed text-muted-foreground">{message}</p>
+      </div>
     </div>
   );
 }
