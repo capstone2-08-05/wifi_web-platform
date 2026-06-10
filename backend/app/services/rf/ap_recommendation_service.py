@@ -641,19 +641,77 @@ async def _submit_verification_jobs(
     if not enabled:
         return []
 
+    import asyncio
     from app.services.rf.rf_job_service import submit_rf_simulation
+    from app.services.scene.scene_version_export import export_scene_version_to_scene_json
+    from app.services.rf.calibration_worker.apply import (
+        apply_to_scene_and_sim,
+        get_latest_calibration,
+    )
 
-    jobs: list[dict[str, Any]] = []
     leading_band = request.target_bands[0] if request.target_bands else "5G"
-    simulation = _verification_simulation_payload(
+    simulation_template = _verification_simulation_payload(
         leading_band=leading_band,
         tx_power_dbm=request.candidate_tx_power_dbm,
     )
 
-    for item in recommendations[: max(1, top_k)]:
+    # 모든 후보가 같은 scene_version 을 사용하므로 scene.json + 보정값을 1회만 계산
+    scene_json = export_scene_version_to_scene_json(db, scene_version.id)
+    calibration_meta: dict[str, Any] = {"applied": False}
+    cr = get_latest_calibration(db, str(scene_version.id))
+    if cr is not None:
+        best_params = (cr.metrics_json or {}).get("best_params") or {}
+        if best_params:
+            summary = apply_to_scene_and_sim(scene_json, simulation_template, best_params)
+            calibration_meta = {
+                "applied": True,
+                "calibration_run_id": cr.id,
+                "summary": summary,
+            }
+
+    candidates = recommendations[: max(1, top_k)]
+
+    # S3 + SageMaker invoke 는 asyncio.gather 로 병렬 제출
+    # (DB 조회/쓰기는 각 submit_rf_simulation 내부에서 순차 처리됨)
+    async def _submit_one(item: ApRecommendationItem) -> tuple[ApRecommendationItem, list, Any, Any]:
         top_positions = [(pos.x, pos.y) for pos in item.ap_positions]
         final_aps = compute_final_aps(plan, top_positions)
         access_points = _final_aps_to_verification_access_points(final_aps)
+        rf_run, job = await submit_rf_simulation(
+            db,
+            scene_version_id=UUID(str(scene_version.id)),
+            access_points=access_points,
+            simulation=dict(simulation_template),
+            current_user=current_user,
+            run_type="ap_recommendation_verify",
+            metadata={
+                "source": "ap_recommendation_auto_verification",
+                "recommendation_rank": item.rank,
+                "recommendation_score": item.score,
+                "recommendation_mode": plan.mode,
+                "verification_top_k": top_k,
+                "verification_backend": request.verification_backend,
+                "target_bands": list(request.target_bands),
+                "combine_policy": request.combine_policy,
+                "candidate_aps": final_aps,
+            },
+            apply_calibration=False,
+            backend=request.verification_backend,
+            _prebuilt_scene_json=scene_json,
+            _prebuilt_calibration_meta=calibration_meta,
+        )
+        return item, final_aps, rf_run, job
+
+    results = await asyncio.gather(
+        *[_submit_one(item) for item in candidates],
+        return_exceptions=True,
+    )
+
+    jobs: list[dict[str, Any]] = []
+    for i, result in enumerate(results):
+        item = candidates[i]
+        top_positions = [(pos.x, pos.y) for pos in item.ap_positions]
+        final_aps = compute_final_aps(plan, top_positions)
         job_payload: dict[str, Any] = {
             "candidate_rank": item.rank,
             "candidate_id": f"cand-{item.rank}",
@@ -665,28 +723,22 @@ async def _submit_verification_jobs(
             "candidate_aps": final_aps,
         }
 
-        try:
-            rf_run, job = await submit_rf_simulation(
-                db,
-                scene_version_id=UUID(str(scene_version.id)),
-                access_points=access_points,
-                simulation=dict(simulation),
-                current_user=current_user,
-                run_type="ap_recommendation_verify",
-                metadata={
-                    "source": "ap_recommendation_auto_verification",
-                    "recommendation_rank": item.rank,
-                    "recommendation_score": item.score,
-                    "recommendation_mode": plan.mode,
-                    "verification_top_k": top_k,
-                    "verification_backend": request.verification_backend,
-                    "target_bands": list(request.target_bands),
-                    "combine_policy": request.combine_policy,
-                    "candidate_aps": final_aps,
-                },
-                apply_calibration=True,
-                backend=request.verification_backend,
+        if isinstance(result, Exception):
+            logger.warning(
+                "Failed to start AP recommendation verification job rank=%s scene=%s: %s",
+                item.rank,
+                scene_version.id,
+                result,
             )
+            job_payload.update({"status": "failed_to_start", "error": str(result)})
+            item.verification_status = "failed_to_start"
+            item.score_breakdown = {
+                **(item.score_breakdown or {}),
+                "verification_status": "failed_to_start",
+                "verification_error": str(result),
+            }
+        else:
+            _, _, rf_run, job = result
             job_payload.update(
                 {
                     "rf_job_id": job.id,
@@ -701,25 +753,6 @@ async def _submit_verification_jobs(
                 "verification_rf_run_id": rf_run.id,
                 "verification_job_id": job.id,
                 "verification_status": item.verification_status,
-            }
-        except Exception as exc:  # optional verification must not discard fast recommendations
-            logger.warning(
-                "Failed to start AP recommendation verification job rank=%s scene=%s: %s",
-                item.rank,
-                scene_version.id,
-                exc,
-            )
-            job_payload.update(
-                {
-                    "status": "failed_to_start",
-                    "error": str(exc),
-                }
-            )
-            item.verification_status = "failed_to_start"
-            item.score_breakdown = {
-                **(item.score_breakdown or {}),
-                "verification_status": "failed_to_start",
-                "verification_error": str(exc),
             }
 
         jobs.append(job_payload)
@@ -736,6 +769,12 @@ def _verification_simulation_payload(
     return {
         "frequency_hz": frequency_hz or DEFAULT_FREQUENCY_HZ,
         "tx_power_dbm": tx_power_dbm or DEFAULT_TX_POWER_DBM,
+        # 검증용: 커버리지 분포 확인이 목적 → 정밀도보다 속도 우선.
+        # diffraction/diffuse_reflection 끄면 10~50× 빨라짐.
+        "samples_per_tx": 100_000,
+        "max_depth": 5,
+        "diffraction": False,
+        "diffuse_reflection": False,
     }
 
 
@@ -860,6 +899,13 @@ def _greedy_multi_ap(
                 if c not in ap_set
                 and all(_distance_m(c, chosen) >= _MIN_RECOMMENDATION_SPACING_M for chosen in ap_set)
             ]
+            # 간격 조건 충족 후보 없으면: 미사용 후보 중 기존 배치에서 가장 먼 것 순으로 폴백
+            if not available_candidates:
+                remaining = [c for c in candidates if c not in ap_set]
+                if not remaining:
+                    break
+                remaining.sort(key=lambda c: -min(_distance_m(c, chosen) for chosen in ap_set))
+                available_candidates = remaining
             next_results = _grid_search_topn(
                 candidates=available_candidates,
                 eval_points=eval_points,

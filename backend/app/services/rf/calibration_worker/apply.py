@@ -52,6 +52,45 @@ def _has_best_params(run: CalibrationRun | None) -> bool:
     return bool(run and (run.metrics_json or {}).get("best_params"))
 
 
+def get_latest_affine_calibration(db: Session, floor_id: str) -> dict[str, float] | None:
+    """Return latest affine RSSI transfer params (slope, intercept_db) for this floor.
+
+    evaluate_calibration_run 이 생성한 CalibrationRun 에서 조회.
+    metrics_json.evaluation.calibration.slope / intercept_db 가 있어야 함.
+    """
+    rows = db.execute(
+        select(CalibrationRun)
+        .where(
+            CalibrationRun.floor_id == str(floor_id),
+            CalibrationRun.status == "completed",
+        )
+        .order_by(CalibrationRun.created_at.desc())
+        .limit(20)
+    ).scalars().all()
+    for row in rows:
+        calib = (row.metrics_json or {}).get("evaluation", {}).get("calibration") or {}
+        slope = calib.get("slope")
+        intercept = calib.get("intercept_db")
+        if slope is not None and intercept is not None:
+            return {"slope": float(slope), "intercept_db": float(intercept)}
+    return None
+
+
+def apply_affine_to_values(
+    values_dbm: list[list[float | None]],
+    slope: float,
+    intercept_db: float,
+) -> list[list[float | None]]:
+    """2D RSSI grid 에 affine 변환 적용: calibrated = slope * raw + intercept_db."""
+    return [
+        [
+            slope * v + intercept_db if v is not None else None
+            for v in row
+        ]
+        for row in values_dbm
+    ]
+
+
 def get_latest_calibration(db: Session, scene_version_id: str) -> CalibrationRun | None:
     """Return latest completed calibration for this scene, then same project/space type."""
     exact = db.execute(

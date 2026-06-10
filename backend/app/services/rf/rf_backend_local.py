@@ -329,6 +329,22 @@ def _persist_local_success(
         ).scalar_one_or_none()
         if rf_run is not None:
             rf_run.status = JOB_STATUS_DONE
+            # 검증 run 이면 저장된 affine 보정값 적용해 calibrated_values_dbm 함께 저장
+            affine_meta: dict = {}
+            raw_values = radio_map_meta.get("values_dbm")
+            if raw_values and rf_run.run_type == "ap_recommendation_verify":
+                from app.services.rf.calibration_worker.apply import (
+                    get_latest_affine_calibration,
+                    apply_affine_to_values,
+                )
+                affine = get_latest_affine_calibration(db, str(rf_run.floor_id))
+                if affine:
+                    radio_map_meta["calibrated_values_dbm"] = apply_affine_to_values(
+                        raw_values, affine["slope"], affine["intercept_db"]
+                    )
+                    affine_meta = {"applied": True, **affine}
+                else:
+                    affine_meta = {"applied": False}
             rf_run.metrics_json = {
                 "radio_map": radio_map_meta,
                 "runtime": {
@@ -336,6 +352,7 @@ def _persist_local_success(
                     "sionna_run_id": sionna_run_id,
                 },
                 "config": artifacts.get("config") or {},
+                "affine_calibration": affine_meta,
             }
             _create_local_rf_maps(db, rf_run, image_url=image_url, radio_map_meta=radio_map_meta)
 
