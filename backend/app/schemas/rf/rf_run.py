@@ -100,7 +100,7 @@ class RfRunCreate(BaseModel):
     # 기본은 raw 시뮬레이션이다. 보정 후 재실행처럼 의도가 명확한 요청만 true 로 보낸다.
     apply_calibration: bool = False
     # 시뮬 실행 백엔드 선택. sagemaker(기본)=클라우드 async, local=로컬 ai_api 직접 호출.
-    backend: RfBackend = "sagemaker"
+    backend: RfBackend = "local"
     # 옛 호출자 호환 (deprecated)
     request_json: Optional[dict[str, Any]] = None
 
