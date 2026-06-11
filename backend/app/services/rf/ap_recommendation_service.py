@@ -35,6 +35,8 @@ from app.schemas.rf.ap_recommendation import (
     ApRecommendationRequest,
     ApRecommendationResponse,
     ApRecommendationRunResponse,
+    ApRecommendationVerifyCalibrationInfo,
+    ApRecommendationVerifyCandidateResponse,
 )
 from app.services.rf.calibration_worker.path_loss import (
     AccessPoint,
@@ -44,7 +46,6 @@ from app.services.rf.calibration_worker.path_loss import (
     predict_rssi_best_ap,
 )
 from app.services.rf.ap_recommendation_modes import (
-    RecommendationPlan,
     build_recommendation_plan,
     compute_final_aps,
     compute_relocation_moves,
@@ -359,25 +360,9 @@ async def recommend_ap_location(
         band_aware_status=("full" if len(request.target_bands) > 1 else "leading_band_only"),
         residual_metadata=residual_metadata,
         verify_with_sionna=request.verify_with_sionna,
-        verification_status=("pending" if request.verify_with_sionna else None),
+        verification_status=None,
         verification_jobs=[],
     )
-    response.verification_jobs = await _submit_verification_jobs(
-        db=db,
-        scene_version=sv,
-        request=request,
-        recommendations=recommendations,
-        plan=plan,
-        current_user=current_user,
-        enabled=request.verify_with_sionna,
-        top_k=request.verification_top_k,
-    )
-    if request.verify_with_sionna:
-        response.verification_status = (
-            "running"
-            if any(job.get("status") == "running" for job in response.verification_jobs)
-            else "failed"
-        )
     run = _persist_recommendation_run(
         db=db,
         scene_version=sv,
@@ -458,6 +443,136 @@ def get_recommendation_run(
             404,
         )
     return _run_to_response(row)
+
+
+async def verify_recommendation_candidate(
+    db: Session,
+    *,
+    run_id: UUID,
+    candidate_rank: int,
+    current_user: User,
+) -> ApRecommendationVerifyCandidateResponse:
+    """선택한 추천 후보 1개에 대해서만 Sionna 검증 RF run을 생성한다.
+
+    - run_type="ap_recommendation_verify"
+    - metadata.source="ap_recommendation_manual_verification"
+    - verification_top_k=1 (이 후보만 검증; top-5 자동 검증 금지)
+    - apply_calibration=True — 최신 completed CalibrationRun의 best_params를
+      scene/simulation에 적용한다. 적용 가능한 calibration이 없으면
+      calibration.applied=False 와 함께 warning을 반환한다.
+    """
+    from app.services.rf.rf_job_service import submit_rf_simulation
+
+    row = (
+        db.execute(
+            select(ApRecommendationRun)
+            .join(Project, ApRecommendationRun.project_id == Project.id)
+            .where(
+                ApRecommendationRun.id == str(run_id),
+                Project.owner_user_id == current_user.id,
+            )
+        )
+        .scalar_one_or_none()
+    )
+    if row is None:
+        raise AppError(
+            ErrorCode.INVALID_REQUEST_BODY,
+            "AP recommendation run not found.",
+            404,
+        )
+
+    item_row = next((item for item in row.items if item.rank == candidate_rank), None)
+    if item_row is None:
+        raise AppError(
+            ErrorCode.INVALID_REQUEST_BODY,
+            f"Recommendation candidate rank={candidate_rank} not found in run {run_id}.",
+            404,
+        )
+
+    request = ApRecommendationRequest(**(row.request_json or {}))
+
+    physical_aps = normalize_physical_aps_from_request(
+        physical_aps=request.physical_aps or None,
+        existing_aps=request.existing_aps,
+        candidate_tx_power_dbm=request.candidate_tx_power_dbm,
+    )
+    existing_aps = _physical_aps_to_access_points(
+        physical_aps, request.candidate_tx_power_dbm
+    )
+    plan = build_recommendation_plan(request, existing_aps)
+
+    metrics = item_row.metrics_json or {}
+    top_positions = [
+        (float(p["x"]), float(p["y"]))
+        for p in (metrics.get("ap_positions") or [])
+        if isinstance(p, dict) and "x" in p and "y" in p
+    ]
+    if not top_positions:
+        top_positions = [(float(item_row.recommended_x), float(item_row.recommended_y))]
+
+    final_aps = compute_final_aps(plan, top_positions)
+    access_points = _final_aps_to_verification_access_points(final_aps)
+
+    leading_band = request.target_bands[0] if request.target_bands else "5G"
+    simulation = _verification_simulation_payload(
+        leading_band=leading_band,
+        tx_power_dbm=request.candidate_tx_power_dbm,
+    )
+
+    rf_run, job = await submit_rf_simulation(
+        db,
+        scene_version_id=UUID(str(row.scene_version_id)),
+        access_points=access_points,
+        simulation=simulation,
+        current_user=current_user,
+        run_type="ap_recommendation_verify",
+        metadata={
+            "source": "ap_recommendation_manual_verification",
+            "recommendation_rank": candidate_rank,
+            "recommendation_score": float(item_row.score),
+            "recommendation_mode": plan.mode,
+            "verification_top_k": 1,
+            "verification_backend": request.verification_backend,
+            "target_bands": list(request.target_bands),
+            "combine_policy": request.combine_policy,
+            "candidate_aps": final_aps,
+        },
+        apply_calibration=True,
+        backend=request.verification_backend,
+    )
+
+    calibration_meta = (rf_run.request_json or {}).get("calibration") or {}
+    calibration_applied = bool(calibration_meta.get("applied"))
+    calibration_warning = (
+        None
+        if calibration_applied
+        else "사용 가능한 completed calibration 결과가 없어 보정 없이 시뮬레이션을 실행했습니다."
+    )
+
+    item_row.metrics_json = {
+        **metrics,
+        "verification_status": rf_run.status,
+        "verification_job_id": str(job.id),
+    }
+    db.commit()
+
+    return ApRecommendationVerifyCandidateResponse(
+        run_id=UUID(str(row.id)),
+        candidate_rank=candidate_rank,
+        rf_run_id=UUID(str(rf_run.id)),
+        rf_job_id=UUID(str(job.id)),
+        status=rf_run.status,
+        final_aps=final_aps,
+        calibration=ApRecommendationVerifyCalibrationInfo(
+            applied=calibration_applied,
+            calibration_run_id=(
+                UUID(str(calibration_meta["calibration_run_id"]))
+                if calibration_meta.get("calibration_run_id")
+                else None
+            ),
+            warning=calibration_warning,
+        ),
+    )
 
 
 def _persist_recommendation_run(
@@ -605,165 +720,24 @@ def _float_or_none(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
-def _build_verification_job_placeholders(
-    recommendations: list[ApRecommendationItem],
-    *,
-    enabled: bool,
-    top_k: int,
-) -> list[dict[str, Any]]:
-    if not enabled:
-        return []
-    return [
-        {
-            "candidate_rank": item.rank,
-            "candidate_id": f"cand-{item.rank}",
-            "rf_job_id": None,
-            "fast_score": item.score,
-            "verified_score": None,
-            "status": "deferred",
-            "candidate_aps": [pos.model_dump(mode="json") for pos in item.ap_positions],
-        }
-        for item in recommendations[: max(1, top_k)]
-    ]
-
-
-async def _submit_verification_jobs(
-    *,
-    db: Session,
-    scene_version: SceneVersion,
-    request: ApRecommendationRequest,
-    recommendations: list[ApRecommendationItem],
-    plan: RecommendationPlan,
-    current_user: User,
-    enabled: bool,
-    top_k: int,
-) -> list[dict[str, Any]]:
-    if not enabled:
-        return []
-
-    from app.services.rf.rf_job_service import submit_rf_simulation
-    from app.services.scene.scene_version_export import export_scene_version_to_scene_json
-    from app.services.rf.calibration_worker.apply import (
-        apply_to_scene_and_sim,
-        get_latest_calibration,
-    )
-
-    leading_band = request.target_bands[0] if request.target_bands else "5G"
-    simulation_template = _verification_simulation_payload(
-        leading_band=leading_band,
-        tx_power_dbm=request.candidate_tx_power_dbm,
-    )
-
-    # 모든 후보가 같은 scene_version 을 사용하므로 scene.json + 보정값을 1회만 계산
-    scene_json = export_scene_version_to_scene_json(db, scene_version.id)
-    calibration_meta: dict[str, Any] = {"applied": False}
-    cr = get_latest_calibration(db, str(scene_version.id))
-    if cr is not None:
-        best_params = (cr.metrics_json or {}).get("best_params") or {}
-        if best_params:
-            summary = apply_to_scene_and_sim(scene_json, simulation_template, best_params)
-            calibration_meta = {
-                "applied": True,
-                "calibration_run_id": cr.id,
-                "summary": summary,
-            }
-
-    candidates = recommendations[: max(1, top_k)]
-
-    # 같은 db Session을 여러 코루틴이 동시에 사용하는 것은 안전하지 않으므로
-    # (SQLAlchemy Session은 동시성 안전하지 않음), 검증 job은 순차적으로 제출한다.
-    jobs: list[dict[str, Any]] = []
-    for item in candidates:
-        top_positions = [(pos.x, pos.y) for pos in item.ap_positions]
-        final_aps = compute_final_aps(plan, top_positions)
-        job_payload: dict[str, Any] = {
-            "candidate_rank": item.rank,
-            "candidate_id": f"cand-{item.rank}",
-            "rf_job_id": None,
-            "rf_run_id": None,
-            "fast_score": item.score,
-            "verified_score": None,
-            "status": "pending",
-            "candidate_aps": final_aps,
-        }
-
-        try:
-            access_points = _final_aps_to_verification_access_points(final_aps)
-            rf_run, job = await submit_rf_simulation(
-                db,
-                scene_version_id=UUID(str(scene_version.id)),
-                access_points=access_points,
-                simulation=dict(simulation_template),
-                current_user=current_user,
-                run_type="ap_recommendation_verify",
-                metadata={
-                    "source": "ap_recommendation_auto_verification",
-                    "recommendation_rank": item.rank,
-                    "recommendation_score": item.score,
-                    "recommendation_mode": plan.mode,
-                    "verification_top_k": top_k,
-                    "verification_backend": request.verification_backend,
-                    "target_bands": list(request.target_bands),
-                    "combine_policy": request.combine_policy,
-                    "candidate_aps": final_aps,
-                },
-                apply_calibration=False,
-                backend=request.verification_backend,
-                _prebuilt_scene_json=scene_json,
-                _prebuilt_calibration_meta=calibration_meta,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Failed to start AP recommendation verification job rank=%s scene=%s: %s",
-                item.rank,
-                scene_version.id,
-                exc,
-            )
-            job_payload.update({"status": "failed_to_start", "error": str(exc)})
-            item.verification_status = "failed_to_start"
-            item.score_breakdown = {
-                **(item.score_breakdown or {}),
-                "verification_status": "failed_to_start",
-                "verification_error": str(exc),
-            }
-        else:
-            job_payload.update(
-                {
-                    "rf_job_id": job.id,
-                    "rf_run_id": rf_run.id,
-                    "status": rf_run.status or "running",
-                }
-            )
-            item.verification_job_id = UUID(str(job.id))
-            item.verification_status = rf_run.status or "running"
-            item.score_breakdown = {
-                **(item.score_breakdown or {}),
-                "verification_rf_run_id": rf_run.id,
-                "verification_job_id": job.id,
-                "verification_status": item.verification_status,
-            }
-
-        jobs.append(job_payload)
-
-    return jobs
-
-
 def _verification_simulation_payload(
     *,
     leading_band: str,
     tx_power_dbm: float,
 ) -> dict[str, Any]:
+    """선택 후보 1개에 대한 Sionna 검증용 시뮬레이션 설정 (light).
+
+    안정성 우선: 시뮬레이션 탭 기본값보다 낮은 샘플 수/깊이를 쓰고
+    diffraction/diffuse_reflection 은 끈다.
+    """
     frequency_hz = 2.437e9 if leading_band == "2.4G" else 5.18e9
     return {
         "frequency_hz": frequency_hz or DEFAULT_FREQUENCY_HZ,
         "tx_power_dbm": tx_power_dbm or DEFAULT_TX_POWER_DBM,
-        # 검증용: top_k 후보마다 반복 실행되므로 시뮬레이션 탭(rf_defaults.py) 풀 정확도보다는
-        # 절충값을 쓴다. diffraction/diffuse_reflection 은 시뮬레이션 탭과 동일하게 켜서
-        # '경향'은 맞추되, samples_per_tx/max_depth 는 낮춰 후보 수만큼 곱연산되는 비용을 절충.
-        "samples_per_tx": 200_000,
-        "max_depth": 6,
-        "diffraction": True,
-        "diffuse_reflection": True,
+        "samples_per_tx": 100_000,
+        "max_depth": 5,
+        "diffraction": False,
+        "diffuse_reflection": False,
     }
 
 

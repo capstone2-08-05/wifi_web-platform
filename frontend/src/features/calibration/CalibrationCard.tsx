@@ -19,7 +19,6 @@ import type {
   ParameterUpdate,
   SpaceType,
 } from '@/types/calibration-run';
-import type { EstimatedCoverage, EstimatedRssiRange, FloorBounds } from '@/types/measurement-session';
 
 /** 공간 유형 select 표시명. SpaceType literal 과 1:1. */
 const SPACE_TYPE_OPTIONS: { value: SpaceType; label: string }[] = [
@@ -63,8 +62,6 @@ interface Props {
   parameterUpdates: ParameterUpdate[];
   evaluation?: CalibrationEvaluationResponse | null;
   backgroundImageUrl?: string | null;
-  /** "예측·실측 통합 분석"(residual kriging) 히트맵 — 3-way 비교 모달 가운데 칸에 사용. */
-  measuredIntegratedCoverage?: EstimatedCoverage | null;
 }
 
 /**
@@ -87,7 +84,6 @@ export function CalibrationCard({
   parameterUpdates,
   evaluation,
   backgroundImageUrl,
-  measuredIntegratedCoverage,
 }: Props) {
   const succeeded = run?.status === 'succeeded';
   const failed = run?.status === 'failed';
@@ -193,7 +189,6 @@ export function CalibrationCard({
         evaluation={evaluation ?? extractEvaluationResponse(run)}
         backgroundImageUrl={backgroundImageUrl}
         onAddReferenceMeasurement={onAddReferenceMeasurement}
-        measuredIntegratedCoverage={measuredIntegratedCoverage}
       />
 
       {showCalibrateButton && (
@@ -483,16 +478,14 @@ function CalibrationEvaluationPanel({
   evaluation,
   backgroundImageUrl,
   onAddReferenceMeasurement,
-  measuredIntegratedCoverage,
 }: {
   evaluation: CalibrationEvaluationResponse | null;
   backgroundImageUrl?: string | null;
   onAddReferenceMeasurement?: () => void;
-  measuredIntegratedCoverage?: EstimatedCoverage | null;
 }) {
   const [detailOpen, setDetailOpen] = useState(false);
   if (!evaluation) return null;
-  const displayMaps = buildDisplayMaps(evaluation, measuredIntegratedCoverage);
+  const displayMaps = buildDisplayMaps(evaluation);
   const m = evaluation.metrics;
   const comparisonPoints = evaluation.points.evaluation ?? evaluation.points.validation;
   const comparisonLabel =
@@ -553,22 +546,8 @@ function CalibrationEvaluationPanel({
                 <MiniRssiMap
                   key={dm.map.label}
                   map={dm.map}
-                  colorScale={evaluation.color_scale}
-                  calibrationPoints={evaluation.points.calibration}
-                  validationPoints={comparisonPoints}
-                  backgroundImageUrl={backgroundImageUrl}
-                  description={dm.description}
-                />
-              );
-            }
-            if (dm.kind === 'image') {
-              return (
-                <MiniRssiMapImage
-                  key={`img-${idx}`}
                   label={dm.label}
-                  imageUrl={dm.imageUrl}
-                  bounds={dm.bounds}
-                  rssiRange={dm.rssiRange}
+                  colorScale={evaluation.color_scale}
                   calibrationPoints={evaluation.points.calibration}
                   validationPoints={comparisonPoints}
                   backgroundImageUrl={backgroundImageUrl}
@@ -651,7 +630,6 @@ function CalibrationEvaluationPanel({
         evaluation={evaluation}
         backgroundImageUrl={backgroundImageUrl}
         onAddReferenceMeasurement={onAddReferenceMeasurement}
-        measuredIntegratedCoverage={measuredIntegratedCoverage}
       />
     </section>
   );
@@ -663,14 +641,12 @@ function CalibrationEvaluationDetailModal({
   evaluation,
   backgroundImageUrl,
   onAddReferenceMeasurement,
-  measuredIntegratedCoverage,
 }: {
   open: boolean;
   onClose: () => void;
   evaluation: CalibrationEvaluationResponse;
   backgroundImageUrl?: string | null;
   onAddReferenceMeasurement?: () => void;
-  measuredIntegratedCoverage?: EstimatedCoverage | null;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -683,7 +659,7 @@ function CalibrationEvaluationDetailModal({
 
   if (!open) return null;
 
-  const displayMaps = buildDisplayMaps(evaluation, measuredIntegratedCoverage);
+  const displayMaps = buildDisplayMaps(evaluation);
   const m = evaluation.metrics;
   const comparisonPoints = evaluation.points.evaluation ?? evaluation.points.validation;
   const comparisonLabel =
@@ -750,28 +726,13 @@ function CalibrationEvaluationDetailModal({
                   <MiniRssiMap
                     key={dm.map.label}
                     map={dm.map}
+                    label={dm.label}
                     colorScale={evaluation.color_scale}
                     calibrationPoints={evaluation.points.calibration}
                     validationPoints={comparisonPoints}
                     backgroundImageUrl={backgroundImageUrl}
                     size="large"
                     errorMode={dm.map.label.toLowerCase().includes('baseline') ? 'baseline' : dm.map.label.toLowerCase().includes('calibrated') ? 'calibrated' : undefined}
-                    description={dm.description}
-                  />
-                );
-              }
-              if (dm.kind === 'image') {
-                return (
-                  <MiniRssiMapImage
-                    key={`img-${idx}`}
-                    label={dm.label}
-                    imageUrl={dm.imageUrl}
-                    bounds={dm.bounds}
-                    rssiRange={dm.rssiRange}
-                    calibrationPoints={evaluation.points.calibration}
-                    validationPoints={comparisonPoints}
-                    backgroundImageUrl={backgroundImageUrl}
-                    size="large"
                     description={dm.description}
                   />
                 );
@@ -872,10 +833,9 @@ function CalibrationEvaluationDetailModal({
 
 type EvaluationMap = NonNullable<CalibrationEvaluationResponse['maps']['baseline']>;
 
-/** 3-way 비교 모달에 그릴 맵 — grid(values_dbm 직접 렌더), image(추정 히트맵 PNG), empty(데이터 없음 placeholder). */
+/** 3-way 비교 모달에 그릴 맵 — grid(values_dbm 직접 렌더), empty(데이터 없음 placeholder). */
 type DisplayMap =
-  | { kind: 'grid'; map: EvaluationMap; description?: string }
-  | { kind: 'image'; label: string; imageUrl: string; bounds: FloorBounds; rssiRange?: EstimatedRssiRange; description?: string }
+  | { kind: 'grid'; map: EvaluationMap; label?: string; description?: string }
   | { kind: 'empty'; label: string; message: string };
 
 /** 가운데 "실측 통합맵" 카드 설명 — 보정용 실측만 사용했고 참조 데이터는 섞이지 않았음을 명시. */
@@ -889,27 +849,22 @@ const REFERENCE_MAP_DESCRIPTION = '보정에 사용하지 않은 정답용 실�
 const REFERENCE_MAP_EMPTY_MESSAGE = '정답용 참조 측정이 필요합니다';
 
 /**
- * 3-way 비교 맵 구성: [보정 전 시뮬레이션, 실측 통합맵(예측+보정용 실측) 또는 보정 후 시뮬레이션, 실측 참조맵].
- * "실측 통합맵"은 메인 캔버스의 "예측·실측 통합 분석"과 동일한 residual-kriging 추정 결과로 보정용
- * 실측 데이터만 반영한다. 참조(reference) 측정이 없으면 오른쪽은 empty placeholder 로 대체된다.
+ * 3-way 비교 맵 구성: [보정 전 시뮬레이션, 실측 통합맵(보정 후 시뮬레이션), 실측 참조맵].
+ * 가운데 "실측 통합맵"은 maps.calibrated — sim baseline 에 보정용 실측 데이터(affine transfer +
+ * residual IDW)를 반영한 결과로, 메인 캔버스의 "예측·실측 통합 분석"(both 모드)과 아래 MAE/RMSE
+ * "보정 후" 지표·오차 차트가 가리키는 맵과 동일하다. 참조(reference) 측정이 없으면 오른쪽은
+ * empty placeholder 로 대체된다.
  */
-function buildDisplayMaps(
-  evaluation: CalibrationEvaluationResponse,
-  measuredIntegratedCoverage?: EstimatedCoverage | null,
-): DisplayMap[] {
+function buildDisplayMaps(evaluation: CalibrationEvaluationResponse): DisplayMap[] {
   const result: DisplayMap[] = [];
   if (evaluation.maps.baseline) result.push({ kind: 'grid', map: evaluation.maps.baseline });
-  if (measuredIntegratedCoverage) {
+  if (evaluation.maps.calibrated) {
     result.push({
-      kind: 'image',
-      label: '실측 통합맵 (예측+보정용 실측)',
-      imageUrl: measuredIntegratedCoverage.heatmap_url,
-      bounds: measuredIntegratedCoverage.bounds,
-      rssiRange: measuredIntegratedCoverage.rssi_range,
+      kind: 'grid',
+      map: evaluation.maps.calibrated,
+      label: '실측 통합맵 (보정 후 시뮬레이션)',
       description: MEASURED_INTEGRATED_MAP_DESCRIPTION,
     });
-  } else if (evaluation.maps.calibrated) {
-    result.push({ kind: 'grid', map: evaluation.maps.calibrated });
   }
   if (evaluation.maps.measured_reference) {
     result.push({ kind: 'grid', map: evaluation.maps.measured_reference, description: REFERENCE_MAP_DESCRIPTION });
@@ -942,6 +897,7 @@ function MetricRow({
 
 function MiniRssiMap({
   map,
+  label,
   colorScale,
   calibrationPoints,
   validationPoints,
@@ -951,6 +907,8 @@ function MiniRssiMap({
   description,
 }: {
   map: CalibrationEvaluationResponse['maps']['baseline'];
+  /** 지정 시 formatEvaluationMapLabel(map.label) 대신 이 라벨을 표시. */
+  label?: string;
   colorScale: { min_dbm: number; max_dbm: number };
   calibrationPoints: CalibrationEvaluationResponse['points']['calibration'];
   validationPoints: CalibrationEvaluationResponse['points']['validation'];
@@ -968,7 +926,7 @@ function MiniRssiMap({
     <div className={size === 'large' ? 'rounded-lg border bg-background p-3' : 'rounded-md border bg-background p-2'}>
       <div className="mb-2 flex items-center justify-between gap-2">
         <p className={size === 'large' ? 'truncate text-sm font-semibold' : 'truncate text-[11px] font-semibold'}>
-          {formatEvaluationMapLabel(map.label)}
+          {label ?? formatEvaluationMapLabel(map.label)}
         </p>
         {size === 'large' && (
           <span className="text-[11px] text-muted-foreground">
@@ -1059,78 +1017,6 @@ function MiniRssiMap({
   );
 }
 
-/**
- * "실측 통합맵" — gp_estimator(residual_kriging) 가 만든 PNG 히트맵을 SVG <image> 로 표시.
- * values_dbm 격자가 아닌 자체 색상 스케일의 PNG 이므로 RssiScaleBar 대신 rssiRange 를 텍스트로 표기한다.
- */
-function MiniRssiMapImage({
-  label,
-  imageUrl,
-  bounds,
-  rssiRange,
-  calibrationPoints,
-  validationPoints,
-  backgroundImageUrl,
-  size = 'compact',
-  description,
-}: {
-  label: string;
-  imageUrl: string;
-  bounds: FloorBounds;
-  rssiRange?: EstimatedRssiRange;
-  calibrationPoints: CalibrationEvaluationResponse['points']['calibration'];
-  validationPoints: CalibrationEvaluationResponse['points']['validation'];
-  backgroundImageUrl?: string | null;
-  size?: 'compact' | 'large';
-  description?: string;
-}) {
-  const w = Math.max(bounds.max_x - bounds.min_x, 1);
-  const h = Math.max(bounds.max_y - bounds.min_y, 1);
-  return (
-    <div className={size === 'large' ? 'rounded-lg border bg-background p-3' : 'rounded-md border bg-background p-2'}>
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <p className={size === 'large' ? 'truncate text-sm font-semibold' : 'truncate text-[11px] font-semibold'}>
-          {label}
-        </p>
-        {size === 'large' && rssiRange && (
-          <span className="text-[11px] text-muted-foreground">
-            {rssiRange.min.toFixed(0)} ~ {rssiRange.max.toFixed(0)} dBm (실측 기반)
-          </span>
-        )}
-      </div>
-      <svg
-        viewBox={`${bounds.min_x} ${bounds.min_y} ${w} ${h}`}
-        className={size === 'large' ? 'aspect-[4/3] w-full overflow-hidden rounded-md border bg-white' : 'aspect-[4/3] w-full overflow-hidden rounded border bg-white'}
-      >
-        {backgroundImageUrl && (
-          <image
-            href={backgroundImageUrl}
-            x={bounds.min_x}
-            y={bounds.min_y}
-            width={w}
-            height={h}
-            preserveAspectRatio="none"
-            opacity="0.28"
-          />
-        )}
-        <image
-          href={imageUrl}
-          x={bounds.min_x}
-          y={bounds.min_y}
-          width={w}
-          height={h}
-          preserveAspectRatio="none"
-          opacity="0.85"
-        />
-        <MapPointMarkers calibrationPoints={calibrationPoints} validationPoints={validationPoints} w={w} />
-      </svg>
-      {description && (
-        <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">{description}</p>
-      )}
-    </div>
-  );
-}
-
 /** "실측 참조맵" / 통합맵을 아직 만들 수 없을 때(참조 측정 없음 등) 표시하는 placeholder 카드. */
 function MiniRssiMapEmpty({
   label,
@@ -1158,45 +1044,6 @@ function MiniRssiMapEmpty({
         <p className="px-3 text-center text-[11px] leading-relaxed text-muted-foreground">{message}</p>
       </div>
     </div>
-  );
-}
-
-function MapPointMarkers({
-  calibrationPoints,
-  validationPoints,
-  w,
-}: {
-  calibrationPoints: CalibrationEvaluationResponse['points']['calibration'];
-  validationPoints: CalibrationEvaluationResponse['points']['validation'];
-  w: number;
-}) {
-  return (
-    <>
-      {calibrationPoints.map((p, idx) => (
-        <circle
-          key={`c-${p.point_id}`}
-          cx={p.x_m}
-          cy={p.y_m}
-          r={w * 0.012}
-          fill="#0f766e"
-          stroke="white"
-          strokeWidth={w * 0.004}
-        >
-          <title>{pointTooltip(p, idx, 'calibration')}</title>
-        </circle>
-      ))}
-      {validationPoints.map((p, idx) => (
-        <path
-          key={`v-${p.point_id}`}
-          d={`M ${p.x_m} ${p.y_m - w * 0.014} L ${p.x_m - w * 0.014} ${p.y_m + w * 0.014} L ${p.x_m + w * 0.014} ${p.y_m + w * 0.014} Z`}
-          fill="#dc2626"
-          stroke="white"
-          strokeWidth={w * 0.004}
-        >
-          <title>{pointTooltip(p, idx, 'comparison')}</title>
-        </path>
-      ))}
-    </>
   );
 }
 

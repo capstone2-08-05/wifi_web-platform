@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQueries, useQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { Ban, CheckCircle2, Info, Loader2, MapPin, MousePointer2, Sparkles, Target } from 'lucide-react';
 import type { HttpError } from '@/api/client';
 import { calibrationRunApi } from '@/api/calibration-run';
-import { rfRunApi } from '@/api/rf-run';
 import { useAppStore } from '@/stores/app-store';
 import {
   useApRecommendationStore,
@@ -18,6 +17,7 @@ import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
 import {
   useApRecommendation,
   useApRecommendationRuns,
+  useVerifyApRecommendationCandidate,
 } from '@/hooks/use-ap-recommendation';
 import { useFloorMeasurementSessions } from '@/hooks/use-measurement-session';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
@@ -169,8 +169,7 @@ export default function MobileAppPage() {
   const [targetTotalAps, setTargetTotalAps] = useState<number | null>(null);
   const targetBands: WifiBand[] = ['5G'];
   const combinePolicy: CombinePolicy = 'prefer_5g_then_2g';
-  const verifyWithSionna = true;
-  const verificationTopK = 5;
+  const verifyWithSionna = false;
   const physicalAps = useMemo(
     () => existingAps.map((ap) => canvasApToPhysicalAp(ap, targetBands)),
     [existingAps, targetBands],
@@ -184,9 +183,9 @@ export default function MobileAppPage() {
         : [],
     [existingAps, relocateTargetApIds, recommendationMode],
   );
-  const [compareWithMeasurement, setCompareWithMeasurement] = useState(false);
   const [verificationRunId, setVerificationRunId] = useState<string | null>(null);
   const [verificationRank, setVerificationRank] = useState<number | null>(null);
+  const [calibrationWarning, setCalibrationWarning] = useState<string | null>(null);
   const [recommendationUpdatedAt, setRecommendationUpdatedAt] = useState<string | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
   const [showSimComparison, setShowSimComparison] = useState(false);
@@ -194,27 +193,11 @@ export default function MobileAppPage() {
 
   const recommendMutation = useApRecommendation();
   const recommendationRunsQuery = useApRecommendationRuns(sceneVersionId, 10);
+  const verifyCandidateMutation = useVerifyApRecommendationCandidate();
   const createLayout = useCreateApLayout();
   const verificationPoll = useRfRun(verificationRunId);
   const verificationMapsQuery = useRfMaps(verificationRunId, verificationPoll.isSucceeded);
   const baselineRunDetail = useRfRun(latestRfRunId);
-  const autoVerificationRuns = useMemo(
-    () =>
-      (recommendMutation.data?.verification_jobs ?? [])
-        .filter((job): job is typeof job & { rf_run_id: string } => typeof job.rf_run_id === 'string')
-        .map((job) => ({ rank: job.candidate_rank, runId: job.rf_run_id })),
-    [recommendMutation.data?.verification_jobs],
-  );
-  const autoVerificationRunQueries = useQueries({
-    queries: autoVerificationRuns.map((job) => ({
-      queryKey: ['rf-run', job.runId] as const,
-      queryFn: () => rfRunApi.get(job.runId),
-      enabled: !!job.runId,
-      refetchInterval: (query: { state: { data?: { status?: string } } }) =>
-        isRfRunTerminal(query.state.data?.status) ? false : 3_000,
-      refetchIntervalInBackground: false,
-    })),
-  });
   const measurementSessionsQuery = useFloorMeasurementSessions(floorId);
   const storedMeasurementView = useMemo(
     () => readStoredMeasurementView(floorId),
@@ -366,53 +349,9 @@ export default function MobileAppPage() {
       source: 'measurement' as const,
     };
   }, [verificationCalibrationQuery.data]);
-  const verificationScoresByRank = useMemo(() => {
-    const scores = new Map<number, VerificationScore>();
-    autoVerificationRuns.forEach((job, index) => {
-      const run = autoVerificationRunQueries[index]?.data;
-      const heatmap = extractRadioMapHeatmap(run?.metrics_json);
-      const coverage = computeGridCoverageMetricsFromValues(heatmap?.valuesDbm);
-      scores.set(job.rank, {
-        score: computeVerificationScore(coverage),
-        status: run?.status ?? null,
-        coverage,
-      });
-    });
-    return scores;
-  }, [autoVerificationRunQueries, autoVerificationRuns]);
-  // 백엔드에서 Sionna 완료 시 affine 보정 적용 후 calibrated_values_dbm 저장 → 별도 API 불필요
-  const calibratedScoresByRank = useMemo(() => {
-    const map = new Map<number, { coverage: GridCoverageMetrics | null; heatmap: RecommendationHeatmap | null }>();
-    autoVerificationRuns.forEach((job, index) => {
-      const run = autoVerificationRunQueries[index]?.data;
-      const heatmap = extractRadioMapHeatmap(run?.metrics_json, { calibrated: true });
-      const coverage = computeGridCoverageMetricsFromValues(heatmap?.valuesDbm);
-      map.set(job.rank, { coverage, heatmap });
-    });
-    return map;
-  }, [autoVerificationRunQueries, autoVerificationRuns]);
-  const rankedRecommendations = useMemo(() => {
-    return recommendations
-      .map((rec) => {
-        const verification = verificationScoresByRank.get(rec.rank);
-        const calibrated = calibratedScoresByRank.get(rec.rank);
-        const calibratedScore = computeVerificationScore(calibrated?.coverage ?? null);
-        return {
-          ...rec,
-          verified_score: calibratedScore ?? verification?.score ?? rec.verified_score ?? null,
-          verification_status: verification?.status ?? rec.verification_status ?? null,
-        };
-      })
-      .sort((a, b) => {
-        const aScore = a.verified_score ?? a.score;
-        const bScore = b.verified_score ?? b.score;
-        if (bScore !== aScore) return bScore - aScore;
-        return b.score - a.score;
-      });
-  }, [recommendations, verificationScoresByRank, calibratedScoresByRank]);
   const selectedRecommendation = useMemo(
-    () => rankedRecommendations.find((rec) => rec.rank === selectedRank) ?? rankedRecommendations[0] ?? null,
-    [rankedRecommendations, selectedRank],
+    () => recommendations.find((rec) => rec.rank === selectedRank) ?? recommendations[0] ?? null,
+    [recommendations, selectedRank],
   );
   const verificationHeatmap = useMemo(() => {
     const fromRun = extractRadioMapHeatmap(verificationPoll.rfRun?.metrics_json);
@@ -429,18 +368,28 @@ export default function MobileAppPage() {
     () => computeGridCoverageMetrics(verificationCalibrationQuery.data),
     [verificationCalibrationQuery.data],
   );
-  const selectedRankCalibratedHeatmap = selectedRank != null
-    ? (calibratedScoresByRank.get(selectedRank)?.heatmap ?? null)
-    : null;
-  const comparisonHeatmap = selectedRankCalibratedHeatmap ?? verificationCalibratedHeatmap ?? verificationHeatmap ?? integratedHeatmap;
-  const showComparisonHeatmap = compareWithMeasurement && !!comparisonHeatmap;
   const verificationMatchesSelection =
     selectedRecommendation != null && verificationRank === selectedRecommendation.rank;
-
-  const canvasHeatmap = showSimComparison && verificationMatchesSelection
-    ? (simComparisonTab === 'baseline' ? baselineHeatmap : (selectedRankCalibratedHeatmap ?? verificationCalibratedHeatmap ?? verificationHeatmap))
-    : showComparisonHeatmap ? comparisonHeatmap : null;
-  const useComparisonMode = (showSimComparison && verificationMatchesSelection) || showComparisonHeatmap;
+  const useComparisonMode = showSimComparison && verificationMatchesSelection;
+  const recommendedComparisonHeatmap = verificationCalibratedHeatmap ?? verificationHeatmap;
+  const recommendedCoverageForComparison =
+    verificationCalibratedCoverageMetrics ??
+    verificationCoverageMetrics ??
+    extractRunCoverageMetrics(verificationPoll.rfRun?.metrics_json) ??
+    recommendationCoverageMetrics(selectedRecommendation);
+  const integratedCoverageForComparison =
+    integratedCoverageMetrics ??
+    extractRunCoverageMetrics(baselineRunDetail.rfRun?.metrics_json) ??
+    extractRunCoverageMetrics(latestRfRun?.metrics_json);
+  const canvasHeatmapMode: 'prediction' | 'measurement' =
+    useComparisonMode && (simComparisonTab === 'baseline' || !!recommendedComparisonHeatmap)
+      ? 'measurement'
+      : 'prediction';
+  const canvasHeatmap = !useComparisonMode
+    ? null
+    : simComparisonTab === 'baseline'
+      ? integratedHeatmap
+      : recommendedComparisonHeatmap;
 
   const persistRecommendationSession = (patch: Partial<ApRecommendationSession>) => {
     if (!sceneVersionId) return;
@@ -462,7 +411,6 @@ export default function MobileAppPage() {
       setRecommendations([]);
       setSelectedRank(null);
       setSavedRank(null);
-      setCompareWithMeasurement(false);
       setVerificationRunId(null);
       setVerificationRank(null);
       setRecommendationUpdatedAt(null);
@@ -475,7 +423,6 @@ export default function MobileAppPage() {
       setRecommendations([]);
       setSelectedRank(null);
       setSavedRank(null);
-      setCompareWithMeasurement(false);
       setVerificationRunId(null);
       setVerificationRank(null);
       setRecommendationUpdatedAt(null);
@@ -488,7 +435,6 @@ export default function MobileAppPage() {
     setRecommendations(storedRecommendations);
     setSelectedRank(stored.selectedRank ?? storedRecommendations[0]?.rank ?? null);
     setSavedRank(stored.savedRank);
-    setCompareWithMeasurement(stored.compareWithMeasurement);
     setRecommendationUpdatedAt(stored.updatedAt);
   }, [sceneVersionId]);
 
@@ -502,7 +448,6 @@ export default function MobileAppPage() {
     setRecommendations(runRecommendations);
     setSelectedRank(runRecommendations[0]?.rank ?? null);
     setSavedRank(null);
-    setCompareWithMeasurement(false);
     setRecommendationUpdatedAt(latestRun.created_at);
     setPageError(null);
     if (sceneVersionId) {
@@ -512,7 +457,6 @@ export default function MobileAppPage() {
         recommendations: runRecommendations,
         selectedRank: runRecommendations[0]?.rank ?? null,
         savedRank: null,
-        compareWithMeasurement: false,
         updatedAt: latestRun.created_at,
       });
     }
@@ -545,7 +489,6 @@ export default function MobileAppPage() {
     setRecommendations([]);
     setSelectedRank(null);
     setSavedRank(null);
-    setCompareWithMeasurement(false);
     setVerificationRunId(null);
     setVerificationRank(null);
     if (sceneVersionId && validAreas.length > 0) {
@@ -554,7 +497,6 @@ export default function MobileAppPage() {
         recommendations: [],
         selectedRank: null,
         savedRank: null,
-        compareWithMeasurement: false,
       });
     } else if (sceneVersionId) {
       clearRecommendationScene(sceneVersionId);
@@ -591,7 +533,6 @@ export default function MobileAppPage() {
       targetBands,
       combinePolicy,
       verifyWithSionna,
-      verificationTopK,
       verificationBackend: inferenceMode as RfBackend,
       recommendationMode,
       replaceTargetApIds: recommendationMode === 'replace' ? replaceTargetApIds : undefined,
@@ -612,32 +553,22 @@ export default function MobileAppPage() {
     setSavedRank(null);
     setVerificationRunId(null);
     setVerificationRank(null);
+    setCalibrationWarning(null);
+    setShowSimComparison(false);
     persistRecommendationSession({
       areas: validAreas,
       savedRank: null,
-      compareWithMeasurement: false,
     });
     recommendMutation.mutate(payload, {
       onSuccess: (data) => {
         const normalized = normalizeRecommendations(data);
-        const firstVerificationJob = data.verification_jobs?.find((job) => job.rf_run_id);
-        const firstVerificationRunId =
-          typeof firstVerificationJob?.rf_run_id === 'string' ? firstVerificationJob.rf_run_id : null;
-        const firstVerificationRank =
-          typeof firstVerificationJob?.candidate_rank === 'number'
-            ? firstVerificationJob.candidate_rank
-            : null;
         setRecommendations(normalized);
         setSelectedRank(normalized[0]?.rank ?? null);
-        setCompareWithMeasurement(!!firstVerificationRunId);
-        setVerificationRunId(firstVerificationRunId);
-        setVerificationRank(firstVerificationRank);
         persistRecommendationSession({
           areas: validAreas,
           recommendations: normalized,
           selectedRank: normalized[0]?.rank ?? null,
           savedRank: null,
-          compareWithMeasurement: !!firstVerificationRunId,
         });
         if (import.meta.env.DEV) {
           console.debug('[AP Recommendation] response:', data, 'normalized:', normalized);
@@ -657,9 +588,10 @@ export default function MobileAppPage() {
     }
 
     setSelectedRank(rec.rank);
-    const verificationRunForRank = getVerificationRunIdForRank(recommendMutation.data ?? null, rec.rank);
-    setVerificationRunId(verificationRunForRank);
-    setVerificationRank(verificationRunForRank ? rec.rank : null);
+    setVerificationRunId(null);
+    setVerificationRank(null);
+    setShowSimComparison(false);
+    setCalibrationWarning(null);
     setPageError(null);
     persistRecommendationSession({ selectedRank: rec.rank });
 
@@ -724,15 +656,36 @@ export default function MobileAppPage() {
 
   const handlePreviewRecommendation = (rec: ApRecommendationResult) => {
     setSelectedRank(rec.rank);
-    const verificationRunForRank = getVerificationRunIdForRank(recommendMutation.data ?? null, rec.rank);
-    setVerificationRunId(verificationRunForRank);
-    setVerificationRank(verificationRunForRank ? rec.rank : null);
-    setCompareWithMeasurement(false);
+    setVerificationRunId(null);
+    setVerificationRank(null);
+    setShowSimComparison(false);
+    setCalibrationWarning(null);
     setPageError(null);
-    persistRecommendationSession({
-      selectedRank: rec.rank,
-      compareWithMeasurement: false,
-    });
+    persistRecommendationSession({ selectedRank: rec.rank });
+  };
+
+  const handleVerifySelectedCandidate = () => {
+    const runId = recommendMutation.data?.run_id;
+    if (!runId || !selectedRecommendation) return;
+
+    setPageError(null);
+    setCalibrationWarning(null);
+    verifyCandidateMutation.mutate(
+      { runId, body: { candidate_rank: selectedRecommendation.rank } },
+      {
+        onSuccess: (data) => {
+          setVerificationRunId(data.rf_run_id);
+          setVerificationRank(data.candidate_rank);
+          setCalibrationWarning(data.calibration.warning ?? null);
+          setShowSimComparison(true);
+          setSimComparisonTab('verification');
+        },
+        onError: (err) => {
+          const e = err as HttpError | null;
+          setPageError(e?.message ?? '비교 정보를 불러오는데 실패했습니다.');
+        },
+      },
+    );
   };
 
   const modeValidationError = getRecommendationModeError({
@@ -826,7 +779,7 @@ export default function MobileAppPage() {
               <EmptyState message="도면 정보를 불러올 수 없습니다." />
             ) : (
               <>
-                {showSimComparison && verificationMatchesSelection && (
+                {useComparisonMode && (
                   <div className="absolute left-1/2 top-2 z-10 flex -translate-x-1/2 overflow-hidden rounded-lg border border-[#D8E3F0] bg-white shadow-sm">
                     <button
                       type="button"
@@ -838,7 +791,7 @@ export default function MobileAppPage() {
                           : 'text-slate-500 hover:bg-muted/60',
                       )}
                     >
-                      기존 시뮬
+                      현재 위치
                     </button>
                     <button
                       type="button"
@@ -850,7 +803,7 @@ export default function MobileAppPage() {
                           : 'text-slate-500 hover:bg-muted/60',
                       )}
                     >
-                      추천 검증
+                      추천 위치
                     </button>
                   </div>
                 )}
@@ -866,7 +819,7 @@ export default function MobileAppPage() {
                   selectedReplacementIds={replaceTargetApIds}
                   movableApIds={relocateTargetApIds}
                   selectedRecommendationRank={selectedRank}
-                  heatmapMode={useComparisonMode ? 'measurement' : 'prediction'}
+                  heatmapMode={canvasHeatmapMode}
                   measurementHeatmap={canvasHeatmap}
                   disabled={recommendMutation.isPending || createLayout.isPending}
                 />
@@ -927,7 +880,7 @@ export default function MobileAppPage() {
                 ))}
               </div>
             </div>
-            <RecommendationAdvancedControls topK={verificationTopK} />
+            <RecommendationAdvancedControls />
             {recommendationMode === 'replace' && (
               <div className="flex items-center gap-2">
                 <span className="text-[12px] text-slate-500">교체할 공유기</span>
@@ -1119,58 +1072,44 @@ export default function MobileAppPage() {
                   loadingIntegrated={
                     calibrationComparisonQuery.isLoading || verificationCalibrationQuery.isLoading
                   }
-                  starting={recommendMutation.isPending}
+                  verifying={verifyCandidateMutation.isPending}
                   polling={verificationMatchesSelection && verificationPoll.isPolling}
-                  canCompare={verificationMatchesSelection && verificationPoll.isSucceeded}
+                  canCompare={verificationMatchesSelection}
+                  verifyDisabled={!recommendMutation.data?.run_id || !selectedRecommendation}
+                  calibrationWarning={verificationMatchesSelection ? calibrationWarning : null}
                   showComparison={showSimComparison}
+                  onVerify={handleVerifySelectedCandidate}
                   onCompare={() => {
                     setShowSimComparison((v) => !v);
                     setSimComparisonTab('verification');
                   }}
                 />
-                {showSimComparison && verificationMatchesSelection && (
+                {useComparisonMode && (
                   <SimComparisonCard
-                    baselineCoverage={
-                      baselineCoverageMetrics ??
-                      extractRunCoverageMetrics(baselineRunDetail.rfRun?.metrics_json) ??
-                      extractRunCoverageMetrics(latestRfRun?.metrics_json)
+                    integratedCoverage={integratedCoverageForComparison}
+                    recommendedCoverage={recommendedCoverageForComparison}
+                    hasIntegratedHeatmap={!!integratedHeatmap}
+                    hasRecommendedHeatmap={
+                      !!recommendedComparisonHeatmap ||
+                      (selectedRecommendation?.prediction_points?.length ?? 0) > 0
                     }
-                    verificationCoverage={
-                      verificationCalibratedCoverageMetrics ??
-                      verificationCoverageMetrics ??
-                      extractRunCoverageMetrics(verificationPoll.rfRun?.metrics_json)
-                    }
-                    hasBaselineHeatmap={!!baselineHeatmap}
-                    hasVerificationHeatmap={!!(verificationCalibratedHeatmap ?? verificationHeatmap)}
+                    recommendedIsEstimate={!recommendedComparisonHeatmap}
                     simComparisonTab={simComparisonTab}
                     onTabChange={setSimComparisonTab}
                   />
                 )}
-                {rankedRecommendations.map((rec) => {
-                  const calData = calibratedScoresByRank.get(rec.rank);
-                  // 보정 heatmap은 Sionna rf_run 완료 시 백엔드에서 자동 저장 - 별도 쿼리 없음
-                  const isCalibrating = autoVerificationRuns.some((job) => {
-                    if (job.rank !== rec.rank) return false;
-                    const idx = autoVerificationRuns.indexOf(job);
-                    const run = autoVerificationRunQueries[idx]?.data;
-                    return !['done', 'completed', 'succeeded'].includes(String(run?.status ?? '').toLowerCase());
-                  });
-                  return (
-                    <RecommendationCard
-                      key={rec.rank}
-                      rec={rec}
-                      selected={selectedRank === rec.rank}
-                      saved={savedRank === rec.rank}
-                      saving={createLayout.isPending && selectedRank === rec.rank}
-                      saveDisabled={!latestRfRunId || createLayout.isPending}
-                      currentCoverage={integratedCoverageMetrics}
-                      calibratedCoverage={calData?.coverage ?? null}
-                      calibrating={isCalibrating}
-                      onPreview={() => handlePreviewRecommendation(rec)}
-                      onSelect={() => handleSelectRecommendation(rec)}
-                    />
-                  );
-                })}
+                {recommendations.map((rec) => (
+                  <RecommendationCard
+                    key={rec.rank}
+                    rec={rec}
+                    selected={selectedRank === rec.rank}
+                    saved={savedRank === rec.rank}
+                    saving={createLayout.isPending && selectedRank === rec.rank}
+                    saveDisabled={!latestRfRunId || createLayout.isPending}
+                    onPreview={() => handlePreviewRecommendation(rec)}
+                    onSelect={() => handleSelectRecommendation(rec)}
+                  />
+                ))}
               </div>
             )}
           </div>
@@ -1368,15 +1307,7 @@ function getRecommendationModeError({
   return null;
 }
 
-function getVerificationRunIdForRank(
-  response: ApRecommendationResponse | null,
-  rank: number,
-): string | null {
-  const job = response?.verification_jobs?.find((entry) => entry.candidate_rank === rank);
-  return typeof job?.rf_run_id === 'string' ? job.rf_run_id : null;
-}
-
-function RecommendationAdvancedControls({ topK }: { topK: number }) {
+function RecommendationAdvancedControls() {
   return (
     <div className="flex flex-wrap items-center gap-2">
       <span
@@ -1384,12 +1315,6 @@ function RecommendationAdvancedControls({ topK }: { topK: number }) {
         title="실측 데이터가 있으면 시스템이 위치별 오차를 약하게 자동 보정합니다."
       >
         오차 자동 보정
-      </span>
-      <span
-        className="inline-flex h-7 items-center rounded-md border border-emerald-200 bg-emerald-50 px-2 text-[11px] font-semibold text-emerald-700"
-        title={`추천을 실행하면 상위 ${topK}개 후보를 SionnaRT로 자동 정밀 검증하고 보정 후 재정렬합니다.`}
-      >
-        상위 {topK}개 자동 비교
       </span>
     </div>
   );
@@ -1455,12 +1380,6 @@ interface GridCoverageMetrics {
   bottom_10_percent_rssi_dbm: number | null;
 }
 
-interface VerificationScore {
-  score: number | null;
-  status: string | null;
-  coverage: GridCoverageMetrics | null;
-}
-
 function computeGridCoverageMetrics(
   evaluation: CalibrationEvaluationResponse | null | undefined,
 ): GridCoverageMetrics | null {
@@ -1514,6 +1433,22 @@ function computeGridCoverageMetricsFromValues(
     coverage_score: coverageRatio,
     average_rssi_dbm: average,
     bottom_10_percent_rssi_dbm: sorted[bottomIndex],
+  };
+}
+
+/** Sionna 검증 전, 추천 후보의 path-loss 예측값으로 비교용 커버리지 지표를 만든다. */
+function recommendationCoverageMetrics(
+  recommendation: ApRecommendationResult | null,
+): GridCoverageMetrics | null {
+  if (!recommendation) return null;
+  const ratio = recommendation.coverage_ratio ?? recommendation.coverage_score ?? null;
+  if (ratio == null) return null;
+  return {
+    coverage_threshold_dbm: COVERAGE_THRESHOLD_DBM,
+    coverage_ratio: ratio,
+    coverage_score: ratio,
+    average_rssi_dbm: recommendation.average_rssi_dbm ?? null,
+    bottom_10_percent_rssi_dbm: recommendation.bottom_10_percent_rssi_dbm ?? null,
   };
 }
 
@@ -1607,42 +1542,6 @@ function coerceRssiRange(raw: unknown): { min: number; max: number } | undefined
   const max = Number(obj['max_dbm'] ?? obj['vmax_dbm']);
   if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return undefined;
   return { min, max };
-}
-
-function isRfRunTerminal(status: string | null | undefined): boolean {
-  return ['done', 'completed', 'succeeded', 'failed', 'error', 'cancelled'].includes(String(status ?? '').toLowerCase());
-}
-
-function computeVerificationScore(coverage: GridCoverageMetrics | null): number | null {
-  if (!coverage) return null;
-  const coverageScore = coverage.coverage_ratio ?? coverage.coverage_score ?? null;
-  const averageScore =
-    coverage.average_rssi_dbm == null ? null : normalizeRange(coverage.average_rssi_dbm, -85, -45);
-  const bottomScore =
-    coverage.bottom_10_percent_rssi_dbm == null
-      ? null
-      : normalizeRange(coverage.bottom_10_percent_rssi_dbm, -85, -67);
-  return weightedAverage([
-    [coverageScore, 0.45],
-    [averageScore, 0.35],
-    [bottomScore, 0.2],
-  ]);
-}
-
-function normalizeRange(value: number, min: number, max: number): number {
-  if (max <= min) return 0;
-  return Math.max(0, Math.min(1, (value - min) / (max - min)));
-}
-
-function weightedAverage(values: Array<[number | null | undefined, number]>): number | null {
-  let numerator = 0;
-  let denominator = 0;
-  for (const [value, weight] of values) {
-    if (value == null || !Number.isFinite(value)) continue;
-    numerator += value * weight;
-    denominator += weight;
-  }
-  return denominator > 0 ? numerator / denominator : null;
 }
 
 function CoverageComparisonCard({
@@ -1766,21 +1665,6 @@ function RecommendationSummaryCard({
           })}
         </div>
       )}
-      {response?.verification_jobs && response.verification_jobs.length > 0 && (
-        <div className="mt-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
-          <p className="text-[11px] font-semibold text-slate-700">
-            정밀 검증: {formatVerificationStatus(response.verification_status)}
-          </p>
-          <div className="mt-1 space-y-1">
-            {response.verification_jobs.map((job) => (
-              <p key={job.candidate_id} className="text-[11px] text-muted-foreground">
-                {job.candidate_rank}순위: 빠른 평가 {job.fast_score?.toFixed(3) ?? '-'} / {formatVerificationStatus(job.status)}
-                {job.rf_run_id ? ` · Run ${String(job.rf_run_id).slice(0, 8)}` : ''}
-              </p>
-            ))}
-          </div>
-        </div>
-      )}
     </section>
   );
 }
@@ -1807,15 +1691,6 @@ function formatRecommendationModeLabel(value: unknown): string {
   return String(value ?? '-');
 }
 
-function formatVerificationStatus(value: unknown): string {
-  if (value === 'deferred') return '대기 중';
-  if (value === 'pending') return '준비 중';
-  if (value === 'running') return '검증 중';
-  if (value === 'succeeded' || value === 'success') return '완료';
-  if (value === 'failed' || value === 'error') return '실패';
-  return String(value ?? '-');
-}
-
 function numberFromRecord(source: Record<string, unknown>, key: string): number | null {
   const value = source[key];
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -1836,10 +1711,13 @@ function SionnaVerificationCard({
   calibratedSionnaCoverage,
   runStatus,
   loadingIntegrated,
-  starting,
+  verifying,
   polling,
   canCompare,
+  verifyDisabled,
+  calibrationWarning,
   showComparison,
+  onVerify,
   onCompare,
 }: {
   recommendation: ApRecommendationResult | null;
@@ -1848,10 +1726,13 @@ function SionnaVerificationCard({
   calibratedSionnaCoverage: GridCoverageMetrics | null;
   runStatus: string | null;
   loadingIntegrated: boolean;
-  starting: boolean;
+  verifying: boolean;
   polling: boolean;
   canCompare: boolean;
+  verifyDisabled: boolean;
+  calibrationWarning: string | null;
   showComparison: boolean;
+  onVerify: () => void;
   onCompare: () => void;
 }) {
   const predictionCoverage = recommendation?.coverage_ratio ?? recommendation?.coverage_score ?? null;
@@ -1863,7 +1744,7 @@ function SionnaVerificationCard({
     calibratedSionnaRatio != null && integratedRatio != null
       ? calibratedSionnaRatio - integratedRatio
       : null;
-  const isBusy = starting || polling;
+  const isBusy = verifying || polling;
 
   return (
     <section className="rounded-xl border border-[#D8E3F0] bg-white p-4">
@@ -1871,7 +1752,7 @@ function SionnaVerificationCard({
         <div>
           <h3 className="text-sm font-bold text-foreground">정밀 검증 비교</h3>
           <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-            선택한 후보를 더 정밀한 전파 시뮬레이션으로 다시 확인하고 현재 통합맵과 비교합니다.
+            선택한 후보 위치에 공유기를 배치하고 전파 시뮬레이션을 실행해 현재 통합맵과 비교합니다.
           </p>
         </div>
         {(isBusy || loadingIntegrated) && (
@@ -1880,18 +1761,25 @@ function SionnaVerificationCard({
       </div>
 
       <div className="mt-3 flex gap-2">
-        {!canCompare && (
-          <div className="flex-1 rounded-lg border border-[#E5EAF2] bg-muted px-3 py-2.5 text-center text-sm font-medium text-muted-foreground">
-            {isBusy ? (
-              <span className="inline-flex items-center justify-center gap-1.5">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                자동 검증 중
-              </span>
-            ) : (
-              '자동 검증 결과 대기'
-            )}
-          </div>
-        )}
+        <button
+          type="button"
+          onClick={onVerify}
+          disabled={verifyDisabled || isBusy}
+          className={cn(
+            'flex-1 rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors',
+            'border-[#D8E3F0] bg-white text-slate-600 hover:bg-muted/60',
+            'disabled:cursor-not-allowed disabled:opacity-50',
+          )}
+        >
+          {isBusy ? (
+            <span className="inline-flex items-center justify-center gap-1.5">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {verifying ? '비교 요청 중' : '정밀 시뮬레이션 실행 중'}
+            </span>
+          ) : (
+            '현재 위치와 비교'
+          )}
+        </button>
         {canCompare && (
           <button
             type="button"
@@ -1903,10 +1791,16 @@ function SionnaVerificationCard({
                 : 'border-[#D8E3F0] bg-white text-slate-600 hover:bg-muted/60',
             )}
           >
-            {showComparison ? '비교 닫기' : '비교하기'}
+            {showComparison ? '비교 닫기' : '비교 보기'}
           </button>
         )}
       </div>
+
+      {calibrationWarning && (
+        <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-700">
+          {calibrationWarning}
+        </p>
+      )}
 
       <div className="mt-3 grid grid-cols-2 gap-2">
         <MetricTile label="빠른 예측 신호 범위" value={formatCoveragePercent(predictionCoverage)} />
@@ -1924,44 +1818,51 @@ function SionnaVerificationCard({
 }
 
 function SimComparisonCard({
-  baselineCoverage,
-  verificationCoverage,
-  hasBaselineHeatmap,
-  hasVerificationHeatmap,
+  integratedCoverage,
+  recommendedCoverage,
+  hasIntegratedHeatmap,
+  hasRecommendedHeatmap,
+  recommendedIsEstimate,
   simComparisonTab,
   onTabChange,
 }: {
-  baselineCoverage: GridCoverageMetrics | null;
-  verificationCoverage: GridCoverageMetrics | null;
-  hasBaselineHeatmap: boolean;
-  hasVerificationHeatmap: boolean;
+  integratedCoverage: GridCoverageMetrics | null;
+  recommendedCoverage: GridCoverageMetrics | null;
+  hasIntegratedHeatmap: boolean;
+  hasRecommendedHeatmap: boolean;
+  recommendedIsEstimate: boolean;
   simComparisonTab: 'baseline' | 'verification';
   onTabChange: (tab: 'baseline' | 'verification') => void;
 }) {
-  const bCov = baselineCoverage?.coverage_ratio ?? baselineCoverage?.coverage_score ?? null;
-  const vCov = verificationCoverage?.coverage_ratio ?? verificationCoverage?.coverage_score ?? null;
+  const bCov = integratedCoverage?.coverage_ratio ?? integratedCoverage?.coverage_score ?? null;
+  const vCov = recommendedCoverage?.coverage_ratio ?? recommendedCoverage?.coverage_score ?? null;
   const covDelta = bCov != null && vCov != null ? vCov - bCov : null;
   const rssiDelta =
-    baselineCoverage?.average_rssi_dbm != null && verificationCoverage?.average_rssi_dbm != null
-      ? verificationCoverage.average_rssi_dbm - baselineCoverage.average_rssi_dbm
+    integratedCoverage?.average_rssi_dbm != null && recommendedCoverage?.average_rssi_dbm != null
+      ? recommendedCoverage.average_rssi_dbm - integratedCoverage.average_rssi_dbm
       : null;
   const botDelta =
-    baselineCoverage?.bottom_10_percent_rssi_dbm != null &&
-    verificationCoverage?.bottom_10_percent_rssi_dbm != null
-      ? verificationCoverage.bottom_10_percent_rssi_dbm - baselineCoverage.bottom_10_percent_rssi_dbm
+    integratedCoverage?.bottom_10_percent_rssi_dbm != null &&
+    recommendedCoverage?.bottom_10_percent_rssi_dbm != null
+      ? recommendedCoverage.bottom_10_percent_rssi_dbm - integratedCoverage.bottom_10_percent_rssi_dbm
       : null;
 
   return (
     <section className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-      <h3 className="text-sm font-bold text-emerald-800">기존 시뮬 vs 추천 검증 비교</h3>
+      <h3 className="text-sm font-bold text-emerald-800">현재 위치 vs 추천 위치 비교</h3>
       <p className="mt-0.5 text-[11px] text-emerald-700">
-        좌측 지도 탭으로 기존/추천 맵을 전환하세요.
+        좌측 지도 탭으로 현재/추천 위치 맵을 전환하세요.
       </p>
+      {recommendedIsEstimate && (
+        <p className="mt-1 text-[11px] text-amber-700">
+          추천 위치는 아직 정밀 시뮬레이션 결과가 없어 path-loss 기반 예측값으로 비교합니다.
+        </p>
+      )}
 
       <div className="mt-3 grid grid-cols-3 gap-2 text-center">
         <div className="text-[10px] font-semibold text-muted-foreground" />
-        <div className="text-[10px] font-semibold text-slate-600">기존 시뮬</div>
-        <div className="text-[10px] font-semibold text-blue-600">추천 검증</div>
+        <div className="text-[10px] font-semibold text-slate-600">현재 위치</div>
+        <div className="text-[10px] font-semibold text-blue-600">추천 위치</div>
 
         <div className="rounded-lg bg-white px-2 py-2 text-[10px] font-medium text-muted-foreground">커버리지</div>
         <div className={cn('rounded-lg px-2 py-2 text-sm font-bold', simComparisonTab === 'baseline' ? 'bg-slate-100 text-slate-800' : 'bg-white text-slate-600')}>
@@ -1973,18 +1874,18 @@ function SimComparisonCard({
 
         <div className="rounded-lg bg-white px-2 py-2 text-[10px] font-medium text-muted-foreground">평균 신호</div>
         <div className={cn('rounded-lg px-2 py-2 text-sm font-bold', simComparisonTab === 'baseline' ? 'bg-slate-100 text-slate-800' : 'bg-white text-slate-600')}>
-          {formatDbm(baselineCoverage?.average_rssi_dbm)}
+          {formatDbm(integratedCoverage?.average_rssi_dbm)}
         </div>
         <div className={cn('rounded-lg px-2 py-2 text-sm font-bold', simComparisonTab === 'verification' ? 'bg-blue-100 text-blue-800' : 'bg-white text-blue-600')}>
-          {formatDbm(verificationCoverage?.average_rssi_dbm)}
+          {formatDbm(recommendedCoverage?.average_rssi_dbm)}
         </div>
 
         <div className="rounded-lg bg-white px-2 py-2 text-[10px] font-medium text-muted-foreground">하위 10%</div>
         <div className={cn('rounded-lg px-2 py-2 text-sm font-bold', simComparisonTab === 'baseline' ? 'bg-slate-100 text-slate-800' : 'bg-white text-slate-600')}>
-          {formatDbm(baselineCoverage?.bottom_10_percent_rssi_dbm)}
+          {formatDbm(integratedCoverage?.bottom_10_percent_rssi_dbm)}
         </div>
         <div className={cn('rounded-lg px-2 py-2 text-sm font-bold', simComparisonTab === 'verification' ? 'bg-blue-100 text-blue-800' : 'bg-white text-blue-600')}>
-          {formatDbm(verificationCoverage?.bottom_10_percent_rssi_dbm)}
+          {formatDbm(recommendedCoverage?.bottom_10_percent_rssi_dbm)}
         </div>
       </div>
 
@@ -1994,37 +1895,37 @@ function SimComparisonCard({
         <DeltaTile label="하위 10% 변화" delta={botDelta} unit="dBm" />
       </div>
 
-      {(hasBaselineHeatmap || hasVerificationHeatmap) && (
+      {(hasIntegratedHeatmap || hasRecommendedHeatmap) && (
         <div className="mt-3 flex gap-2">
           <button
             type="button"
-            disabled={!hasBaselineHeatmap}
+            disabled={!hasIntegratedHeatmap}
             onClick={() => onTabChange('baseline')}
             className={cn(
               'flex-1 rounded-md border py-1.5 text-xs font-medium transition-colors',
               simComparisonTab === 'baseline'
                 ? 'border-slate-400 bg-slate-700 text-white'
-                : hasBaselineHeatmap
+                : hasIntegratedHeatmap
                   ? 'border-[#D8E3F0] bg-white text-slate-500 hover:bg-muted/60'
                   : 'cursor-not-allowed border-[#E5EAF2] bg-muted text-muted-foreground/50',
             )}
           >
-            기존 시뮬 보기
+            현재 위치 보기
           </button>
           <button
             type="button"
-            disabled={!hasVerificationHeatmap}
+            disabled={!hasRecommendedHeatmap}
             onClick={() => onTabChange('verification')}
             className={cn(
               'flex-1 rounded-md border py-1.5 text-xs font-medium transition-colors',
               simComparisonTab === 'verification'
                 ? 'border-blue-500 bg-blue-600 text-white'
-                : hasVerificationHeatmap
+                : hasRecommendedHeatmap
                   ? 'border-[#D8E3F0] bg-white text-slate-500 hover:bg-muted/60'
                   : 'cursor-not-allowed border-[#E5EAF2] bg-muted text-muted-foreground/50',
             )}
           >
-            추천 검증 보기
+            추천 위치 보기
           </button>
         </div>
       )}
@@ -2118,9 +2019,6 @@ function RecommendationCard({
   saved,
   saving,
   saveDisabled,
-  currentCoverage,
-  calibratedCoverage,
-  calibrating,
   onPreview,
   onSelect,
 }: {
@@ -2129,9 +2027,6 @@ function RecommendationCard({
   saved: boolean;
   saving: boolean;
   saveDisabled: boolean;
-  currentCoverage: GridCoverageMetrics | null;
-  calibratedCoverage: GridCoverageMetrics | null;
-  calibrating: boolean;
   onPreview: () => void;
   onSelect: () => void;
 }) {
@@ -2143,13 +2038,6 @@ function RecommendationCard({
     { border: 'border-[#D8D365]', badge: 'bg-[#D8D365]',  selectedBorder: 'border-[#D8D365] ring-1 ring-[#D8D365]/60', savedButton: 'border-[#D8D365] bg-[#D8D365] text-white' },
   ];
   const style = RANK_STYLES[(rec.rank - 1) % RANK_STYLES.length];
-
-  const curCov = currentCoverage?.coverage_ratio ?? currentCoverage?.coverage_score ?? null;
-  const calCov = calibratedCoverage?.coverage_ratio ?? calibratedCoverage?.coverage_score ?? null;
-  const covDelta = curCov != null && calCov != null ? calCov - curCov : null;
-  const curRssi = currentCoverage?.average_rssi_dbm ?? null;
-  const calRssi = calibratedCoverage?.average_rssi_dbm ?? null;
-  const rssiDelta = curRssi != null && calRssi != null ? calRssi - curRssi : null;
 
   return (
     <article
@@ -2191,42 +2079,6 @@ function RecommendationCard({
               </>
             )}
           </p>
-          {(calibrating || calCov != null) && (
-            <div className="mt-2 rounded-lg border border-[#E5EAF2] bg-[#F8FAFC] px-2.5 py-2">
-              {calibrating && calCov == null ? (
-                <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  보정 계산 중…
-                </span>
-              ) : (
-                <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-                  <span className="text-[10px] text-muted-foreground">보정 후 커버리지</span>
-                  <span className="text-[10px] font-semibold text-foreground text-right">
-                    {formatCoveragePercent(calCov)}
-                    {covDelta != null && (
-                      <span className={cn('ml-1', covDelta > 0 ? 'text-emerald-600' : covDelta < 0 ? 'text-red-500' : 'text-muted-foreground')}>
-                        ({covDelta > 0 ? '+' : ''}{(covDelta * 100).toFixed(1)}%)
-                      </span>
-                    )}
-                  </span>
-                  <span className="text-[10px] text-muted-foreground">보정 후 평균 신호</span>
-                  <span className="text-[10px] font-semibold text-foreground text-right">
-                    {formatDbm(calRssi)}
-                    {rssiDelta != null && (
-                      <span className={cn('ml-1', rssiDelta > 0 ? 'text-emerald-600' : rssiDelta < 0 ? 'text-red-500' : 'text-muted-foreground')}>
-                        ({rssiDelta > 0 ? '+' : ''}{rssiDelta.toFixed(1)})
-                      </span>
-                    )}
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
-          {rec.verification_status && (
-            <p className="mt-0.5 text-[11px] text-muted-foreground">
-              자동 검증 {formatVerificationStatus(rec.verification_status)}
-            </p>
-          )}
           <p className="mt-0.5 text-[11px] text-muted-foreground">
             탐색 후보 수 {rec.candidates_evaluated}
           </p>

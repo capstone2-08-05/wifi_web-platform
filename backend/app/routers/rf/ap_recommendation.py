@@ -14,6 +14,8 @@ from app.schemas.rf.ap_recommendation import (
     ApRecommendationRequest,
     ApRecommendationResponse,
     ApRecommendationRunResponse,
+    ApRecommendationVerifyCandidateRequest,
+    ApRecommendationVerifyCandidateResponse,
 )
 from app.services.rf import ap_recommendation_service
 
@@ -67,5 +69,24 @@ def get_ap_recommendation_run(
     return ap_recommendation_service.get_recommendation_run(
         db,
         run_id=run_id,
+        current_user=current_user,
+    )
+
+
+@router.post(
+    "/{run_id}/verify-candidate",
+    response_model=ApRecommendationVerifyCandidateResponse,
+    summary="선택한 추천 후보 1개에 대해 Sionna 검증 RF 실행 생성 (calibration 적용)",
+)
+async def verify_ap_recommendation_candidate(
+    body: ApRecommendationVerifyCandidateRequest,
+    run_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ApRecommendationVerifyCandidateResponse:
+    return await ap_recommendation_service.verify_recommendation_candidate(
+        db,
+        run_id=run_id,
+        candidate_rank=body.candidate_rank,
         current_user=current_user,
     )
