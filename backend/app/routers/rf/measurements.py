@@ -182,6 +182,7 @@ def list_detected_aps(
 def estimate_session_coverage(
     session_id: str,
     resolution_m: float = Query(default=0.5, gt=0.1, le=2.0),
+    coverage_threshold_dbm: float = Query(default=-67.0, ge=-100.0, le=-30.0),
     method: str = Query(
         default="auto",
         pattern="^(auto|gp_only|residual_kriging)$",
@@ -200,4 +201,5 @@ def estimate_session_coverage(
         grid_resolution_m=resolution_m,
         method=method,
         ap_bssid=ap_bssid,
+        coverage_threshold_dbm=coverage_threshold_dbm,
     )

@@ -18,7 +18,7 @@ import {
   useApRecommendationRuns,
   useVerifyApRecommendationCandidate,
 } from '@/hooks/use-ap-recommendation';
-import { useFloorMeasurementSessions } from '@/hooks/use-measurement-session';
+import { useEstimatedCoverage, useFloorMeasurementSessions } from '@/hooks/use-measurement-session';
 import { versionToDraftShape } from '@/features/editor/version-as-draft';
 import { DEFAULT_TX_POWER_DBM } from '@/features/simulation/SimulationCanvas';
 import {
@@ -47,6 +47,7 @@ import type {
 } from '@/types/ap-recommendation';
 import { cn } from '@/lib/utils';
 import type { CalibrationEvaluationResponse } from '@/types/calibration-run';
+import type { EstimatedCoverage } from '@/types/measurement-session';
 import type { CombinePolicy, PhysicalAp, RfMap, WifiBand } from '@/types/rf';
 
 type PageStatus = 'idle' | 'areaSelected' | 'loading' | 'success' | 'error';
@@ -261,6 +262,11 @@ export default function MobileAppPage() {
     if (comparisonSession?.id) ids.add(comparisonSession.id);
     return [...ids];
   }, [comparisonSession?.id, measurementSessionsQuery.data, sceneVersionId]);
+  const estimatedIntegratedCoverageQuery = useEstimatedCoverage(comparisonSession?.id ?? null, {
+    method: 'residual_kriging',
+    apBssid: comparisonApBssid,
+    coverageThresholdDbm,
+  });
   const calibrationComparisonQuery = useQuery({
     queryKey: [
       'ap-recommendation-calibration-comparison',
@@ -330,8 +336,12 @@ export default function MobileAppPage() {
     staleTime: 5 * 60_000,
   });
   const measurementCoverageMetrics = useMemo(
-    () => computeGridCoverageMetrics(calibrationComparisonQuery.data),
-    [calibrationComparisonQuery.data],
+    () => computeGridCoverageMetrics(calibrationComparisonQuery.data, coverageThresholdDbm),
+    [calibrationComparisonQuery.data, coverageThresholdDbm],
+  );
+  const estimatedIntegratedCoverageMetrics = useMemo(
+    () => estimatedCoverageToMetrics(estimatedIntegratedCoverageQuery.data, coverageThresholdDbm),
+    [estimatedIntegratedCoverageQuery.data, coverageThresholdDbm],
   );
   const measurementHeatmap = useMemo(() => {
     const evaluation = calibrationComparisonQuery.data;
@@ -347,6 +357,19 @@ export default function MobileAppPage() {
       source: 'measurement' as const,
     };
   }, [calibrationComparisonQuery.data]);
+  const estimatedIntegratedHeatmap = useMemo(() => {
+    const coverage = estimatedIntegratedCoverageQuery.data;
+    if (!coverage?.heatmap_url) return null;
+    return {
+      url: coverage.heatmap_url,
+      bounds: coverage.bounds,
+      rssiRange: {
+        min: coverage.rssi_range.min,
+        max: coverage.rssi_range.max,
+      },
+      source: 'measurement' as const,
+    };
+  }, [estimatedIntegratedCoverageQuery.data]);
   const baselineHeatmap = useMemo(
     () =>
       extractRadioMapHeatmap(baselineRunDetail.rfRun?.metrics_json) ??
@@ -354,11 +377,12 @@ export default function MobileAppPage() {
     [baselineRunDetail.rfRun?.metrics_json, latestRfRun?.metrics_json],
   );
   const baselineCoverageMetrics = useMemo(
-    () => computeGridCoverageMetricsFromValues(baselineHeatmap?.valuesDbm),
-    [baselineHeatmap],
+    () => computeGridCoverageMetricsFromValues(baselineHeatmap?.valuesDbm, coverageThresholdDbm),
+    [baselineHeatmap, coverageThresholdDbm],
   );
-  const integratedCoverageMetrics = measurementCoverageMetrics ?? baselineCoverageMetrics;
-  const integratedHeatmap = measurementHeatmap ?? baselineHeatmap;
+  const integratedCoverageMetrics =
+    measurementCoverageMetrics ?? estimatedIntegratedCoverageMetrics ?? baselineCoverageMetrics;
+  const integratedHeatmap = measurementHeatmap ?? estimatedIntegratedHeatmap ?? baselineHeatmap;
   const verificationCalibratedHeatmap = useMemo(() => {
     const evaluation = verificationCalibrationQuery.data;
     const map = evaluation?.maps.calibrated;
@@ -378,7 +402,7 @@ export default function MobileAppPage() {
     [recommendations, selectedRank],
   );
   const verificationHeatmap = useMemo(() => {
-    const fromRun = extractRadioMapHeatmap(verificationPoll.rfRun?.metrics_json);
+    const fromRun = extractRadioMapHeatmap(verificationPoll.rfRun?.metrics_json, { calibrated: true });
     if (fromRun) return fromRun;
     const fromJob = extractJobResultHeatmap(verificationJobPoll.rfJob?.result);
     if (fromJob) return fromJob;
@@ -387,12 +411,12 @@ export default function MobileAppPage() {
     return extractRfMapHeatmap(map);
   }, [verificationPoll.rfRun?.metrics_json, verificationJobPoll.rfJob?.result, verificationMapsQuery.data]);
   const verificationCoverageMetrics = useMemo(
-    () => computeGridCoverageMetricsFromValues(verificationHeatmap?.valuesDbm),
-    [verificationHeatmap],
+    () => computeGridCoverageMetricsFromValues(verificationHeatmap?.valuesDbm, coverageThresholdDbm),
+    [verificationHeatmap, coverageThresholdDbm],
   );
   const verificationCalibratedCoverageMetrics = useMemo(
-    () => computeGridCoverageMetrics(verificationCalibrationQuery.data),
-    [verificationCalibrationQuery.data],
+    () => computeGridCoverageMetrics(verificationCalibrationQuery.data, coverageThresholdDbm),
+    [verificationCalibrationQuery.data, coverageThresholdDbm],
   );
   const verificationMatchesSelection =
     selectedRecommendation != null && verificationRank === selectedRecommendation.rank;
@@ -401,12 +425,12 @@ export default function MobileAppPage() {
   const recommendedCoverageForComparison =
     verificationCalibratedCoverageMetrics ??
     verificationCoverageMetrics ??
-    extractRunCoverageMetrics(verificationPoll.rfRun?.metrics_json) ??
-    recommendationCoverageMetrics(selectedRecommendation);
+    extractRunCoverageMetrics(verificationPoll.rfRun?.metrics_json, coverageThresholdDbm) ??
+    recommendationCoverageMetrics(selectedRecommendation, coverageThresholdDbm);
   const integratedCoverageForComparison =
     integratedCoverageMetrics ??
-    extractRunCoverageMetrics(baselineRunDetail.rfRun?.metrics_json) ??
-    extractRunCoverageMetrics(latestRfRun?.metrics_json);
+    extractRunCoverageMetrics(baselineRunDetail.rfRun?.metrics_json, coverageThresholdDbm) ??
+    extractRunCoverageMetrics(latestRfRun?.metrics_json, coverageThresholdDbm);
   const canvasHeatmapMode: 'prediction' | 'measurement' =
     useComparisonMode && (simComparisonTab === 'baseline' || !!recommendedComparisonHeatmap)
       ? 'measurement'
@@ -1177,8 +1201,14 @@ export default function MobileAppPage() {
                 <CoverageComparisonCard
                   recommendation={selectedRecommendation}
                   coverage={integratedCoverageMetrics}
-                  usingFallback={!measurementCoverageMetrics && !!baselineCoverageMetrics}
-                  loading={calibrationComparisonQuery.isLoading}
+                  usingFallback={
+                    !measurementCoverageMetrics &&
+                    !estimatedIntegratedCoverageMetrics &&
+                    !!baselineCoverageMetrics
+                  }
+                  loading={
+                    calibrationComparisonQuery.isLoading || estimatedIntegratedCoverageQuery.isLoading
+                  }
                 />
                 <SionnaVerificationCard
                   recommendation={selectedRecommendation}
@@ -1189,7 +1219,9 @@ export default function MobileAppPage() {
                   }
                   runStatus={verificationMatchesSelection ? verificationPoll.rfRun?.status ?? null : null}
                   loadingIntegrated={
-                    calibrationComparisonQuery.isLoading || verificationCalibrationQuery.isLoading
+                    calibrationComparisonQuery.isLoading ||
+                    estimatedIntegratedCoverageQuery.isLoading ||
+                    verificationCalibrationQuery.isLoading
                   }
                   verifying={verifyCandidateMutation.isPending}
                   polling={verificationMatchesSelection && verificationPoll.isPolling}
@@ -1501,17 +1533,43 @@ interface GridCoverageMetrics {
 
 function computeGridCoverageMetrics(
   evaluation: CalibrationEvaluationResponse | null | undefined,
+  thresholdDbm = COVERAGE_THRESHOLD_DBM,
 ): GridCoverageMetrics | null {
-  return computeGridCoverageMetricsFromValues(evaluation?.maps.calibrated.values_dbm);
+  return computeGridCoverageMetricsFromValues(evaluation?.maps.calibrated.values_dbm, thresholdDbm);
+}
+
+function estimatedCoverageToMetrics(
+  coverage: EstimatedCoverage | null | undefined,
+  thresholdDbm = COVERAGE_THRESHOLD_DBM,
+): GridCoverageMetrics | null {
+  if (!coverage) return null;
+  const responseThreshold = Number(coverage.coverage_threshold_dbm);
+  const thresholdMatches = Number.isFinite(responseThreshold)
+    ? Math.abs(responseThreshold - thresholdDbm) < 0.001
+    : true;
+  const ratio = thresholdMatches
+    ? coverage.coverage_ratio ?? coverage.coverage_score ?? null
+    : null;
+  const average = coverage.average_rssi_dbm ?? coverage.rssi_range?.mean ?? null;
+  return {
+    coverage_threshold_dbm: Number.isFinite(responseThreshold) ? responseThreshold : thresholdDbm,
+    coverage_ratio: ratio,
+    coverage_score: ratio,
+    average_rssi_dbm: average,
+    bottom_10_percent_rssi_dbm: coverage.bottom_10_percent_rssi_dbm ?? null,
+  };
 }
 
 function extractRunCoverageMetrics(
   metricsJson: Record<string, unknown> | null | undefined,
+  thresholdDbm = COVERAGE_THRESHOLD_DBM,
 ): GridCoverageMetrics | null {
   if (!metricsJson) return null;
   const radioMap = metricsJson['radio_map'];
   if (!radioMap || typeof radioMap !== 'object') return null;
   const rm = radioMap as Record<string, unknown>;
+  const fromValues = computeGridCoverageMetricsFromValues(coerceNumberGrid(rm['values_dbm']), thresholdDbm);
+  if (fromValues) return fromValues;
   // coverage_summary 에서 직접 추출 (values_dbm 불필요)
   const cs = rm['coverage_summary'];
   if (cs && typeof cs === 'object') {
@@ -1521,7 +1579,7 @@ function extractRunCoverageMetrics(
     const bot = Number(obj['p10_rssi_dbm'] ?? obj['bottom_10_percent_rssi_dbm'] ?? obj['p10_dbm']);
     if (Number.isFinite(ratio)) {
       return {
-        coverage_threshold_dbm: COVERAGE_THRESHOLD_DBM,
+        coverage_threshold_dbm: thresholdDbm,
         coverage_ratio: ratio,
         coverage_score: ratio,
         average_rssi_dbm: Number.isFinite(avg) ? avg : null,
@@ -1530,24 +1588,25 @@ function extractRunCoverageMetrics(
     }
   }
   // fallback: values_dbm 에서 계산
-  return computeGridCoverageMetricsFromValues(coerceNumberGrid(rm['values_dbm']));
+  return null;
 }
 
 function computeGridCoverageMetricsFromValues(
   values: number[][] | null | undefined,
+  thresholdDbm = COVERAGE_THRESHOLD_DBM,
 ): GridCoverageMetrics | null {
   if (!values) return null;
   const valid = values
     .flat()
     .filter((value) => Number.isFinite(value) && value > -120);
   if (valid.length === 0) return null;
-  const covered = valid.filter((value) => value >= COVERAGE_THRESHOLD_DBM).length;
+  const covered = valid.filter((value) => value >= thresholdDbm).length;
   const sorted = [...valid].sort((a, b) => a - b);
   const bottomIndex = Math.max(0, Math.floor((sorted.length - 1) * 0.1));
   const average = valid.reduce((sum, value) => sum + value, 0) / valid.length;
   const coverageRatio = covered / valid.length;
   return {
-    coverage_threshold_dbm: COVERAGE_THRESHOLD_DBM,
+    coverage_threshold_dbm: thresholdDbm,
     coverage_ratio: coverageRatio,
     coverage_score: coverageRatio,
     average_rssi_dbm: average,
@@ -1558,12 +1617,13 @@ function computeGridCoverageMetricsFromValues(
 /** Sionna 검증 전, 추천 후보의 path-loss 예측값으로 비교용 커버리지 지표를 만든다. */
 function recommendationCoverageMetrics(
   recommendation: ApRecommendationResult | null,
+  thresholdDbm = COVERAGE_THRESHOLD_DBM,
 ): GridCoverageMetrics | null {
   if (!recommendation) return null;
   const ratio = recommendation.coverage_ratio ?? recommendation.coverage_score ?? null;
   if (ratio == null) return null;
   return {
-    coverage_threshold_dbm: COVERAGE_THRESHOLD_DBM,
+    coverage_threshold_dbm: thresholdDbm,
     coverage_ratio: ratio,
     coverage_score: ratio,
     average_rssi_dbm: recommendation.average_rssi_dbm ?? null,
@@ -1572,10 +1632,11 @@ function recommendationCoverageMetrics(
 }
 
 interface RecommendationHeatmap {
-  valuesDbm: number[][];
+  url?: string | null;
+  valuesDbm?: number[][];
   bounds: { min_x: number; min_y: number; max_x: number; max_y: number };
   rssiRange?: { min: number; max: number };
-  source: 'simulation';
+  source: 'measurement' | 'simulation';
 }
 
 function extractRadioMapHeatmap(
@@ -1621,7 +1682,9 @@ function extractJobResultHeatmap(
   result: Record<string, unknown> | null | undefined,
 ): RecommendationHeatmap | null {
   if (!result) return null;
-  const values = coerceNumberGrid(result['values_dbm']);
+  const values =
+    coerceNumberGrid(result['calibrated_values_dbm']) ??
+    coerceNumberGrid(result['values_dbm']);
   const bounds = coerceBounds(result['bounds_m']);
   if (!values || !bounds) return null;
   return {
