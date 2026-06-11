@@ -100,6 +100,7 @@ export function buildApRecommendationPayload(params: {
   physicalAps?: PhysicalAp[];
   targetBands?: WifiBand[];
   combinePolicy?: CombinePolicy;
+  coverageThresholdDbm?: number;
   verifyWithSionna?: boolean;
   verificationTopK?: number;
   verificationBackend?: RfBackend;
@@ -157,11 +158,13 @@ export function buildApRecommendationPayload(params: {
     recommendation_unit: 'physical_ap',
     target_bands: params.targetBands ?? ['5G'],
     combine_policy: params.combinePolicy ?? 'prefer_5g_then_2g',
+    coverage_threshold_dbm: params.coverageThresholdDbm ?? -67,
+    weak_zone_threshold_dbm: params.coverageThresholdDbm ?? -67,
     residual_mode: 'weak',
     weak_residual_weight: 0.3,
     verify_with_sionna: params.verifyWithSionna ?? true,
     verification_top_k: params.verificationTopK ?? 5,
-    verification_backend: params.verificationBackend ?? 'sagemaker',
+    verification_backend: params.verificationBackend ?? 'local',
     n_recommendations: Math.max(params.verificationTopK ?? 5, 5),
     // Physical AP 구조 — 있으면 포함.
     ...(params.physicalAps && params.physicalAps.length > 0

@@ -9,8 +9,7 @@ import {
   type ApRecommendationSession,
 } from '@/stores/ap-recommendation-store';
 import { useFloorVersions, useSceneVersion } from '@/hooks/use-scene-version';
-import { useFloorRfRuns, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
-import { useInferenceMode } from '@/hooks/use-inference-mode';
+import { useFloorRfRuns, useRfJob, useRfMaps, useRfRun } from '@/hooks/use-rf-run';
 import { useApLayouts, useCreateApLayout } from '@/hooks/use-ap-layouts';
 import { useAssetDownloadUrl } from '@/hooks/use-assets';
 import { useLocalFloorplanImage } from '@/hooks/use-local-floorplan-image';
@@ -48,7 +47,7 @@ import type {
 } from '@/types/ap-recommendation';
 import { cn } from '@/lib/utils';
 import type { CalibrationEvaluationResponse } from '@/types/calibration-run';
-import type { CombinePolicy, PhysicalAp, RfBackend, RfMap, WifiBand } from '@/types/rf';
+import type { CombinePolicy, PhysicalAp, RfMap, WifiBand } from '@/types/rf';
 
 type PageStatus = 'idle' | 'areaSelected' | 'loading' | 'success' | 'error';
 
@@ -68,6 +67,29 @@ const PROGRESS_STEPS = [
 ] as const;
 
 const CARD_BORDER = 'border-[#E5EAF2]';
+
+const COVERAGE_THRESHOLD_OPTIONS = [
+  {
+    value: -55,
+    label: '매우 좋음',
+    description: '화상회의/고화질 스트리밍 여유',
+  },
+  {
+    value: -60,
+    label: '좋음',
+    description: '스트리밍 끊김 적음',
+  },
+  {
+    value: -67,
+    label: '표준',
+    description: '일반 업무/웹 사용 안정',
+  },
+  {
+    value: -72,
+    label: '최소',
+    description: '연결 유지 중심',
+  },
+] as const;
 
 const AREA_TYPE_OPTIONS: Array<{
   type: ApRecommendationAreaType;
@@ -101,7 +123,6 @@ const AREA_TYPE_OPTIONS: Array<{
 
 export default function MobileAppPage() {
   const floorId = useAppStore((s) => s.selectedFloorId);
-  const { mode: inferenceMode } = useInferenceMode();
   const versionsQuery = useFloorVersions(floorId);
   const currentVersion =
     versionsQuery.data?.find((v) => v.is_current) ?? versionsQuery.data?.[0] ?? null;
@@ -163,6 +184,7 @@ export default function MobileAppPage() {
   const [selectedRank, setSelectedRank] = useState<number | null>(null);
   const [savedRank, setSavedRank] = useState<number | null>(null);
   const [nAps, setNAps] = useState(1);
+  const [coverageThresholdDbm, setCoverageThresholdDbm] = useState(-67);
   const [recommendationMode, setRecommendationMode] = useState<RecommendationMode>('add');
   const [replaceTargetApIds, setReplaceTargetApIds] = useState<string[]>([]);
   const [relocateTargetApIds, setRelocateTargetApIds] = useState<string[]>([]);
@@ -184,6 +206,7 @@ export default function MobileAppPage() {
     [existingAps, relocateTargetApIds, recommendationMode],
   );
   const [verificationRunId, setVerificationRunId] = useState<string | null>(null);
+  const [verificationJobId, setVerificationJobId] = useState<string | null>(null);
   const [verificationRank, setVerificationRank] = useState<number | null>(null);
   const [calibrationWarning, setCalibrationWarning] = useState<string | null>(null);
   const [recommendationUpdatedAt, setRecommendationUpdatedAt] = useState<string | null>(null);
@@ -196,6 +219,7 @@ export default function MobileAppPage() {
   const verifyCandidateMutation = useVerifyApRecommendationCandidate();
   const createLayout = useCreateApLayout();
   const verificationPoll = useRfRun(verificationRunId);
+  const verificationJobPoll = useRfJob(verificationJobId);
   const verificationMapsQuery = useRfMaps(verificationRunId, verificationPoll.isSucceeded);
   const baselineRunDetail = useRfRun(latestRfRunId);
   const measurementSessionsQuery = useFloorMeasurementSessions(floorId);
@@ -356,10 +380,12 @@ export default function MobileAppPage() {
   const verificationHeatmap = useMemo(() => {
     const fromRun = extractRadioMapHeatmap(verificationPoll.rfRun?.metrics_json);
     if (fromRun) return fromRun;
+    const fromJob = extractJobResultHeatmap(verificationJobPoll.rfJob?.result);
+    if (fromJob) return fromJob;
     const maps = verificationMapsQuery.data ?? [];
     const map = maps.find((item) => item.map_type === 'heatmap') ?? maps[0] ?? null;
     return extractRfMapHeatmap(map);
-  }, [verificationPoll.rfRun?.metrics_json, verificationMapsQuery.data]);
+  }, [verificationPoll.rfRun?.metrics_json, verificationJobPoll.rfJob?.result, verificationMapsQuery.data]);
   const verificationCoverageMetrics = useMemo(
     () => computeGridCoverageMetricsFromValues(verificationHeatmap?.valuesDbm),
     [verificationHeatmap],
@@ -412,6 +438,7 @@ export default function MobileAppPage() {
       setSelectedRank(null);
       setSavedRank(null);
       setVerificationRunId(null);
+      setVerificationJobId(null);
       setVerificationRank(null);
       setRecommendationUpdatedAt(null);
       return;
@@ -424,6 +451,7 @@ export default function MobileAppPage() {
       setSelectedRank(null);
       setSavedRank(null);
       setVerificationRunId(null);
+      setVerificationJobId(null);
       setVerificationRank(null);
       setRecommendationUpdatedAt(null);
       return;
@@ -490,6 +518,7 @@ export default function MobileAppPage() {
     setSelectedRank(null);
     setSavedRank(null);
     setVerificationRunId(null);
+    setVerificationJobId(null);
     setVerificationRank(null);
     if (sceneVersionId && validAreas.length > 0) {
       persistRecommendationSession({
@@ -504,6 +533,46 @@ export default function MobileAppPage() {
     }
     setPageError(null);
     recommendMutation.reset();
+  };
+
+  const handleResetRecommendation = () => {
+    setRecommendations([]);
+    setSelectedRank(null);
+    setSavedRank(null);
+    setVerificationRunId(null);
+    setVerificationJobId(null);
+    setVerificationRank(null);
+    setShowSimComparison(false);
+    setCalibrationWarning(null);
+    setPageError(null);
+    recommendMutation.reset();
+    if (sceneVersionId) {
+      patchRecommendationScene(sceneVersionId, {
+        areas: selectedAreas,
+        recommendations: [],
+        selectedRank: null,
+        savedRank: null,
+      });
+      setRecommendationUpdatedAt(new Date().toISOString());
+    }
+  };
+
+  const handleResetAllRecommendation = () => {
+    setSelectedAreas([]);
+    setRecommendations([]);
+    setSelectedRank(null);
+    setSavedRank(null);
+    setVerificationRunId(null);
+    setVerificationJobId(null);
+    setVerificationRank(null);
+    setShowSimComparison(false);
+    setCalibrationWarning(null);
+    setPageError(null);
+    recommendMutation.reset();
+    if (sceneVersionId) {
+      clearRecommendationScene(sceneVersionId);
+      setRecommendationUpdatedAt(null);
+    }
   };
 
   const handleRecommend = () => {
@@ -532,8 +601,12 @@ export default function MobileAppPage() {
       nAps,
       targetBands,
       combinePolicy,
+      coverageThresholdDbm,
       verifyWithSionna,
-      verificationBackend: inferenceMode as RfBackend,
+      // 후보 검증 시뮬레이션은 시뮬레이션 페이지와 동일하게 배포된 ai_api(Sionna RT)를
+      // 직접 호출하는 'local' 백엔드 경로를 사용. 'sagemaker'는 아직 배포된 엔드포인트가
+      // 없어 InvokeEndpointAsync ValidationError로 즉시 실패한다.
+      verificationBackend: 'local',
       recommendationMode,
       replaceTargetApIds: recommendationMode === 'replace' ? replaceTargetApIds : undefined,
       fixedApIds: recommendationMode === 'relocate_selected' ? fixedApIds : undefined,
@@ -552,6 +625,7 @@ export default function MobileAppPage() {
     setPageError(null);
     setSavedRank(null);
     setVerificationRunId(null);
+    setVerificationJobId(null);
     setVerificationRank(null);
     setCalibrationWarning(null);
     setShowSimComparison(false);
@@ -589,6 +663,7 @@ export default function MobileAppPage() {
 
     setSelectedRank(rec.rank);
     setVerificationRunId(null);
+    setVerificationJobId(null);
     setVerificationRank(null);
     setShowSimComparison(false);
     setCalibrationWarning(null);
@@ -657,6 +732,7 @@ export default function MobileAppPage() {
   const handlePreviewRecommendation = (rec: ApRecommendationResult) => {
     setSelectedRank(rec.rank);
     setVerificationRunId(null);
+    setVerificationJobId(null);
     setVerificationRank(null);
     setShowSimComparison(false);
     setCalibrationWarning(null);
@@ -675,6 +751,7 @@ export default function MobileAppPage() {
       {
         onSuccess: (data) => {
           setVerificationRunId(data.rf_run_id);
+          setVerificationJobId(data.rf_job_id);
           setVerificationRank(data.candidate_rank);
           setCalibrationWarning(data.calibration.warning ?? null);
           setShowSimComparison(true);
@@ -962,6 +1039,48 @@ export default function MobileAppPage() {
                   ))}
                 </div>
               </div>
+            )}
+            <div className="grid grid-cols-2 gap-1.5">
+              {COVERAGE_THRESHOLD_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setCoverageThresholdDbm(option.value)}
+                  className={cn(
+                    'min-h-[54px] rounded-lg border px-2 py-1.5 text-left transition-colors',
+                    coverageThresholdDbm === option.value
+                      ? 'border-blue-500 bg-blue-50 text-blue-800'
+                      : 'border-[#D8E3F0] bg-white text-slate-600 hover:bg-muted/60',
+                  )}
+                >
+                  <span className="block text-[12px] font-bold">
+                    {option.value} dBm · {option.label}
+                  </span>
+                  <span className="mt-0.5 block text-[10px] leading-snug text-slate-500">
+                    {option.description}
+                  </span>
+                </button>
+              ))}
+            </div>
+            {recommendations.length > 0 && (
+              <button
+                type="button"
+                onClick={handleResetRecommendation}
+                disabled={recommendMutation.isPending}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-[#D8E3F0] bg-white px-5 py-2.5 text-sm font-semibold text-slate-600 transition-colors hover:bg-muted/60 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                다시하기
+              </button>
+            )}
+            {recommendations.length > 0 && (
+              <button
+                type="button"
+                onClick={handleResetAllRecommendation}
+                disabled={recommendMutation.isPending}
+                className="inline-flex w-full items-center justify-center rounded-lg border border-rose-200 bg-white px-5 py-2.5 text-sm font-semibold text-rose-600 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                선택 영역까지 초기화
+              </button>
             )}
             <button
               type="button"
@@ -1494,6 +1613,21 @@ function extractRfMapHeatmap(map: RfMap | null | undefined): RecommendationHeatm
     rssiRange:
       coerceRssiRange(map.metrics_json?.['color_scale']) ??
       coerceRssiRange((map.metrics_json?.['radio_map'] as Record<string, unknown> | undefined)?.['color_scale']),
+    source: 'simulation',
+  };
+}
+
+function extractJobResultHeatmap(
+  result: Record<string, unknown> | null | undefined,
+): RecommendationHeatmap | null {
+  if (!result) return null;
+  const values = coerceNumberGrid(result['values_dbm']);
+  const bounds = coerceBounds(result['bounds_m']);
+  if (!values || !bounds) return null;
+  return {
+    valuesDbm: values,
+    bounds,
+    rssiRange: coerceRssiRange(result['color_scale']),
     source: 'simulation',
   };
 }

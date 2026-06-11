@@ -63,7 +63,7 @@ class ApRecommendationRequest(BaseModel):
     weak_residual_weight: float = Field(default=0.3, ge=0.0, le=1.0)
     verify_with_sionna: bool = True
     verification_top_k: int = Field(default=5, ge=1, le=5)
-    verification_backend: Literal["sagemaker", "local"] = "sagemaker"
+    verification_backend: Literal["sagemaker", "local"] = "local"
 
     calibration_run_id: UUID | None = None
     calibration_policy: Literal["transfer_only", "best_params_only", "combined"] = (
