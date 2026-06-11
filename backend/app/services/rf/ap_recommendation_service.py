@@ -543,9 +543,16 @@ async def verify_recommendation_candidate(
 
     calibration_meta = (rf_run.request_json or {}).get("calibration") or {}
     calibration_applied = bool(calibration_meta.get("applied"))
+    affine_available = False
+    try:
+        from app.services.rf.calibration_worker.apply import get_latest_affine_calibration
+
+        affine_available = get_latest_affine_calibration(db, str(row.floor_id)) is not None
+    except Exception:
+        logger.exception("Failed to check latest affine calibration for AP verification.")
     calibration_warning = (
         None
-        if calibration_applied
+        if calibration_applied or affine_available
         else "사용 가능한 completed calibration 결과가 없어 보정 없이 시뮬레이션을 실행했습니다."
     )
 
@@ -564,7 +571,7 @@ async def verify_recommendation_candidate(
         status=rf_run.status,
         final_aps=final_aps,
         calibration=ApRecommendationVerifyCalibrationInfo(
-            applied=calibration_applied,
+            applied=calibration_applied or affine_available,
             calibration_run_id=(
                 UUID(str(calibration_meta["calibration_run_id"]))
                 if calibration_meta.get("calibration_run_id")

@@ -81,18 +81,21 @@ export function useEstimatedCoverage(
     resolutionM?: number;
     method?: 'gp_only' | 'residual_kriging' | 'auto';
     apBssid?: string | null;
+    coverageThresholdDbm?: number;
   },
 ) {
   const resolutionM = options?.resolutionM ?? 0.5;
   const method = options?.method ?? 'auto';
   const apBssid = options?.apBssid ?? null;
+  const coverageThresholdDbm = options?.coverageThresholdDbm ?? -67;
   return useQuery({
-    queryKey: ['estimated-coverage', sessionId, resolutionM, method, apBssid] as const,
+    queryKey: ['estimated-coverage', sessionId, resolutionM, method, apBssid, coverageThresholdDbm] as const,
     queryFn: () =>
       measurementSessionApi.getEstimatedCoverage(sessionId as UUID, {
         resolution_m: resolutionM,
         method,
         ap_bssid: apBssid ?? undefined,
+        coverage_threshold_dbm: coverageThresholdDbm,
       }),
     enabled: !!sessionId,
     retry: false,

@@ -55,6 +55,7 @@ export const measurementSessionApi = {
       resolution_m?: number;
       method?: CoverageEstimationMethod | 'auto';
       ap_bssid?: string | null;
+      coverage_threshold_dbm?: number;
     },
   ) =>
     api

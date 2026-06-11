@@ -966,6 +966,7 @@ def estimate_session_coverage(
     grid_resolution_m: float = 0.5,
     method: str = "auto",
     ap_bssid: str | None = None,
+    coverage_threshold_dbm: float = -67.0,
 ) -> "EstimatedCoverageResponseDTO":
     """§81 — 세션의 측정점들을 GP regression 으로 dense map 추정.
 
@@ -1076,7 +1077,6 @@ def estimate_session_coverage(
     # → noise floor 이상 + 비유한값 제외한 셀 들로만 계산.
     grid = estimate.mean_grid
     finite_mask = np.isfinite(grid) & (grid > -120.0)
-    coverage_threshold_dbm = -67.0
     coverage_ratio = None
     coverage_score = None
     average_rssi_dbm = None
