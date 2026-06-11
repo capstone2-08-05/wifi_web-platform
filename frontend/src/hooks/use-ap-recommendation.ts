@@ -3,7 +3,10 @@ import { apRecommendationApi } from '@/api/ap-recommendation';
 import type { HttpError } from '@/api/client';
 import { toast } from '@/stores/toast-store';
 import type { UUID } from '@/types/common';
-import type { ApRecommendationRequest } from '@/types/ap-recommendation';
+import type {
+  ApRecommendationRequest,
+  ApRecommendationVerifyCandidateRequest,
+} from '@/types/ap-recommendation';
 
 /** POST /ap-recommendation — AP 최적 배치 추천. */
 export function useApRecommendation() {
@@ -47,5 +50,20 @@ export function useApRecommendationRun(runId: UUID | null) {
     queryFn: () => apRecommendationApi.getRun(runId as UUID),
     enabled: !!runId,
     retry: false,
+  });
+}
+
+/** POST /ap-recommendation/{run_id}/verify-candidate — 선택 후보 1개 Sionna 검증. */
+export function useVerifyApRecommendationCandidate() {
+  return useMutation({
+    mutationFn: ({ runId, body }: { runId: UUID; body: ApRecommendationVerifyCandidateRequest }) =>
+      apRecommendationApi.verifyCandidate(runId, body),
+    onError: (err) => {
+      const e = err as HttpError | null;
+      toast.error(
+        '선택 후보 시뮬레이션 실패',
+        e?.message ?? '잠시 후 다시 시도해주세요.',
+      );
+    },
   });
 }

@@ -4,6 +4,8 @@ import type {
   ApRecommendationRequest,
   ApRecommendationResponse,
   ApRecommendationRun,
+  ApRecommendationVerifyCandidateRequest,
+  ApRecommendationVerifyCandidateResponse,
 } from '@/types/ap-recommendation';
 
 export const apRecommendationApi = {
@@ -24,4 +26,13 @@ export const apRecommendationApi = {
 
   getRun: (runId: UUID) =>
     api.get<ApRecommendationRun>(`/ap-recommendation/${runId}`).then((r) => r.data),
+
+  /** POST /ap-recommendation/{run_id}/verify-candidate — 선택 후보 1개 Sionna 검증. */
+  verifyCandidate: (runId: UUID, body: ApRecommendationVerifyCandidateRequest) =>
+    api
+      .post<ApRecommendationVerifyCandidateResponse>(
+        `/ap-recommendation/${runId}/verify-candidate`,
+        body,
+      )
+      .then((r) => r.data),
 };

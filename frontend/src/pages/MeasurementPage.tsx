@@ -112,6 +112,18 @@ export default function MeasurementPage() {
     if (!viewingSceneVersionId) return [];
     return sessions.filter((s) => s.scene_version_id === viewingSceneVersionId);
   }, [sessions, viewingSceneVersionId]);
+  // "정답(참조) 데이터 추가 측정"으로 만든 reference 세션은 생성 시점상 항상 가장 최근
+  // 세션이 되지만, 보정 평가의 기준(activeSession)이 되어서는 안 된다 — 그 세션의
+  // 포인트는 전부 measurement_purpose='reference'라서 보정용 포인트가 0개가 되어
+  // "No calibration points available" 평가 실패로 이어진다. 같은 scene_version 내에서
+  // reference 가 아닌 가장 최근 세션을 우선 선택하고, 없을 때만 reference 세션을 사용한다.
+  const primarySessionForViewingVersion = useMemo(
+    () =>
+      sessionsForViewingVersion.find((s) => s.measurement_purpose !== 'reference') ??
+      sessionsForViewingVersion[0] ??
+      null,
+    [sessionsForViewingVersion],
+  );
   const selectedSessionBelongsToViewingVersion =
     !!selectedSession &&
     !!viewingSceneVersionId &&
@@ -119,7 +131,7 @@ export default function MeasurementPage() {
   const activeSession =
     selectedSessionBelongsToViewingVersion
       ? selectedSession
-      : sessionsForViewingVersion[0] ?? null;
+      : primarySessionForViewingVersion;
   const activeSceneVersionId = viewingSceneVersionId;
   const [selectedApBssid, setSelectedApBssid] = useState<string | null>(null);
   const versionDetailQuery = useSceneVersion(activeSceneVersionId);
@@ -283,18 +295,16 @@ export default function MeasurementPage() {
   const hasMeasurement = points.length > 0;
 
   // "정답(참조) 데이터 추가 측정" 은 모바일에서 별도의 새 세션(measurement_purpose='reference')으로
-  // 생성되어 activeSession 과 분리됨 — 같은 floor/scene 의 가장 최근 reference 세션을 찾아
-  // 보정 평가에 함께 포함시킨다.
+  // 생성되어 activeSession 과 분리됨 — 같은 도면(floor, sessions 가 이미 floorId 로 필터됨)의
+  // reference 세션을 찾아 보정 평가에 함께 포함시킨다. scene_version 이 같은 세션을 우선하되,
+  // 없으면 같은 floor 의 다른 scene_version 세션이라도 사용한다(좌표계는 같은 도면 기준 공유).
   const referenceSession = useMemo(() => {
-    const candidates = sessions
-      .filter(
-        (s) =>
-          s.measurement_purpose === 'reference' &&
-          s.scene_version_id === activeSceneVersionId &&
-          s.id !== activeSession?.id,
-      )
-      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
-    return candidates[0] ?? null;
+    const candidates = sessions.filter(
+      (s) => s.measurement_purpose === 'reference' && s.id !== activeSession?.id,
+    );
+    const sameScene = candidates.filter((s) => s.scene_version_id === activeSceneVersionId);
+    const pool = sameScene.length > 0 ? sameScene : candidates;
+    return [...pool].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0] ?? null;
   }, [sessions, activeSceneVersionId, activeSession?.id]);
   const referencePointsQuery = useMeasurementPoints(referenceSession?.id ?? null, 500);
   const referencePointsCount = referencePointsQuery.data?.items?.length ?? 0;
@@ -583,7 +593,6 @@ export default function MeasurementPage() {
               parameterUpdates={[]}
               evaluation={calibrationEvaluation}
               backgroundImageUrl={backgroundImageUrl}
-              measuredIntegratedCoverage={coverageResidualQuery.data ?? null}
             />
             <CalibrationHistoryCard
               runs={calibrationRunsQuery.data?.items ?? []}

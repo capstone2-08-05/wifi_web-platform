@@ -238,6 +238,28 @@ export interface ApRecommendationResult {
   verification_job_id?: UUID | null;
 }
 
+/** POST /ap-recommendation/{run_id}/verify-candidate 요청 본문. */
+export interface ApRecommendationVerifyCandidateRequest {
+  candidate_rank: number;
+}
+
+export interface ApRecommendationVerifyCalibrationInfo {
+  applied: boolean;
+  calibration_run_id?: UUID | null;
+  warning?: string | null;
+}
+
+/** POST /ap-recommendation/{run_id}/verify-candidate 응답. */
+export interface ApRecommendationVerifyCandidateResponse {
+  run_id: UUID;
+  candidate_rank: number;
+  rf_run_id: UUID;
+  rf_job_id: UUID;
+  status: string;
+  final_aps: Array<Record<string, unknown>>;
+  calibration: ApRecommendationVerifyCalibrationInfo;
+}
+
 export interface ApRecommendationRun {
   id: UUID;
   project_id: UUID;

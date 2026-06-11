@@ -226,3 +226,29 @@ class ApRecommendationRunResponse(BaseModel):
     weighted_eval_points_count: int | None = None
     recommendations: list[ApRecommendationItem] = Field(default_factory=list)
     created_at: datetime
+
+
+class ApRecommendationVerifyCandidateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_rank: int = Field(ge=1)
+
+
+class ApRecommendationVerifyCalibrationInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    applied: bool
+    calibration_run_id: UUID | None = None
+    warning: str | None = None
+
+
+class ApRecommendationVerifyCandidateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: UUID
+    candidate_rank: int
+    rf_run_id: UUID
+    rf_job_id: UUID
+    status: str
+    final_aps: list[dict[str, Any]] = Field(default_factory=list)
+    calibration: ApRecommendationVerifyCalibrationInfo
